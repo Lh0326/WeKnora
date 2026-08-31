@@ -1476,6 +1476,9 @@ func (h *Handler) recordTurnMemory(
 		}
 	}
 	h.recordAnswerSources(ctx, assistantMessage)
+	if h.learningService != nil {
+		h.learningService.RecordAnswerTouches(ctx, assistantMessage)
+	}
 	h.memoryService.ScheduleExtraction(ctx, assistantMessage.SessionID, assistantMessage.ID, assistantMessage.ModelID)
 }
 

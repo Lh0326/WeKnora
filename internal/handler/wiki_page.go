@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	"github.com/Tencent/WeKnora/internal/application/service"
+	learning "github.com/Tencent/WeKnora/internal/application/service/learning"
 	"github.com/Tencent/WeKnora/internal/errors"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -20,11 +21,12 @@ import (
 
 // WikiPageHandler handles HTTP requests for wiki page operations
 type WikiPageHandler struct {
-	wikiService   interfaces.WikiPageService
-	kbService     interfaces.KnowledgeBaseService
-	lintService   *service.WikiLintService
-	auditService  interfaces.AuditLogService
-	memoryService interfaces.MemoryService
+	wikiService     interfaces.WikiPageService
+	kbService       interfaces.KnowledgeBaseService
+	lintService     *service.WikiLintService
+	auditService    interfaces.AuditLogService
+	memoryService   interfaces.MemoryService
+	learningService interfaces.LearningService
 }
 
 // NewWikiPageHandler creates a new wiki page handler
@@ -34,13 +36,15 @@ func NewWikiPageHandler(
 	lintService *service.WikiLintService,
 	auditService interfaces.AuditLogService,
 	memoryService interfaces.MemoryService,
+	learningService interfaces.LearningService,
 ) *WikiPageHandler {
 	return &WikiPageHandler{
-		wikiService:   wikiService,
-		kbService:     kbService,
-		lintService:   lintService,
-		auditService:  auditService,
-		memoryService: memoryService,
+		wikiService:     wikiService,
+		kbService:       kbService,
+		lintService:     lintService,
+		auditService:    auditService,
+		memoryService:   memoryService,
+		learningService: learningService,
 	}
 }
 
@@ -867,12 +871,14 @@ func (h *WikiPageHandler) GetGraph(c *gin.Context) {
 	if h.memoryService != nil {
 		req.FamiliarKnowledgeIDs = h.memoryService.FamiliarKnowledgeIDs(c.Request.Context())
 	}
+	withMastery := c.Query("with_mastery") == "true"
 
 	graph, err := h.wikiService.GetGraph(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	h.overlayGraphMastery(c.Request.Context(), graph, kbID, withMastery)
 
 	c.JSON(http.StatusOK, graph)
 }
@@ -1086,4 +1092,30 @@ func (h *WikiPageHandler) AutoFix(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"fixed": fixed, "message": fmt.Sprintf("Auto-fixed %d issues", fixed)})
+}
+
+// overlayGraphMastery paints the graph nodes with the caller's derived
+// mastery tier — the same "personal overlay, not a page property" contract
+// as the Familiar field, one tier up. It only runs when the request
+// explicitly asked for it AND the kill switch is open; otherwise the
+// response is untouched, byte-identical to a pre-learning build.
+func (h *WikiPageHandler) overlayGraphMastery(
+	ctx context.Context, graph *types.WikiGraphData, kbID string, withMastery bool,
+) {
+	if !withMastery || graph == nil || h.learningService == nil {
+		return
+	}
+	if !learning.LearningEnabled() {
+		return // the kill switch dominates
+	}
+	overlay, err := h.learningService.MasteryOverlay(ctx, kbID, nil)
+	if err != nil {
+		return // overlay is decorative: a failure must never break the graph
+	}
+	for i := range graph.Nodes {
+		if entry, ok := overlay[graph.Nodes[i].Slug]; ok {
+			graph.Nodes[i].MasteryLevel = entry.Level
+			graph.Nodes[i].LowConfidence = entry.LowConfidence
+		}
+	}
 }

@@ -1,0 +1,16 @@
+DROP INDEX IF EXISTS idx_learning_quiz_attempts_item;
+DROP INDEX IF EXISTS idx_learning_quiz_attempts_scope;
+DROP TABLE IF EXISTS learning_quiz_attempts;
+DROP INDEX IF EXISTS idx_learning_quiz_items_scope;
+DROP TABLE IF EXISTS learning_quiz_items;
+DROP INDEX IF EXISTS idx_learning_edges_scope;
+DROP TABLE IF EXISTS learning_edges;
+DROP INDEX IF EXISTS idx_memory_wiki_map_scope;
+DROP TABLE IF EXISTS memory_wiki_map;
+DROP INDEX IF EXISTS idx_mastery_states_scope;
+DROP TABLE IF EXISTS mastery_states;
+DROP INDEX IF EXISTS idx_learning_events_subject_time;
+DROP INDEX IF EXISTS idx_learning_events_scope;
+DROP TABLE IF EXISTS learning_events;
+DROP INDEX IF EXISTS idx_learning_subject_prefs_scope;
+DROP TABLE IF EXISTS learning_subject_prefs;

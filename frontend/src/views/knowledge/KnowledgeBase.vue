@@ -54,6 +54,7 @@ import KbTagManageDrawer from './components/KbTagManageDrawer.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import WikiBrowser from './wiki/WikiBrowser.vue';
+import LearningTab from './learning/LearningTab.vue';
 import { getWikiStats } from '@/api/wiki';
 import {
   isKnowledgeParseInFlight,
@@ -85,7 +86,7 @@ const kbLoading = ref(false);
 const docListLoading = ref(true);
 const isFAQ = computed(() => (kbInfo.value?.type || '') === 'faq');
 const isWiki = computed(() => !!kbInfo.value?.indexing_strategy?.wiki_enabled);
-const validTabs = ['documents', 'wiki', 'graph'] as const
+const validTabs = ['documents', 'wiki', 'graph', 'learning'] as const
 type KbTab = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as any) ? (route.query.tab as KbTab) : 'documents'
 const activeKbTab = ref<KbTab>(initTab);
@@ -1091,6 +1092,14 @@ watch(activeKbTab, (tab) => {
     query.tab = tab
   }
   router.replace({ query })
+})
+
+// URL → tab 反向同步：深链只改 query（如学习页签的「查看」卡片带 ?tab=wiki&slug=…），
+// 本地页签状态必须跟着切换，否则视图纹丝不动。与上面的 tab → query watch 幂等共存。
+watch(() => route.query.tab, (v) => {
+  if (typeof v === 'string' && (validTabs as readonly string[]).includes(v)) {
+    activeKbTab.value = v as KbTab
+  }
 })
 
 watch(() => kbId.value, (newKbId, oldKbId) => {
@@ -2342,6 +2351,9 @@ async function createNewSession(value: string): Promise<void> {
                     </t-tooltip>
                   </span>
                 </t-tooltip>
+                <span class="breadcrumb-tab-sep">/</span>
+                <span :class="['breadcrumb-tab', { active: activeKbTab === 'learning' }]"
+                  @click="activeKbTab = 'learning'">{{ $t('knowledgeEditor.learningTab.tabLearning') }}</span>
               </template>
               <span v-else class="breadcrumb-current">{{ $t('knowledgeEditor.document.title') }}</span>
             </h2>
@@ -2374,6 +2386,10 @@ async function createNewSession(value: string): Promise<void> {
       </div>
 
       <!-- Wiki Browser / Graph (shown when wiki or graph tab is active) -->
+      <div v-if="isWiki && activeKbTab === 'learning'" class="learning-main-area">
+        <LearningTab v-if="kbId" :key="kbId" :knowledge-base-id="kbId"
+          @open-source-doc="openSourceDoc" />
+      </div>
       <div v-if="isWiki && (activeKbTab === 'wiki' || activeKbTab === 'graph')" class="wiki-main-area">
         <WikiBrowser v-if="kbId" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
           :can-edit="canEdit" @open-source-doc="openSourceDoc" @status-change="onWikiStatusChange"
@@ -2828,6 +2844,15 @@ async function createNewSession(value: string): Promise<void> {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+// 学习页签是一列长卡片（进度/推荐/答题/时间线/画像），与 WikiBrowser
+// 自管内部滚动不同，这里由容器自身整体滚动；外层 platform-route-outlet
+// 是固定高度的 overflow:hidden flex 列，缺了这段内容会溢出不可见。
+.learning-main-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 // 与列表页一致：浅灰底圆角区，左侧筛选为白底卡片

@@ -549,6 +549,13 @@ type WikiConfig struct {
 	// this knob trades a single KB's peak throughput for cross-KB fairness.
 	// Set it >= the wiki pool size to effectively disable the cap.
 	IngestMaxInflight int `yaml:"ingest_max_inflight" json:"ingest_max_inflight,omitempty"`
+
+	// LearningFeatures is the per-KB switch for the learning layer's two
+	// LLM write paths (prerequisite-edge inference and quiz generation).
+	// It defaults to false: the feature's only sustained model cost lives
+	// behind this explicit opt-in, mirroring how NEO4J_ENABLE gates the
+	// graph layer. Absent in old rows, which json-scan reads as false.
+	LearningFeatures bool `yaml:"learning_features,omitempty" json:"learning_features,omitempty"`
 }
 
 // IngestBatchSizeOrDefault returns IngestBatchSize when set (> 0),
@@ -692,6 +699,12 @@ type WikiGraphNode struct {
 	// keeps citing in answers. It is a personal overlay, not a property of
 	// the page: two people looking at the same wiki see different highlights.
 	Familiar bool `json:"familiar,omitempty"`
+	// MasteryLevel is the personal mastery overlay (unseen/touched/
+	// familiar/mastered), attached only when the request asked for it.
+	MasteryLevel string `json:"mastery_level,omitempty"`
+	// LowConfidence marks a tier derived from fewer events than the
+	// confidence floor.
+	LowConfidence bool `json:"low_confidence,omitempty"`
 }
 
 // WikiGraphEdge represents a directed edge in the wiki link graph
