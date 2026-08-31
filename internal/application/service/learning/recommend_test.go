@@ -221,8 +221,11 @@ func TestRecommendRemedialMistakeNotebook(t *testing.T) {
 	if recs[0].Slug != "concept/quiz-failed" || recs[0].Reason != "remedial" {
 		t.Fatalf("quiz-failed node must lead the notebook, got %s (%s)", recs[0].Slug, recs[0].Reason)
 	}
-	if recs[1].Slug != "concept/re-asked" || recs[1].Reason != "remedial" {
-		t.Fatalf("indirect struggle comes second, got %s (%s)", recs[1].Slug, recs[1].Reason)
+	// Direct failure drills first (reason "remedial" — a real wrong
+	// answer); indirect struggle second under its own honest label
+	// "struggling" (re-asks only, no quiz failure ever happened).
+	if recs[1].Slug != "concept/re-asked" || recs[1].Reason != "struggling" {
+		t.Fatalf("indirect struggle comes second as struggling, got %s (%s)", recs[1].Slug, recs[1].Reason)
 	}
 	// The floor-clamped node is NOT part of the notebook.
 	for _, r := range recs {

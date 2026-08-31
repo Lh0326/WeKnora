@@ -158,6 +158,12 @@ type LearningService interface {
 	UpdateSettings(ctx context.Context, disabled bool) error
 	// MasteryOverlay derives graph paint fields (level + low-confidence).
 	MasteryOverlay(ctx context.Context, kbID string, slugs []string) (map[string]MasteryOverlayEntry, error)
+	// PassiveChanges derives the decay-driven (non-action) state changes of
+	// the caller's nodes in one KB: tiers already demoted by forgetting and
+	// tiers within PassiveDueSoonDays of demotion. Entirely read-time —
+	// nothing is persisted, nothing enters the event stream (the timeline
+	// stays a log of real actions; passive drift is a separate channel).
+	PassiveChanges(ctx context.Context, kbID string, limit int) (*PassiveChangesSummary, error)
 }
 
 // LearningProgress is the tab header: node totals per tier and per folder.
@@ -189,6 +195,48 @@ type MasteryView struct {
 	// Title is the node page's human-readable title, resolved in one batch
 	// at read time (empty when the page no longer resolves).
 	Title string `json:"title,omitempty"`
+}
+
+// PassiveChange is one node's decay-driven (non-action) state change,
+// derived entirely at read time. The Anki deck-list split, transposed:
+// passive drift (forgetting) is summarized as counts plus a due queue and
+// never interleaved into the activity history, so passive volume can never
+// flood out the user's own actions in the timeline.
+type PassiveChange struct {
+	Slug string `json:"slug"`
+	// Title is the node page's human-readable title (empty when the page
+	// no longer resolves; the client falls back to the slug).
+	Title string `json:"title,omitempty"`
+	// AnchorLevel is the tier the accumulated evidence earned, ignoring
+	// decay; ViewLevel is what forgetting has worn it down to right now.
+	AnchorLevel string `json:"anchor_level"`
+	ViewLevel   string `json:"view_level"`
+	// BaseP/PEff show the same split numerically: p without decay vs p_eff.
+	BaseP float64 `json:"base_p"`
+	PEff  float64 `json:"p_eff"`
+	// DaysIdle is days since the last evidence (0 for fresh nodes).
+	DaysIdle float64 `json:"days_idle"`
+	// StabilityDays is the node's current stability s (read as "days until
+	// retrievability falls to 90%").
+	StabilityDays float64 `json:"stability_days"`
+	// NextReviewDays is how many days the node still holds its anchor tier
+	// before decay crosses the demotion gate; nil when already demoted
+	// (the item's action line then reads "review now").
+	NextReviewDays *float64 `json:"next_review_days,omitempty"`
+	// Demoted marks nodes whose forgetting already crossed a demotion gate
+	// (anchor tier strictly above the decayed view).
+	Demoted bool `json:"demoted"`
+	// LowConfidence mirrors the mastery honesty flag (< 3 evidence).
+	LowConfidence bool      `json:"low_confidence"`
+	LastEvidenceAt time.Time `json:"last_evidence_at"`
+}
+
+// PassiveChangesSummary aggregates the passive channel for one KB: full-set
+// counts plus the most urgent items (demotions first, then soonest due).
+type PassiveChangesSummary struct {
+	DemotedCount int            `json:"demoted_count"`
+	DueSoonCount int            `json:"due_soon_count"`
+	Items        []PassiveChange `json:"items"`
 }
 
 // QuizQuestion is the served question shape (no answer material).

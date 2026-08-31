@@ -86,6 +86,30 @@ export interface LearningSettings {
   collect_disabled: boolean;
 }
 
+/** 被动变化（遗忘动态）：读时派生、绝不落库——与时间线的主动事件分离。 */
+export interface PassiveChange {
+  slug: string;
+  title?: string;
+  /** 证据挣到的档位（不衰减）与遗忘侵蚀后的当前档位。 */
+  anchor_level: string;
+  view_level: string;
+  base_p: number;
+  p_eff: number;
+  days_idle: number;
+  stability_days: number;
+  /** 距降档还剩的天数；已降档时缺省（提示改为"尽快复习"）。 */
+  next_review_days?: number;
+  demoted: boolean;
+  low_confidence: boolean;
+  last_evidence_at: string;
+}
+
+export interface PassiveChangesSummary {
+  demoted_count: number;
+  due_soon_count: number;
+  items: PassiveChange[];
+}
+
 interface Envelope<T> {
   success: boolean;
   data: T;
@@ -104,6 +128,11 @@ export function getLearningMastery(kbId: string) {
 
 export function getLearningRecommend(kbId: string, limit = 5) {
   return get<Envelope<Recommendation[]>>(`/api/v1/learning/kb/${kbId}/recommend?limit=${limit}`);
+}
+
+// 遗忘动态：非用户操作（被动）导致的档位/掌握度变化，读时派生。
+export function getLearningChanges(kbId: string, limit = 20) {
+  return get<Envelope<PassiveChangesSummary>>(`/api/v1/learning/kb/${kbId}/changes?limit=${limit}`);
 }
 
 export function getLearningQuiz(kbId: string, slug: string) {

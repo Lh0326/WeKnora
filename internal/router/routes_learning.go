@@ -26,6 +26,9 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.GET("/progress", g.KBAccessRead("kb_id"), learningHandler.GetProgress)
 	kbGroup.GET("/map", g.KBAccessRead("kb_id"), learningHandler.ListMastery)
 	kbGroup.GET("/recommend", g.KBAccessRead("kb_id"), learningHandler.Recommend)
+	// Passive decay channel: read-time derived, never persisted, kept
+	// apart from the action timeline so passive volume cannot flood it.
+	kbGroup.GET("/changes", g.KBAccessRead("kb_id"), learningHandler.PassiveChanges)
 	kbGroup.GET("/quiz", g.KBAccessRead("kb_id"), learningHandler.TakeQuiz)
 	kbGroup.POST("/quiz/:item_id/answer", g.KBAccessRead("kb_id"), learningHandler.SubmitAnswer)
 	// Reading a wiki page is a deliberate low-trust touch (§3.3.6 signal).

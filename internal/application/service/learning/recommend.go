@@ -180,14 +180,23 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 			reason = "review"
 		} else if st.EvidenceCount >= LowConfidenceEvidence &&
 			st.Logit < 0 && st.Logit > LogitRemedialFloor {
-			// 错题重练: a real struggle history that is still recoverable
+			// 错题本频道: a real struggle history that is still recoverable
 			// (negative but not floor-clamped) — the highest-value
 			// practice target. The floor-clamped case is deliberately
 			// excluded: that node is effectively unlearned again and
 			// belongs to the fresh-start channels, not the drill queue.
+			// The reason splits by evidence kind so the label never lies:
+			// "remedial" promises an actual wrong answer (direct
+			// evidence); indirect struggle — repeated re-asks where the
+			// answer never landed — gets its own honest label instead of
+			// claiming a quiz failure that never happened.
 			score += ScoreRemedial
 			remedial = true
-			reason = "remedial"
+			if in.QuizStruggled[slug] {
+				reason = "remedial"
+			} else {
+				reason = "struggling"
+			}
 		} else if st.EvidenceCount == 0 {
 			// 补盲区: never-touched frontier node.
 			score += ScoreBlindSpot

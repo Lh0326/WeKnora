@@ -135,6 +135,36 @@
       </div>
     </div>
 
+    <!-- 遗忘动态：非用户操作导致的被动变化，读时派生、与时间线（主动事件）
+         分栏——Anki 的"到期队列 vs 复习历史"分区：被动信息永不刷掉主动记录 -->
+    <div class="learning-section" v-if="passiveChanges && (passiveChanges.demoted_count > 0 || passiveChanges.due_soon_count > 0)">
+      <div class="section-title">{{ $t('knowledgeEditor.learningTab.changesTitle') }}</div>
+      <div class="changes-badges">
+        <span v-if="passiveChanges.demoted_count > 0" class="changes-badge demoted">
+          {{ $t('knowledgeEditor.learningTab.changesDemoted', { n: passiveChanges.demoted_count }) }}
+        </span>
+        <span v-if="passiveChanges.due_soon_count > 0" class="changes-badge due">
+          {{ $t('knowledgeEditor.learningTab.changesDue', { n: passiveChanges.due_soon_count }) }}
+        </span>
+      </div>
+      <div class="changes-list">
+        <div v-for="ch in passiveChanges.items" :key="ch.slug" class="changes-row" @click="openPage(ch.slug)">
+          <span class="rec-title" :title="ch.slug">{{ ch.title || ch.slug }}</span>
+          <span class="changes-tier">
+            <span class="tier-dot" :style="{ background: tierColor(ch.anchor_level) }"></span>{{ levelLabel(ch.anchor_level) }}
+            <span class="changes-arrow">→</span>
+            <span class="tier-dot" :style="{ background: tierColor(ch.view_level) }"></span>{{ levelLabel(ch.view_level) }}
+          </span>
+          <span class="changes-p">{{ Math.round(ch.base_p * 100) }}% → {{ Math.round(ch.p_eff * 100) }}%</span>
+          <span class="changes-hint" :class="{ overdue: ch.demoted }">
+            {{ ch.demoted
+              ? $t('knowledgeEditor.learningTab.changesIdle', { d: Math.round(ch.days_idle) })
+              : $t('knowledgeEditor.learningTab.changesNext', { n: Math.ceil(ch.next_review_days ?? 0) }) }}
+          </span>
+        </div>
+      </div>
+    </div>
+
     <!-- 测验答题卡 -->
     <div class="learning-section" ref="quizSectionRef" v-if="quiz.active">
       <div class="section-title">{{ $t('knowledgeEditor.learningTab.quizTitle', { slug: quiz.title }) }}</div>
@@ -275,8 +305,8 @@ import { ChevronRightIcon, FolderIcon, HelpCircleIcon } from 'tdesign-icons-vue-
 import {
   getLearningProgress, getLearningRecommend, getLearningQuiz, submitLearningAnswer,
   getLearningTimeline, exportLearningProfile, deleteLearningProfile,
-  getLearningSettings, updateLearningSettings, getLearningMastery,
-  type LearningProgress, type Recommendation, type QuizQuestion, type AnswerResult, type TimelineItem, type MasteryView,
+  getLearningSettings, updateLearningSettings, getLearningMastery, getLearningChanges,
+  type LearningProgress, type Recommendation, type QuizQuestion, type AnswerResult, type TimelineItem, type MasteryView, type PassiveChangesSummary,
 } from '@/api/learning'
 
 const props = defineProps<{ knowledgeBaseId: string }>()
@@ -288,6 +318,8 @@ const { t } = useI18n()
 const progress = ref<LearningProgress | null>(null)
 const recommendations = ref<Recommendation[]>([])
 const recommendLoading = ref(false)
+// 遗忘动态（被动变化通道）：与时间线（主动事件）分栏显示，互不挤占。
+const passiveChanges = ref<PassiveChangesSummary | null>(null)
 const initialLoading = ref(true)
 const loadFailed = ref(false)
 const timeline = ref<TimelineItem[]>([])
@@ -430,6 +462,7 @@ function reasonText(reason: string): string {
     consolidate: t('knowledgeEditor.learningTab.reasonConsolidate'),
     review: t('knowledgeEditor.learningTab.reasonReview'),
     remedial: t('knowledgeEditor.learningTab.reasonRemedial'),
+    struggling: t('knowledgeEditor.learningTab.reasonStruggling'),
     'prerequisite-stuck': t('knowledgeEditor.learningTab.reasonStuck'),
     bypass: t('knowledgeEditor.learningTab.reasonBypass'),
     explore: t('knowledgeEditor.learningTab.reasonExplore'),
@@ -445,6 +478,7 @@ function reasonStyle(reason: string): { background: string; color: string } {
     consolidate: { background: 'rgba(3, 134, 38, 0.12)', color: '#038626' },
     review: { background: 'rgba(0, 82, 217, 0.10)', color: '#0052d9' },
     remedial: { background: 'rgba(213, 73, 65, 0.10)', color: '#c8383f' },
+    struggling: { background: 'rgba(212, 160, 23, 0.12)', color: '#a87b10' },
     'prerequisite-stuck': { background: 'rgba(227, 115, 24, 0.12)', color: '#e37318' },
     bypass: { background: 'rgba(93, 155, 218, 0.12)', color: '#3d6f9e' },
     explore: { background: 'rgba(140, 224, 175, 0.25)', color: '#3d8f66' },
@@ -588,16 +622,18 @@ const TIMELINE_PAGE_SIZE = 100
 async function refresh() {
   recommendLoading.value = true
   try {
-    const [p, r, tl, s] = await Promise.all([
+    const [p, r, tl, s, ch] = await Promise.all([
       getLearningProgress(props.knowledgeBaseId),
       getLearningRecommend(props.knowledgeBaseId, 5),
       getLearningTimeline(props.knowledgeBaseId, 1, TIMELINE_PAGE_SIZE),
       getLearningSettings(),
+      getLearningChanges(props.knowledgeBaseId, 20),
     ])
     progress.value = (p as any).data ?? p
     recommendations.value = (r as any).data ?? r ?? []
     timeline.value = ((tl as any).data ?? tl) as TimelineItem[]
     timelineTotal.value = ((tl as any).total ?? 0) as number
+    passiveChanges.value = ((ch as any).data ?? ch) as PassiveChangesSummary
     // 刷新即回到第 1 页：否则触底续拉会带着旧页码跳页（关闭答题卡/
     // 删除画像后的刷新都走这里）。
     timelinePage.value = 1
@@ -940,6 +976,19 @@ onUnmounted(() => {
 .rec-level.faded { border: 1px dashed #d4a017; }
 .rec-level { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
 .rec-actions { display: flex; gap: 8px; flex-shrink: 0; }
+/* 遗忘动态（被动变化通道）：徽章汇总 + 明细行，与时间线分栏互不挤占。 */
+.changes-badges { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.changes-badge { font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 4px; }
+.changes-badge.demoted { background: rgba(213, 73, 65, 0.10); color: #c8383f; }
+.changes-badge.due { background: rgba(212, 160, 23, 0.12); color: #a87b10; }
+.changes-list { display: flex; flex-direction: column; gap: 6px; }
+.changes-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--td-component-border, #eee); border-radius: 8px; cursor: pointer; transition: border-color 0.15s; flex-wrap: wrap; }
+.changes-row:hover { border-color: rgba(7, 192, 95, 0.5); }
+.changes-tier { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; }
+.changes-arrow { color: var(--td-text-color-placeholder, #999); margin: 0 2px; }
+.changes-p { font-size: 11px; color: var(--td-text-color-secondary, #555); white-space: nowrap; }
+.changes-hint { font-size: 11px; color: #a87b10; margin-left: auto; white-space: nowrap; }
+.changes-hint.overdue { color: #c8383f; }
 .quiz-question { font-weight: 500; margin-bottom: 10px; }
 .quiz-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .quiz-option { display: flex; gap: 10px; align-items: center; border: 1px solid var(--td-component-border, #eee); border-radius: 8px; padding: 8px 10px; cursor: pointer; transition: border-color 0.15s, background-color 0.15s; }

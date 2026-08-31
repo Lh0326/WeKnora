@@ -76,6 +76,31 @@ func (h *LearningHandler) ListMastery(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": views})
 }
 
+// PassiveChanges godoc: the 遗忘动态 channel — decay-driven (non-action)
+// state changes, derived entirely at read time. The timeline keeps only
+// real actions, so passive drift lives in this separate endpoint and can
+// never flood out the user's own activity.
+func (h *LearningHandler) PassiveChanges(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	limit := 20
+	if raw := c.Query("limit"); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	summary, err := h.learningService.PassiveChanges(c.Request.Context(), c.Param("kb_id"), limit)
+	if err != nil {
+		h.fail(c, err, "Failed to load passive changes")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": summary})
+}
+
 // Recommend godoc
 func (h *LearningHandler) Recommend(c *gin.Context) {
 	if !h.requireLearningEnabled(c) {

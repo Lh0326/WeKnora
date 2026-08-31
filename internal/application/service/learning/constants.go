@@ -88,6 +88,13 @@ var (
 	// PrereqBlockedFloor: a prerequisite whose p_eff sits below this with
 	// real evidence counts as blocking, triggering the neighbour bypass.
 	PrereqBlockedFloor = 0.30
+
+	// PassiveDueSoonDays: read-side horizon of the passive-change channel —
+	// nodes whose anchor tier decays below its demotion gate within this
+	// many days count as "due soon". The Anki deck-list analogue: due
+	// state is summarized as counts and a queue at read time, never
+	// written into the activity history.
+	PassiveDueSoonDays = 7.0
 )
 
 // ReAskWindowHours stays a typed constant: it multiplies time.Hour, which
