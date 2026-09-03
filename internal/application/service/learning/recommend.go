@@ -26,6 +26,11 @@ type recommendInput struct {
 	// signal (the spec's hierarchy: quiz verdicts outrank every indirect
 	// signal).
 	QuizStruggled map[string]bool
+	// DirectFacts carries the subject's distinct-item correct answers per
+	// slug, so the pool's tier decisions (frontier readiness, dam
+	// detection, consolidation) see the same gated tiers the display
+	// shows — pool and card can never disagree.
+	DirectFacts map[string][]DirectQuizFact
 }
 
 // anchoredLevel derives a node's display level the way every read path
@@ -106,7 +111,7 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 
 	state := func(slug string) FoldState { return in.States[slug] }
 	levelOf := func(slug string) Level {
-		return anchoredLevel(state(slug), now).Level
+		return gatedAnchoredLevel(state(slug), in.DirectFacts[slug], now).Level
 	}
 
 	// Prerequisites per node: node's edge froms.
@@ -126,7 +131,7 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 	// the floor for longer than the re-ask window — actively-studied
 	// prerequisites are learning, not blockage ("长期停在低掌握度").
 	isDam := func(slug string, st FoldState) bool {
-		return anchoredLevel(st, now).Level != LevelUnseen &&
+		return gatedAnchoredLevel(st, in.DirectFacts[slug], now).Level != LevelUnseen &&
 			EffectiveP(st, now) < PrereqBlockedFloor &&
 			st.EvidenceCount >= LowConfidenceEvidence &&
 			!st.LastEvidenceAt.IsZero() &&
@@ -173,7 +178,7 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 			}
 		}
 		// 巩固边缘: the two decay-aware consolidation signals.
-		anchor, view := anchorAndView(st, now)
+		anchor, view := gatedAnchorAndView(st, in.DirectFacts[slug], now)
 		if levelRank(anchor) > levelRank(view) && levelRank(anchor) > 0 {
 			// Earned knowledge fading below its tier: review is due.
 			score += ScoreReviewDue

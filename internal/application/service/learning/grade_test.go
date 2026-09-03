@@ -53,12 +53,33 @@ func TestGradeQuizRepeatAttemptsDecay(t *testing.T) {
 }
 
 func TestGradeQuizRejectsInvalidKeys(t *testing.T) {
-	for _, chosen := range []string{"", "E", "b", "AA", "1"} {
+	for _, chosen := range []string{"", "F", "b", "AA", "1", "unsure"} {
 		if _, err := GradeQuiz("B", chosen, 0); err == nil {
 			t.Errorf("chosen key %q should be rejected", chosen)
 		}
 	}
 	if _, err := GradeQuiz("Z", "A", 0); err == nil {
 		t.Error("malformed correct key should be rejected")
+	}
+}
+
+func TestGradeQuizUnsureDeclaration(t *testing.T) {
+	got, err := GradeQuiz("B", QuizUnsureKey, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Correct {
+		t.Error("unsure is not a correct answer")
+	}
+	if got.EventType != types.LearningEventQuizUnsure {
+		t.Errorf("event type = %q, want quiz_unsure", got.EventType)
+	}
+	if got.Weight != 0 {
+		t.Errorf("unsure weight = %v, want 0 (no fold, no penalty)", got.Weight)
+	}
+	// The declaration holds regardless of repeat history — no decay on zero.
+	got, _ = GradeQuiz("B", QuizUnsureKey, 3)
+	if got.Weight != 0 || got.EventType != types.LearningEventQuizUnsure {
+		t.Errorf("repeated unsure graded %+v, want zero-weight quiz_unsure", got)
 	}
 }

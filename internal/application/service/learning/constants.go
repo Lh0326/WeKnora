@@ -101,6 +101,16 @@ var (
 // untyped vars cannot do — and the sweep has no reason to touch it.
 const ReAskWindowHours = 48
 
+// MasteredSessionGapHours is the cross-session verification requirement for
+// the top tier: "mastered" needs correct answers on ≥2 distinct quiz items
+// whose first correct times straddle this gap, so one lucky sitting (or one
+// memorised answer) can never buy it. Same const-not-var rationale as
+// ReAskWindowHours.
+const MasteredSessionGapHours = 48
+
+// MasteredSessionGap is the duration form used by the gate comparison.
+const MasteredSessionGap = MasteredSessionGapHours * time.Hour
+
 // ReadRapidDedup is the refresh shield on the page-read signal: a second
 // open of the same page within it records nothing (it is an F5 or a
 // double-click, not studying). Opens beyond it always land in the timeline;

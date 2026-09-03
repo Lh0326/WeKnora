@@ -18,6 +18,24 @@ func demotableState(now time.Time, idle time.Duration) FoldState {
 	})
 }
 
+// masteredFacts unlocks the top tier for a node whose evidence started
+// `idle` ago: two distinct items answered across the session gap. The
+// passive channel's fixtures need this because the anchor tier is
+// direct-gate capped — indirect citations alone can no longer "earn"
+// familiar/mastered, by design.
+func masteredFacts(now time.Time, idle time.Duration) []DirectQuizFact {
+	base := now.Add(-idle)
+	return []DirectQuizFact{
+		{ItemID: "quiz-a", FirstCorrectAt: base},
+		{ItemID: "quiz-b", FirstCorrectAt: base.Add(MasteredSessionGap + time.Hour)},
+	}
+}
+
+// familiarFacts unlocks the familiar tier (one distinct correct item).
+func familiarFacts(now time.Time, idle time.Duration) []DirectQuizFact {
+	return []DirectQuizFact{{ItemID: "quiz-a", FirstCorrectAt: now.Add(-idle)}}
+}
+
 // A node holding its tier today but decaying toward the gate is due-soon,
 // not demoted; nothing is due when the horizon is short. With the shipped
 // constants forgetting is deliberately slow (weeks), so the classification
@@ -43,7 +61,10 @@ func TestDerivePassiveChangesDemoted(t *testing.T) {
 		"concept/fresh":    demotableState(now, time.Hour),
 		"concept/untouched": {},
 	}
-	summary := derivePassiveChanges(pages, states, now, 20)
+	summary := derivePassiveChanges(pages, states, map[string][]DirectQuizFact{
+		"concept/gone": masteredFacts(now, 200*24*time.Hour),
+		"concept/fresh": masteredFacts(now, time.Hour),
+	}, now, 20)
 
 	if summary.DemotedCount != 1 || summary.DueSoonCount != 0 {
 		t.Fatalf("counts = %d/%d, want 1/0", summary.DemotedCount, summary.DueSoonCount)
@@ -82,8 +103,7 @@ func TestDerivePassiveChangesDueSoon(t *testing.T) {
 	}
 	summary := derivePassiveChanges(pages, map[string]FoldState{
 		"concept/holding": holdingState(now),
-	}, now, 20)
-
+	}, map[string][]DirectQuizFact{"concept/holding": familiarFacts(now, 24*time.Hour)}, now, 20)
 	if summary.DemotedCount != 0 || summary.DueSoonCount != 1 {
 		t.Fatalf("counts = %d/%d, want 0/1", summary.DemotedCount, summary.DueSoonCount)
 	}
@@ -99,7 +119,7 @@ func TestDerivePassiveChangesDueSoon(t *testing.T) {
 	PassiveDueSoonDays = 7
 	summary = derivePassiveChanges(pages, map[string]FoldState{
 		"concept/holding": holdingState(now),
-	}, now, 20)
+	}, nil, now, 20)
 	if summary.DemotedCount != 0 || summary.DueSoonCount != 0 || len(summary.Items) != 0 {
 		t.Fatalf("short horizon must surface nothing, got %+v", summary)
 	}
@@ -125,7 +145,11 @@ func TestDerivePassiveChangesOrderAndLimit(t *testing.T) {
 		"concept/b": shallow,
 		"concept/c": deep,
 	}
-	summary := derivePassiveChanges(pages, states, now, 2)
+	summary := derivePassiveChanges(pages, states, map[string][]DirectQuizFact{
+		"concept/a": masteredFacts(now, 200*24*time.Hour),
+		"concept/b": masteredFacts(now, 200*24*time.Hour),
+		"concept/c": masteredFacts(now, 400*24*time.Hour),
+	}, now, 2)
 
 	if summary.DemotedCount != 3 {
 		t.Fatalf("demoted_count = %d, want 3 (counts ignore the limit)", summary.DemotedCount)

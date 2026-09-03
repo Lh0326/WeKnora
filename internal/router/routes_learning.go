@@ -33,5 +33,6 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.POST("/quiz/:item_id/answer", g.KBAccessRead("kb_id"), learningHandler.SubmitAnswer)
 	// Reading a wiki page is a deliberate low-trust touch (§3.3.6 signal).
 	kbGroup.POST("/read", g.KBAccessRead("kb_id"), learningHandler.RecordRead)
+	kbGroup.POST("/self-assess", g.KBAccessRead("kb_id"), learningHandler.SelfAssess)
 	kbGroup.GET("/timeline", g.KBAccessRead("kb_id"), learningHandler.Timeline)
 }

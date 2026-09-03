@@ -81,12 +81,21 @@ func TestRecommendReviewDueLeads(t *testing.T) {
 		{Slug: "concept/fresh-blind", PageType: "concept", Title: "新盲区"},
 	}
 	// fading: 2 cites long ago — logit 2.0 (p 0.88, anchor mastered-tier
-	// band) decayed over ~120 days far below the mastered gate.
+	// band) decayed over ~120 days far below the mastered gate. The two
+	// distinct-item corrects straddle the session gap, so the direct gate
+	// actually grants the mastered anchor the citations folded.
 	fading := FoldAll(FoldState{}, []Event{
 		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: now.Add(-120 * 24 * time.Hour)},
 		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: now.Add(-120 * 24 * time.Hour)},
 	})
-	recs := recommendNodes(recommendInput{Pages: pages, States: map[string]FoldState{"concept/fading": fading}}, now, nil, 5)
+	recs := recommendNodes(recommendInput{
+		Pages:  pages,
+		States: map[string]FoldState{"concept/fading": fading},
+		DirectFacts: map[string][]DirectQuizFact{"concept/fading": {
+			{ItemID: "q1", FirstCorrectAt: now.Add(-120 * 24 * time.Hour)},
+			{ItemID: "q2", FirstCorrectAt: now.Add(-120 * 24 * time.Hour).Add(MasteredSessionGap + time.Hour)},
+		}},
+	}, now, nil, 5)
 	if len(recs) < 2 {
 		t.Fatalf("recs = %v, want at least 2", slugList(recs))
 	}

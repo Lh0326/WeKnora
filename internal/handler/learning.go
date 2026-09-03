@@ -139,11 +139,19 @@ func (h *LearningHandler) TakeQuiz(c *gin.Context) {
 }
 
 type learningAnswerRequest struct {
-	ChosenKey string `json:"chosen_key" binding:"required"`
+	ChosenKey string `json:"chosen_key" binding:"required,oneof=A B C D E"`
 }
 
 type learningReadRequest struct {
 	Slug string `json:"slug" binding:"required"`
+}
+
+type learningSelfAssessRequest struct {
+	Slug      string `json:"slug" binding:"required"`
+	Direction string `json:"direction" binding:"required,oneof=up down"`
+	// Reason is required for "down" (the skills-matrix interview question):
+	// all | doc_gap | doc_updated | quiz_easy.
+	Reason string `json:"reason"`
 }
 
 // RecordRead godoc — the low-trust "opened this page to read it" touch
@@ -159,6 +167,35 @@ func (h *LearningHandler) RecordRead(c *gin.Context) {
 	}
 	if err := h.learningService.RecordWikiRead(c.Request.Context(), c.Param("kb_id"), req.Slug); err != nil {
 		h.fail(c, err, "Failed to record wiki read")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// SelfAssess godoc — the interactive self-assessment: lifts the score into
+// the claimed band (tier still gated on quiz proof) or demotes with a
+// reason taxonomy whose labels feed content maintenance.
+func (h *LearningHandler) SelfAssess(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req learningSelfAssessRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewValidationError("Invalid request data").WithDetails(err.Error()))
+		return
+	}
+	reason := ""
+	if req.Direction == "down" {
+		switch req.Reason {
+		case "all", "doc_gap", "doc_updated", "quiz_easy":
+			reason = req.Reason
+		default:
+			c.Error(apperrors.NewValidationError("Invalid request data").WithDetails("reason is required for direction=down"))
+			return
+		}
+	}
+	if err := h.learningService.RecordSelfAssess(c.Request.Context(), c.Param("kb_id"), req.Slug, req.Direction == "up", reason); err != nil {
+		h.fail(c, err, "Failed to record self-assessment")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})

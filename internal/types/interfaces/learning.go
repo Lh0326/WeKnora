@@ -43,6 +43,16 @@ type LearningRepository interface {
 	UpsertMastery(ctx context.Context, state *types.MasteryState) error
 	// ListMastery returns every folded node of the subject in one KB.
 	ListMastery(ctx context.Context, scope LearningScope) ([]types.MasteryState, error)
+	// ListLastActivity returns slug → newest raw event time in one KB for
+	// the subject, zero-weight activity included. The read side uses it for
+	// the "studied recently" marker, which must reflect touches (deduped
+	// re-reads, unsure answers) that deliberately do not fold into mastery.
+	ListLastActivity(ctx context.Context, scope LearningScope) (map[string]time.Time, error)
+	// ListSelfAssess returns the latest self-assessment within
+	// SelfAssessVisibleWindow per slug: direction ("up"/"down") plus the raw
+	// event type (carries the down reason) and its time. Read-side only —
+	// the tier display never consumes it; hover cards and the timeline do.
+	ListSelfAssess(ctx context.Context, scope LearningScope) (map[string]SelfAssessMark, error)
 	// GetSubjectPrefs returns the collection opt-out, or (nil, nil) when
 	// the subject never set one.
 	GetSubjectPrefs(ctx context.Context, tenantID uint64, subjectID string) (*types.LearningSubjectPrefs, error)
@@ -62,6 +72,10 @@ type LearningRepository interface {
 	// ListAttempts returns the subject's answer history for one node,
 	// oldest first — the input for repeat-attempt decay.
 	ListAttempts(ctx context.Context, scope LearningScope, slug string) ([]types.LearningQuizAttempt, error)
+	// ListCorrectAttempts returns the subject's correct answers in one KB,
+	// oldest first — the direct-evidence source the tier gate derives its
+	// distinct-item facts from (read side only, never folded).
+	ListCorrectAttempts(ctx context.Context, scope LearningScope) ([]types.LearningQuizAttempt, error)
 
 	// DeleteMastery retires one folded row. Alias reconciliation uses it
 	// after the migrated state is written under the live slug, so a rename
@@ -126,6 +140,11 @@ type LearningService interface {
 	// mastery (the §3.3.6 low-trust read signal). Deduped per slug per
 	// re-ask window; rejects non-node slugs with ErrWikiReadTarget.
 	RecordWikiRead(ctx context.Context, kbID, slug string) error
+	// RecordSelfAssess lands the skills-matrix self-assessment: "up" lifts
+	// the frozen logit into the mastered band (the tier gate still demands
+	// quiz proof), "down" demotes with a reason taxonomy (all / doc_gap /
+	// doc_updated / quiz_easy) whose labels feed content maintenance.
+	RecordSelfAssess(ctx context.Context, kbID, slug string, up bool, reason string) error
 	// RunBackfill replays doc-affinity history into learning events; safe
 	// to call repeatedly (per-scope idempotent).
 	RunBackfill(ctx context.Context) error
@@ -172,6 +191,19 @@ type LearningProgress struct {
 	LitNodes   int                    `json:"lit_nodes"`
 	Levels     map[string]int         `json:"levels"`
 	Units      []LearningUnitProgress `json:"units"`
+	// Today is the daily-engagement digest: answers, correct count, nodes
+	// first lit today, and the consecutive-day learning streak. Derived
+	// from the same events the timeline shows (no new collection), the
+	// Duolingo-style daily loop without its game economy.
+	Today *TodaySummary `json:"today,omitempty"`
+}
+
+// TodaySummary is the per-day engagement digest on the progress header.
+type TodaySummary struct {
+	Answers      int `json:"answers"`
+	CorrectCount int `json:"correct_count"`
+	LitToday     int `json:"lit_today"`
+	StreakDays   int `json:"streak_days"`
 }
 
 // LearningUnitProgress is one folder's rolled-up progress.
@@ -192,10 +224,41 @@ type MasteryView struct {
 	EvidenceCount  int       `json:"evidence_count"`
 	LowConfidence  bool      `json:"low_confidence"`
 	LastEvidenceAt time.Time `json:"last_evidence_at"`
+	// LastActivityAt is the newest raw event time for the node, including
+	// zero-weight activity (deduped re-reads, quiz_unsure answers) that
+	// deliberately does not fold into the mastery state. The constellation
+	// reads it for the "studied within 48h" twinkle: a node the learner
+	// touched today must glow even when the touch carried no score. Zero
+	// when the node has no events at all (consumers fall back to
+	// LastEvidenceAt).
+	LastActivityAt time.Time `json:"last_activity_at"`
 	// Title is the node page's human-readable title, resolved in one batch
 	// at read time (empty when the page no longer resolves).
 	Title string `json:"title,omitempty"`
+	// TierProgress/NextTierHint: same semantics as on Recommendation — the
+	// continuous progress bar inside the tier band and the transparent
+	// path to the next promotion.
+	TierProgress float64 `json:"tier_progress,omitempty"`
+	NextTierHint string  `json:"next_tier_hint,omitempty"`
+	// SelfAssess is the latest self-assessment inside the visibility window,
+	// nil when the person never challenged this node. Display-only: it never
+	// feeds the tier math (the fold already consumed the set-point weight).
+	SelfAssess *SelfAssessMark `json:"self_assess,omitempty"`
 }
+
+// SelfAssessMark is one self-assessment as the read side surfaces it.
+type SelfAssessMark struct {
+	Direction string    `json:"direction"` // "up" | "down"
+	// EventType is the raw event type; for "down" it encodes the reason
+	// (…_all / …_doc_gap / …_doc_updated / …_quiz_easy).
+	EventType string    `json:"event_type"`
+	At        time.Time `json:"occurred_at"`
+}
+
+// SelfAssessVisibleWindow bounds how long a self-assessment stays visible
+// on hover cards — fresher than the twinkle window by design: a challenge
+// is a conversation, not a state.
+const SelfAssessVisibleWindow = 7 * 24 * time.Hour
 
 // PassiveChange is one node's decay-driven (non-action) state change,
 // derived entirely at read time. The Anki deck-list split, transposed:
@@ -271,6 +334,15 @@ type AnswerResult struct {
 	// ("下次复习约在 N 天后"). Nil when there is nothing to retain yet or
 	// the state already sits below the threshold (review now).
 	NextReviewDays *float64 `json:"next_review_days,omitempty"`
+	// Unsure marks an "I'm not sure" declaration: graded as neither right
+	// nor wrong (zero-weight event), so the client can phrase the feedback
+	// honestly instead of scolding an admitted guess.
+	Unsure bool `json:"unsure,omitempty"`
+	// PEffBefore/PEffAfter bracket the submission's effect on the node's
+	// decayed mastery (the fast feedback: "45% → 58%"). Nil for unsure
+	// answers (no fold happens) and when opted out of collection.
+	PEffBefore *float64 `json:"p_eff_before,omitempty"`
+	PEffAfter  *float64 `json:"p_eff_after,omitempty"`
 }
 
 // TimelineItem is one event on the lighting timeline.
@@ -346,4 +418,14 @@ type Recommendation struct {
 	PositiveCount  int     `json:"positive_count,omitempty"`
 	NegativeCount  int     `json:"negative_count,omitempty"`
 	Faded          bool    `json:"faded,omitempty"`
+	// TierProgress is the fast feedback variable: p_eff's position inside
+	// the current tier band (0..1). It moves with every answer even when
+	// the (gated) tier does not, so progress is continuous while promotion
+	// is earned.
+	TierProgress float64 `json:"tier_progress,omitempty"`
+	// NextTierHint names the single most useful next action toward the next
+	// tier (e.g. answer one new quiz item / another item ≥48h later),
+	// making the gate's requirements a visible goal instead of hidden
+	// arithmetic.
+	NextTierHint string `json:"next_tier_hint,omitempty"`
 }

@@ -4,170 +4,198 @@
     <div v-if="collectDisabled && !initialLoading" class="collect-banner">
       {{ $t('knowledgeEditor.learningTab.collectOnNote') }}
     </div>
-    <!-- 头部：进度概览仪表盘 -->
-    <div class="learning-header" v-if="initialLoading">
-      <t-loading size="large" style="margin: 40px auto; display: block;" />
+    <!-- 头部：首屏只保留「今日」一行——任务导向（Khan/Duolingo 首屏模式），
+         总进度仪表盘下移为次屏分区，避免一进页签就被四档+分组+遗忘+推荐
+         全量信息淹没。 -->
+    <!-- 加载态 / 错误态：整幅占位（错误态给重试入口，绝不伪装成"没有数据"） -->
+    <div v-if="initialLoading" class="sky-state">
+      <t-loading size="large" />
     </div>
-    <!-- 错误态与空态分离：网络/服务失败给重试入口，绝不伪装成"没有数据" -->
-    <div class="learning-header learning-header-error" v-else-if="loadFailed">
-      <div class="error-body">
-        <div class="error-text">{{ $t('knowledgeEditor.learningTab.loadError') }}</div>
-        <t-button size="small" variant="outline" @click="refresh()">{{ $t('knowledgeEditor.learningTab.retry') }}</t-button>
-      </div>
+    <div v-else-if="loadFailed" class="sky-state">
+      <div class="error-text">{{ $t('knowledgeEditor.learningTab.loadError') }}</div>
+      <t-button size="small" variant="outline" @click="refresh()">{{ $t('knowledgeEditor.learningTab.retry') }}</t-button>
     </div>
-    <div class="learning-header" v-else>
-      <div class="learning-progress-ring">
-        <svg width="104" height="104" viewBox="0 0 104 104">
-          <circle cx="52" cy="52" r="44" fill="none" stroke="var(--td-bg-color-component, #f0f0f0)" stroke-width="8" />
-          <circle cx="52" cy="52" r="44" fill="none" stroke="var(--td-brand-color, #07c05f)" stroke-width="8"
-            :stroke-dasharray="ringDash" stroke-linecap="round" transform="rotate(-90 52 52)"
-            style="transition: stroke-dasharray 0.6s ease;" />
-          <text x="52" y="50" text-anchor="middle" class="ring-text">{{ displayLit }}</text>
-          <text x="52" y="64" text-anchor="middle" class="ring-sub">/ {{ progress?.total_nodes ?? 0 }}</text>
-        </svg>
+
+    <!-- 单屏星空：左 2/3 知识星图（无边框、标题悬浮于圆图左上空角），右 1/3 数据栏
+         （今日统计→档位→待巩固→分组→推荐，内部滚动），底部固定入口放大查看时间线/画像 -->
+    <div v-else class="sky">
+      <div class="sky-chart">
+        <div class="sky-head">
+          <div class="ts-title">
+            {{ $t('knowledgeEditor.learningTab.title') }}
+            <t-popup trigger="hover" placement="bottom-left" show-arrow :overlay-style="{ maxWidth: '380px' }">
+              <template #content>
+                <div class="howto">
+                  <div class="howto-title">{{ $t('knowledgeEditor.learningTab.howComputedTitle') }}</div>
+                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedSignals') }}</div>
+                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedGate') }}</div>
+                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedDecay') }}</div>
+                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedTiers') }}</div>
+                </div>
+              </template>
+              <span class="help-icon"><HelpCircleIcon size="15" /></span>
+            </t-popup>
+          </div>
+          <div class="ts-line">
+            {{ $t('knowledgeEditor.learningTab.litOf', { lit: displayLit, total: progress?.total_nodes ?? 0 }) }}
+            <span v-if="masteredCount" class="meta-mastered">· {{ $t('knowledgeEditor.learningTab.masteredOf', { n: masteredCount }) }}</span>
+          </div>
+        </div>
+        <LearningConstellation :nodes="constellationNodes" @open="openPage" />
       </div>
-      <div class="learning-progress-meta">
-        <div class="meta-title">
-          {{ $t('knowledgeEditor.learningTab.title') }}
-          <t-popup trigger="hover" placement="bottom-left" show-arrow :overlay-style="{ maxWidth: '380px' }">
-            <template #content>
-              <div class="howto">
-                <div class="howto-title">{{ $t('knowledgeEditor.learningTab.howComputedTitle') }}</div>
-                <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedSignals') }}</div>
-                <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedDecay') }}</div>
-                <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedTiers') }}</div>
-              </div>
-            </template>
-            <span class="help-icon"><HelpCircleIcon size="15" /></span>
-          </t-popup>
-        </div>
-        <div class="meta-line" v-if="progress?.total_nodes">
-          {{ $t('knowledgeEditor.learningTab.litOf', { lit: displayLit, total: progress.total_nodes }) }}
-          <span v-if="masteredCount" class="meta-mastered">· {{ $t('knowledgeEditor.learningTab.masteredOf', { n: masteredCount }) }}</span>
-        </div>
-        <div class="meta-line" v-else>{{ $t('knowledgeEditor.learningTab.noNodes') }}</div>
-        <!-- 四档统计卡片：点击展开该档节点清单 -->
-        <div class="meta-tiers">
-          <button v-for="tier in tierOrder" :key="tier.key" class="tier-stat"
-            :class="{ active: tierExpanded === tier.key, zero: (progress?.levels?.[tier.key] ?? 0) === 0 }"
-            :title="tier.hint" @click="toggleTier(tier.key)">
-            <span class="tier-dot" :style="{ background: tier.color }"></span>
-            <span class="tier-name">{{ tier.label }}</span>
-            <span class="tier-num">{{ tierDisplay(tier.key) }}</span>
-          </button>
-        </div>
-        <div v-if="tierExpanded" class="tier-detail">
-          <div v-if="tierListLoading" class="section-empty">{{ $t('common.loading') }}</div>
-          <div v-else-if="!tierList.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.tierListEmpty') }}</div>
-          <template v-else>
-            <span v-for="m in tierList" :key="m.slug" class="tier-node" :title="m.slug" @click="openPage(m.slug)">
-              <span v-if="tierExpanded === 'unseen' && m.evidence_count > 0" class="tier-dot" style="background: #d4a017;"></span>
-              <span class="tier-node-title">{{ titleOf(m.slug, m.title) }}</span>
-              <span class="tier-node-meta">{{ m.evidence_count }}{{ m.low_confidence ? '?' : '' }}</span>
+      <div class="sky-side">
+        <div class="side-scroll">
+          <!-- 今日处理记录：企业数据整合视角的事实性状态。连续学习天数一类的
+               激励话术属于教育产品语境，不符合 WeKnora（企业级数据管理）定位 -->
+          <div class="side-stats">
+            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayEventsNote')">
+              {{ $t('knowledgeEditor.learningTab.todayEvents', { n: todayTimelineCount }) }}
             </span>
-          </template>
-        </div>
-      </div>
-      <div class="learning-units" v-if="units.length">
-        <div class="units-title" @click="unitsCollapsed = !unitsCollapsed">
-          {{ $t('knowledgeEditor.learningTab.unitsTitle') }}
-          <ChevronRightIcon size="13" class="units-chevron" :class="{ collapsed: unitsCollapsed }" />
-        </div>
-        <div v-show="!unitsCollapsed" class="units-body">
-          <div v-for="u in units" :key="u.folder_id" class="unit-row">
-            <span class="unit-name" :title="u.folder_name || u.folder_id">{{ u.folder_name || $t('knowledgeEditor.learningTab.rootUnit') }}</span>
-            <div class="unit-bar">
-              <div class="unit-bar-fill" :style="{ width: (unitPercent(u) * animT) + '%' }"></div>
-            </div>
-            <span class="unit-count">{{ u.lit }}/{{ u.total }}</span>
+            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayAnswers')">
+              {{ todayAnswersText }}
+            </span>
+            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayLit')">
+              {{ $t('knowledgeEditor.learningTab.todayLit', { n: progress?.today?.lit_today ?? 0 }) }}
+            </span>
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 推荐列表 -->
-    <div class="learning-section">
-      <div class="section-title">{{ $t('knowledgeEditor.learningTab.recommendTitle') }}</div>
-      <div v-if="recommendLoading" class="section-empty">{{ $t('common.loading') }}</div>
-      <div v-else-if="!recommendations.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.recommendEmpty') }}</div>
-      <div v-else class="recommend-list">
-        <div v-for="(rec, idx) in recommendations" :key="rec.slug" class="recommend-card" @click="openPage(rec.slug)">
-          <span class="rec-rank" :class="{ top: idx === 0 }">{{ idx + 1 }}</span>
-          <div class="rec-main">
-            <div class="rec-title-line">
-              <span v-if="pageTypeOf(rec.slug)" class="rec-type-badge" :class="pageTypeOf(rec.slug)">{{ pageTypeText(pageTypeOf(rec.slug)) }}</span>
-              <span class="rec-title" :title="rec.slug">{{ rec.title || rec.slug }}</span>
-              <span v-if="rec.folder_name" class="rec-folder"><FolderIcon size="13" />{{ rec.folder_name }}</span>
+          <!-- 四档统计 + 档位明细 -->
+          <div class="side-block">
+            <div class="meta-tiers">
+              <button v-for="tier in tierOrder" :key="tier.key" class="tier-stat"
+                :class="{ active: tierExpanded === tier.key, zero: (progress?.levels?.[tier.key] ?? 0) === 0 }"
+                :title="tier.hint" @click="toggleTier(tier.key)">
+                <span class="tier-dot" :style="{ background: tier.color }"></span>
+                <span class="tier-name">{{ tier.label }}</span>
+                <span class="tier-num">{{ tierDisplay(tier.key) }}</span>
+              </button>
             </div>
-            <div class="rec-reason-line">
-              <span class="rec-reason-tag" :style="reasonStyle(rec.reason)">{{ reasonText(rec.reason) }}</span>
-              <!-- 档位徽标：悬停展示量化归因（有效掌握度/证据构成/如何提升） -->
-              <t-popup trigger="hover" placement="bottom" show-arrow :overlay-style="{ maxWidth: '340px' }">
-                <template #content>
-                  <div class="explain">
-                    <div class="explain-title">{{ $t('knowledgeEditor.learningTab.explainTitle') }}</div>
-                    <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainPEff', { p: Math.round((rec.p_eff ?? 0) * 100) }) }}（{{ $t('knowledgeEditor.learningTab.explainThresholds') }}）</div>
-                    <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainEvidence', { pos: rec.positive_count ?? 0, neg: rec.negative_count ?? 0 }) }}</div>
-                    <div v-if="rec.faded" class="explain-line explain-warn">{{ $t('knowledgeEditor.learningTab.explainFaded') }}</div>
-                    <div class="explain-line explain-improve">{{ $t('knowledgeEditor.learningTab.explainImprove') }}</div>
-                  </div>
-                </template>
-                <span v-if="rec.level" class="rec-level" :style="levelStyle(rec.level, rec.faded)"
-                  :class="{ faded: rec.faded }">
-                  <span class="tier-dot" :style="{ background: fadedColor(rec) }"></span>{{ levelLabel(rec.level, rec.faded) }}
+            <div v-if="tierExpanded" class="tier-detail">
+              <div v-if="tierListLoading" class="section-empty">{{ $t('common.loading') }}</div>
+              <div v-else-if="!tierList.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.tierListEmpty') }}</div>
+              <template v-else>
+                <span v-for="m in tierList" :key="m.slug" class="tier-node"
+                  :title="$t('knowledgeEditor.learningTab.tierNodeTip', { p: Math.round((m.p_eff ?? 0) * 100), n: m.evidence_count }) + (m.self_assess ? '\n' + selfAssessText(m.self_assess) : '')"
+                  @click="openPage(m.slug)">
+                  <span v-if="tierExpanded === 'unseen' && m.evidence_count > 0" class="tier-dot" style="background: #d4a017;"></span>
+                  <span class="tier-node-title">{{ titleOf(m.slug, m.title) }}</span>
+                  <span class="tier-node-meta">{{ m.evidence_count }}{{ m.low_confidence ? '?' : '' }}</span>
                 </span>
-              </t-popup>
+              </template>
             </div>
           </div>
-          <div class="rec-actions" @click.stop>
-            <t-button size="small" variant="outline" @click="openPage(rec.slug)">
-              {{ $t('knowledgeEditor.learningTab.openPage') }}<ChevronRightIcon size="14" style="margin-left: 2px;" />
-            </t-button>
-            <!-- 图谱直达：跳到以该节点为中心的局部视图，环色即掌握档 -->
-            <t-button size="small" variant="outline" @click="openInGraph(rec.slug)">
-              {{ $t('knowledgeEditor.learningTab.inGraph') }}
-            </t-button>
-            <t-button v-if="rec.has_quiz" size="small" @click="startQuiz(rec)">
-              {{ rec.quiz_count ? $t('knowledgeEditor.learningTab.practiceN', { n: rec.quiz_count }) : $t('knowledgeEditor.learningTab.practice') }}
-            </t-button>
+          <!-- 今日待巩固 -->
+          <div class="side-block" v-if="todayTodo.length">
+            <div class="side-title">{{ $t('knowledgeEditor.learningTab.todayCardTitle') }}</div>
+            <div class="todo-list">
+              <div v-for="td in todayTodo" :key="td.slug" class="todo-row" @click="openPage(td.slug)">
+                <span class="todo-tag" :style="todoTagStyle(td.kind)">{{ todoTagText(td.kind) }}</span>
+                <span class="todo-title" :title="$t('knowledgeEditor.learningTab.hoverOpenNode')">{{ td.title }}</span>
+                <span class="todo-actions" @click.stop>
+                  <t-button v-if="td.hasQuiz" size="small" @click="startQuiz({ slug: td.slug, title: td.title, has_quiz: true } as any)">
+                    {{ $t('knowledgeEditor.learningTab.practice') }}
+                  </t-button>
+                  <t-button size="small" variant="outline" @click="openPage(td.slug)">
+                    {{ $t('knowledgeEditor.learningTab.openPage') }}
+                  </t-button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <!-- 分组进度 -->
+          <div class="side-block units-compact" v-if="units.length">
+            <div class="units-title" @click="unitsCollapsed = !unitsCollapsed">
+              {{ $t('knowledgeEditor.learningTab.unitsTitle') }}
+              <ChevronRightIcon size="13" class="units-chevron" :class="{ collapsed: unitsCollapsed }" />
+            </div>
+            <div v-show="!unitsCollapsed" class="units-body">
+              <div v-for="u in units" :key="u.folder_id" class="unit-row">
+                <span class="unit-name" :title="u.folder_name || u.folder_id">{{ u.folder_name || $t('knowledgeEditor.learningTab.rootUnit') }}</span>
+                <div class="unit-bar">
+                  <div class="unit-bar-fill" :style="{ width: (unitPercent(u) * animT) + '%' }"></div>
+                </div>
+                <span class="unit-count">{{ u.lit }}/{{ u.total }}</span>
+              </div>
+            </div>
+          </div>
+          <!-- 下一步看什么：窄栏紧凑行 -->
+          <div class="side-block">
+            <div class="side-title">{{ $t('knowledgeEditor.learningTab.recommendTitle') }}</div>
+            <div v-if="recommendLoading" class="section-empty">{{ $t('common.loading') }}</div>
+            <div v-else-if="!recommendations.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.recommendEmpty') }}</div>
+            <div v-else class="rec-mini-list">
+              <div v-for="(rec, idx) in recommendations" :key="rec.slug" class="rec-mini"
+                :class="{ featured: idx === 0 }" @click="openPage(rec.slug)">
+                <span class="rec-rank" :class="{ top: idx === 0 }">{{ idx + 1 }}</span>
+                <div class="rec-mini-main">
+                  <div class="rec-mini-title">
+                    <span v-if="pageTypeOf(rec.slug)" class="rec-type-badge" :class="pageTypeOf(rec.slug)">{{ pageTypeText(pageTypeOf(rec.slug)) }}</span>
+                    <span class="rec-mini-name" :title="$t('knowledgeEditor.learningTab.hoverOpenNode')">{{ rec.title || titleOf(rec.slug) }}</span>
+                  </div>
+                  <div class="rec-mini-meta">
+                    <span class="rec-reason-tag" :style="reasonStyle(rec.reason)">{{ reasonText(rec.reason) }}</span>
+                    <t-popup trigger="hover" placement="bottom" show-arrow :overlay-style="{ maxWidth: '340px' }">
+                      <template #content>
+                        <div class="explain">
+                          <div class="explain-title">{{ $t('knowledgeEditor.learningTab.explainTitle') }}</div>
+                          <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainPEff', { p: Math.round((rec.p_eff ?? 0) * 100) }) }}（{{ $t('knowledgeEditor.learningTab.explainThresholds') }}）</div>
+                          <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainEvidence', { pos: rec.positive_count ?? 0, neg: rec.negative_count ?? 0 }) }}</div>
+                          <div v-if="rec.faded" class="explain-line explain-warn">{{ $t('knowledgeEditor.learningTab.explainFaded') }}</div>
+                          <div class="explain-line explain-improve">{{ $t('knowledgeEditor.learningTab.explainImprove') }}</div>
+                          <!-- 技能矩阵自评轨：挑战这个判断——更熟则抬分+引导验证，更生则按原因降档 -->
+                          <div class="explain-self-assess">
+                            <span class="esa-label">{{ $t('knowledgeEditor.learningTab.selfAssessSection') }}</span>
+                            <div class="esa-buttons">
+                              <button class="esa-btn up" @click="confirmSelfAssessUp(rec)">{{ $t('knowledgeEditor.learningTab.selfAssessUp') }}</button>
+                              <button class="esa-btn down" @click="openSelfAssessDown(rec)">{{ $t('knowledgeEditor.learningTab.selfAssessDown') }}</button>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                      <span v-if="rec.level" class="rec-level" :style="levelStyle(rec.level, rec.faded)"
+                        :class="{ faded: rec.faded }">
+                        <span class="tier-dot" :style="{ background: fadedColor(rec) }"></span>{{ levelLabel(rec.level, rec.faded) }}
+                      </span>
+                    </t-popup>
+                    <span class="rec-progress" v-if="rec.level && rec.level !== 'unseen'">
+                      <span class="rec-progress-track">
+                        <span class="rec-progress-fill" :style="{ width: Math.round((rec.tier_progress ?? 0) * 100) + '%', background: fadedColor(rec) }"></span>
+                      </span>
+                    </span>
+                  </div>
+                  <div v-if="rec.next_tier_hint && rec.level" class="rec-hint-line">{{ hintText(rec.next_tier_hint) }}</div>
+                </div>
+                <div class="rec-mini-actions" @click.stop>
+                  <t-button v-if="rec.has_quiz" size="small" @click="startQuiz(rec)">
+                    {{ rec.quiz_count ? $t('knowledgeEditor.learningTab.practiceN', { n: rec.quiz_count }) : $t('knowledgeEditor.learningTab.practice') }}
+                  </t-button>
+                  <t-button v-else size="small" variant="outline" @click="openPage(rec.slug)">
+                    {{ $t('knowledgeEditor.learningTab.openPage') }}
+                  </t-button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- 遗忘动态：非用户操作导致的被动变化，读时派生、与时间线（主动事件）
-         分栏——Anki 的"到期队列 vs 复习历史"分区：被动信息永不刷掉主动记录 -->
-    <div class="learning-section" v-if="passiveChanges && (passiveChanges.demoted_count > 0 || passiveChanges.due_soon_count > 0)">
-      <div class="section-title">{{ $t('knowledgeEditor.learningTab.changesTitle') }}</div>
-      <div class="changes-badges">
-        <span v-if="passiveChanges.demoted_count > 0" class="changes-badge demoted">
-          {{ $t('knowledgeEditor.learningTab.changesDemoted', { n: passiveChanges.demoted_count }) }}
-        </span>
-        <span v-if="passiveChanges.due_soon_count > 0" class="changes-badge due">
-          {{ $t('knowledgeEditor.learningTab.changesDue', { n: passiveChanges.due_soon_count }) }}
-        </span>
-      </div>
-      <div class="changes-list">
-        <div v-for="ch in passiveChanges.items" :key="ch.slug" class="changes-row" @click="openPage(ch.slug)">
-          <span class="rec-title" :title="ch.slug">{{ ch.title || ch.slug }}</span>
-          <span class="changes-tier">
-            <span class="tier-dot" :style="{ background: tierColor(ch.anchor_level) }"></span>{{ levelLabel(ch.anchor_level) }}
-            <span class="changes-arrow">→</span>
-            <span class="tier-dot" :style="{ background: tierColor(ch.view_level) }"></span>{{ levelLabel(ch.view_level) }}
-          </span>
-          <span class="changes-p">{{ Math.round(ch.base_p * 100) }}% → {{ Math.round(ch.p_eff * 100) }}%</span>
-          <span class="changes-hint" :class="{ overdue: ch.demoted }">
-            {{ ch.demoted
-              ? $t('knowledgeEditor.learningTab.changesIdle', { d: Math.round(ch.days_idle) })
-              : $t('knowledgeEditor.learningTab.changesNext', { n: Math.ceil(ch.next_review_days ?? 0) }) }}
-          </span>
+        <!-- 固定底栏：放大查看时间线与画像；时间线按钮带"今日 N 条"徽标，
+             学完回页签不点开抽屉也能一眼看到今天的记录 -->
+        <div class="side-foot">
+          <t-button size="small" variant="outline" @click="timelineDrawer = true">
+            {{ $t('knowledgeEditor.learningTab.timelineTitle') }}
+            <span v-if="todayTimelineCount > 0" class="foot-badge"
+              :title="$t('knowledgeEditor.learningTab.timelineTodayCount', { n: todayTimelineCount })">
+              {{ todayTimelineCount }}
+            </span>
+          </t-button>
+          <t-button size="small" variant="outline" @click="profileDrawer = true">
+            {{ $t('knowledgeEditor.learningTab.profileTitle') }}
+          </t-button>
         </div>
       </div>
     </div>
 
-    <!-- 测验答题卡 -->
-    <div class="learning-section" ref="quizSectionRef" v-if="quiz.active">
-      <div class="section-title">{{ $t('knowledgeEditor.learningTab.quizTitle', { slug: quiz.title }) }}</div>
+    <!-- 测验答题抽屉：放大作答，不打断单屏星空布局 -->
+    <t-drawer :visible="quiz.active" size="600px" :footer="false"
+      :header="$t('knowledgeEditor.learningTab.quizTitle', { slug: quiz.title })" @close="closeQuiz()">
       <div v-if="collectDisabled" class="collect-note">
         {{ $t('knowledgeEditor.learningTab.optedOutNote') }}
       </div>
@@ -181,23 +209,33 @@
             <span class="option-key">{{ key }}</span>
             <span class="option-text">{{ text }}</span>
           </div>
+          <!-- 元认知出口：「不确定」按申报处理——零权重、不罚分，看解析后再来 -->
+          <div class="quiz-option unsure" :class="{ selected: quiz.chosen === 'E' }" @click="chooseOption('E')">
+            <span class="option-key">E</span>
+            <span class="option-text">{{ $t('knowledgeEditor.learningTab.unsureOption') }}</span>
+          </div>
         </div>
         <div class="quiz-footer">
           <t-button size="small" :disabled="!quiz.chosen || quiz.result !== null" @click="submitAnswer">{{ $t('knowledgeEditor.learningTab.submitAnswer') }}</t-button>
           <span v-if="quiz.items.length > 1" class="quiz-progress">{{ quiz.index + 1 }} / {{ quiz.items.length }}</span>
           <t-button v-if="quiz.result !== null && quiz.index < quiz.items.length - 1" size="small" variant="outline" @click="nextQuestion">{{ $t('knowledgeEditor.learningTab.nextQuestion') }}</t-button>
-          <t-button size="small" variant="text" @click="closeQuiz">{{ $t('knowledgeEditor.learningTab.closeQuiz') }}</t-button>
           <span class="quiz-kbd-hint">{{ $t('knowledgeEditor.learningTab.kbdHint') }}</span>
         </div>
-        <div v-if="quiz.result !== null" class="quiz-result" :class="{ ok: quiz.result.correct }">
-          <div class="result-line">{{ quiz.result.correct ? $t('knowledgeEditor.learningTab.answerCorrect') : $t('knowledgeEditor.learningTab.answerWrong') }}</div>
+        <div v-if="quiz.result !== null" class="quiz-result" :class="{ ok: quiz.result.correct && !quiz.result.unsure, unsure: quiz.result.unsure }">
+          <div class="result-line">
+            {{ quiz.result.unsure
+              ? $t('knowledgeEditor.learningTab.answerUnsure')
+              : quiz.result.correct ? $t('knowledgeEditor.learningTab.answerCorrect') : $t('knowledgeEditor.learningTab.answerWrong') }}
+          </div>
+          <div v-if="quiz.result.unsure" class="result-schedule">{{ $t('knowledgeEditor.learningTab.unsureNote') }}</div>
+          <div v-if="pEffMoveText" class="result-level">{{ pEffMoveText }}</div>
           <div v-if="levelChangeText" class="result-level">{{ levelChangeText }}</div>
           <div v-if="reviewScheduleText" class="result-schedule">{{ reviewScheduleText }}</div>
           <div class="result-explanation">{{ quiz.result.explanation }}</div>
           <div v-if="currentSourceDocs.length" class="result-refs">
             <span class="result-refs-label">{{ $t('knowledgeEditor.learningTab.evidenceSource') }}</span>
             <a v-for="doc in currentSourceDocs" :key="doc.knowledge_id" href="#"
-              class="result-ref-link" :title="doc.knowledge_id"
+              class="result-ref-link" :title="$t('knowledgeEditor.learningTab.evidenceSourceTip')"
               @click.prevent="emit('open-source-doc', doc.knowledge_id)">
               {{ doc.title || doc.knowledge_id }}<span v-if="doc.chunk_count > 1" class="result-ref-count">×{{ doc.chunk_count }}</span>
             </a>
@@ -208,23 +246,22 @@
         </div>
       </template>
       <div v-else class="section-empty">{{ $t('knowledgeEditor.learningTab.quizEmpty') }}</div>
-    </div>
+    </t-drawer>
 
-    <!-- 点亮时间线 -->
-    <div class="learning-section">
-      <div class="section-title">
-        {{ $t('knowledgeEditor.learningTab.timelineTitle') }}
-        <span class="tl-filters">
-          <button v-for="f in timelineFilters" :key="f.key" class="tl-filter" :class="{ active: timelineFilter === f.key }"
-            @click="timelineFilter = f.key">{{ f.label }}</button>
-        </span>
+    <!-- 点亮时间线：右栏底部入口点击后放大查看 -->
+    <t-drawer v-model:visible="timelineDrawer" size="820px" :footer="false"
+      :header="$t('knowledgeEditor.learningTab.timelineTitle')">
+      <div class="tl-filters">
+        <button v-for="f in timelineFilters" :key="f.key" class="tl-filter" :class="{ active: timelineFilter === f.key }"
+          @click="timelineFilter = f.key">{{ f.label }}</button>
       </div>
       <div v-if="initialLoading" class="section-empty"><t-loading size="small" /></div>
       <div v-else-if="!filteredTimeline.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.timelineEmpty') }}</div>
       <template v-else>
         <div class="tl-node-filters">
           <button v-for="c in timelineNodesVisible" :key="c.slug" class="tl-node-chip"
-            :class="{ active: selectedNodeSlugs.has(c.slug) }" :title="c.slug"
+            :class="{ active: selectedNodeSlugs.has(c.slug) }"
+            :title="$t('knowledgeEditor.learningTab.tlNodeChipTip', { n: c.count })"
             @click="toggleNodeFilter(c.slug)">{{ c.title }}<span class="tl-node-count">{{ c.count }}</span></button>
           <button v-if="timelineNodeChips.length > 8" class="tl-node-chip more"
             @click="timelineNodesCollapsed = !timelineNodesCollapsed">
@@ -236,7 +273,7 @@
             <template v-for="group in groupedTimeline" :key="group.label">
               <div class="tl-group-header">{{ group.label }}</div>
               <div v-for="item in group.items" :key="item.key" class="timeline-item"
-                :title="item.event_type === 're_ask' ? $t('knowledgeEditor.learningTab.reAskHint') : item.slug">
+                :title="item.event_type === 're_ask' ? $t('knowledgeEditor.learningTab.reAskHint') : formatTime(item.occurred_at)">
                 <span class="tl-dot" :class="`ev-${item.event_type}`"></span>
                 <span class="tl-type">{{ eventText(item.event_type) }}</span>
                 <span v-if="item.page_type" class="tl-badge" :class="`tl-badge-${item.page_type}`">{{ pageTypeText(item.page_type) }}</span>
@@ -255,11 +292,11 @@
           </div>
         </div>
       </template>
-    </div>
+    </t-drawer>
 
-    <!-- 画像管理 -->
-    <div class="learning-section">
-      <div class="section-title">{{ $t('knowledgeEditor.learningTab.profileTitle') }}</div>
+    <!-- 画像管理：右栏底部入口点击后放大查看 -->
+    <t-drawer v-model:visible="profileDrawer" size="560px" :footer="false"
+      :header="$t('knowledgeEditor.learningTab.profileTitle')">
       <div class="profile-scope-note">{{ $t('knowledgeEditor.learningTab.profileScopeNote') }}</div>
       <div class="profile-summary">{{ profileSummary }}</div>
       <div v-if="collectDisabled" class="collect-note">{{ $t('knowledgeEditor.learningTab.collectOnNote') }}</div>
@@ -274,7 +311,24 @@
         <t-button size="small" variant="outline" :loading="exporting" @click="exportProfile">{{ $t('knowledgeEditor.learningTab.export') }}</t-button>
         <t-button size="small" theme="danger" variant="outline" @click="openDeleteDialog">{{ $t('knowledgeEditor.learningTab.delete') }}</t-button>
       </div>
-    </div>
+    </t-drawer>
+
+    <!-- 自评「更生」原因弹窗：技能矩阵面谈问题——哪方面不熟？四原因各自映射降档力度与内容反馈标签 -->
+    <t-dialog v-model:visible="selfAssessDownOpen" :header="$t('knowledgeEditor.learningTab.selfAssessDialogTitle')"
+      :confirm-btn="{ content: $t('knowledgeEditor.learningTab.selfAssessSubmit'), disabled: !selfAssessReason }"
+      @confirm="submitSelfAssessDown">
+      <div class="sa-dialog">
+        <div class="sa-node">{{ selfAssessTargetTitle }}</div>
+        <div v-for="opt in selfAssessReasonOptions" :key="opt.value" class="sa-option"
+          :class="{ selected: selfAssessReason === opt.value }" @click="selfAssessReason = opt.value">
+          <span class="sa-radio"></span>
+          <div>
+            <div class="sa-option-label">{{ opt.label }}</div>
+            <div class="sa-option-hint">{{ opt.hint }}</div>
+          </div>
+        </div>
+      </div>
+    </t-dialog>
 
     <t-dialog v-model:visible="confirmDelete" :header="$t('knowledgeEditor.learningTab.deleteConfirmTitle')"
       :confirm-btn="{ content: $t('knowledgeEditor.learningTab.delete'), theme: 'danger', disabled: !deleteAcknowledge }" @confirm="doDelete">
@@ -300,11 +354,13 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { Button as TButton, Dialog as TDialog, MessagePlugin, Popup as TPopup, Switch as TSwitch } from 'tdesign-vue-next'
-import { ChevronRightIcon, FolderIcon, HelpCircleIcon } from 'tdesign-icons-vue-next'
+import { Button as TButton, Dialog as TDialog, Drawer as TDrawer, MessagePlugin, Popup as TPopup, Switch as TSwitch } from 'tdesign-vue-next'
+import { ChevronRightIcon, HelpCircleIcon } from 'tdesign-icons-vue-next'
+import LearningConstellation from './LearningConstellation.vue'
 import {
   getLearningProgress, getLearningRecommend, getLearningQuiz, submitLearningAnswer,
-  getLearningTimeline, exportLearningProfile, deleteLearningProfile,
+  getLearningTimeline, exportLearningProfile, deleteLearningProfile, selfAssess,
+  type SelfAssessDownReason,
   getLearningSettings, updateLearningSettings, getLearningMastery, getLearningChanges,
   type LearningProgress, type Recommendation, type QuizQuestion, type AnswerResult, type TimelineItem, type MasteryView, type PassiveChangesSummary,
 } from '@/api/learning'
@@ -379,16 +435,17 @@ watch(progress, (p) => {
   }
   animRAF = requestAnimationFrame(step)
 })
-const ringDash = computed(() => {
-  const pct = progress.value?.total_nodes ? progress.value.lit_nodes / progress.value.total_nodes : 0
-  return `${(pct * animT.value * 276.5).toFixed(1)} 276.5`
-})
 const displayLit = computed(() => Math.round((progress.value?.lit_nodes ?? 0) * animT.value))
 function tierDisplay(key: string): number {
   return Math.round((progress.value?.levels?.[key] ?? 0) * animT.value)
 }
 const units = computed(() => progress.value?.units || [])
+// 分组进度默认展开：恰好填满驾驶舱右栏与星图等高的剩余空间（替代被合并的旧分区）
 const unitsCollapsed = ref(false)
+// 底部两块低频分区的折叠状态：时间线默认展开（课题核心演示物），画像默认收起。
+// 时间线/画像改为放大抽屉：默认关闭，右栏底部按钮进入
+const timelineDrawer = ref(false)
+const profileDrawer = ref(false)
 const quizCurrent = computed(() => quiz.value.items[quiz.value.index] || null)
 function unitPercent(u: { lit: number; total: number }) {
   return u.total ? Math.round((u.lit / u.total) * 100) : 0
@@ -419,6 +476,17 @@ function levelStyle(level: string, faded?: boolean): { background: string; color
 
 // 四档卡片展开的节点清单：懒加载一次掌握度列表并缓存。
 const masteryList = ref<MasteryView[] | null>(null)
+// 知识星图的数据源：与档位清单共用一份缓存，refresh 时后台补拉一次。
+const constellationNodes = computed<MasteryView[]>(() => masteryList.value ?? [])
+async function ensureMasteryList() {
+  if (masteryList.value) return
+  try {
+    const res = await getLearningMastery(props.knowledgeBaseId)
+    masteryList.value = (((res as any).data ?? res) as MasteryView[])
+  } catch {
+    masteryList.value = []
+  }
+}
 // slug→中文标题映射兜底：时间线接口自带 Title，聚合后供任何缺标题的
 // 显示点（档位清单等）回退，消灭"显示 slug 路径"的整类问题。
 const slugTitleMap = computed(() => {
@@ -507,9 +575,86 @@ function eventText(type: string): string {
     wiki_tool_read: t('knowledgeEditor.learningTab.evRead'),
     quiz_correct: t('knowledgeEditor.learningTab.evQuizOk'),
     quiz_wrong: t('knowledgeEditor.learningTab.evQuizBad'),
+    quiz_unsure: t('knowledgeEditor.learningTab.evUnsure'),
     backfill_cite: t('knowledgeEditor.learningTab.evBackfill'),
+    self_assess_up: t('knowledgeEditor.learningTab.evSelfAssessUp'),
+    self_assess_down_all: t('knowledgeEditor.learningTab.evSelfAssessDownAll'),
+    self_assess_down_doc_gap: t('knowledgeEditor.learningTab.evSelfAssessDownDocGap'),
+    self_assess_down_doc_updated: t('knowledgeEditor.learningTab.evSelfAssessDownDocUpdated'),
+    self_assess_down_quiz_easy: t('knowledgeEditor.learningTab.evSelfAssessDownQuizEasy'),
   }
   return map[type] || type
+}
+
+// 下档路径提示：把直接证据门控的解锁条件写成可达目标（快变量的"下一步"）。
+function hintText(hint: string): string {
+  const map: Record<string, string> = {
+    first_touch: t('knowledgeEditor.learningTab.hintFirstTouch'),
+    quiz_unlock_familiar: t('knowledgeEditor.learningTab.hintQuizUnlockFamiliar'),
+    quiz_unlock_mastered: t('knowledgeEditor.learningTab.hintQuizUnlockMastered'),
+    grow_mastery: t('knowledgeEditor.learningTab.hintGrowMastery'),
+    keep_reviewing: t('knowledgeEditor.learningTab.hintKeepReviewing'),
+  }
+  return map[hint] || ''
+}
+
+// 今日答题摘要：企业产品语境——始终给事实性数字，不做"还没开始学习"式的提醒。
+const todayAnswersText = computed(() => {
+  const td = progress.value?.today
+  return t('knowledgeEditor.learningTab.todayAnswers', { n: td?.answers ?? 0, m: td?.correct_count ?? 0 })
+})
+
+// 今日待巩固：被动遗忘（已降档/临近降档）+ 主动推荐中的错题重练/反复追问/
+// 前置阻塞，合并去重为一张待办清单——"今天该做什么"一眼可答。
+type TodoKind = 'demoted' | 'due' | 'remedial' | 'struggling' | 'stuck'
+interface TodoRow { slug: string; title: string; kind: TodoKind; detail: string; hasQuiz: boolean }
+const todayTodo = computed<TodoRow[]>(() => {
+  const bySlug = new Map<string, TodoRow>()
+  const rank: Record<TodoKind, number> = { demoted: 0, due: 1, remedial: 2, struggling: 3, stuck: 4 }
+  const put = (row: TodoRow) => {
+    const prev = bySlug.get(row.slug)
+    if (!prev || rank[row.kind] < rank[prev.kind]) bySlug.set(row.slug, row)
+  }
+  for (const ch of passiveChanges.value?.items ?? []) {
+    put({
+      slug: ch.slug, title: ch.title || ch.slug,
+      kind: ch.demoted ? 'demoted' : 'due',
+      detail: ch.demoted
+        ? t('knowledgeEditor.learningTab.changesIdle', { d: Math.round(ch.days_idle) })
+        : t('knowledgeEditor.learningTab.changesNext', { n: Math.ceil(ch.next_review_days ?? 0) }),
+      hasQuiz: false, // 被动通道不带题库信息，直达阅读即可
+    })
+  }
+  for (const r of recommendations.value) {
+    const kind: TodoKind | null =
+      r.reason === 'remedial' ? 'remedial'
+        : r.reason === 'struggling' ? 'struggling'
+          : r.reason === 'prerequisite-stuck' ? 'stuck'
+            : null
+    if (!kind) continue
+    put({ slug: r.slug, title: r.title || r.slug, kind, detail: '', hasQuiz: r.has_quiz })
+  }
+  return [...bySlug.values()].sort((a, b) => rank[a.kind] - rank[b.kind] || a.title.localeCompare(b.title)).slice(0, 8)
+})
+function todoTagText(kind: TodoKind): string {
+  const map: Record<TodoKind, string> = {
+    demoted: t('knowledgeEditor.learningTab.todoDemoted'),
+    due: t('knowledgeEditor.learningTab.todoDue'),
+    remedial: t('knowledgeEditor.learningTab.reasonRemedialShort'),
+    struggling: t('knowledgeEditor.learningTab.reasonStrugglingShort'),
+    stuck: t('knowledgeEditor.learningTab.reasonStuckShort'),
+  }
+  return map[kind]
+}
+function todoTagStyle(kind: TodoKind): { background: string; color: string } {
+  const map: Record<TodoKind, { background: string; color: string }> = {
+    demoted: { background: 'rgba(213, 73, 65, 0.10)', color: '#c8383f' },
+    due: { background: 'rgba(212, 160, 23, 0.12)', color: '#a87b10' },
+    remedial: { background: 'rgba(213, 73, 65, 0.10)', color: '#c8383f' },
+    struggling: { background: 'rgba(212, 160, 23, 0.12)', color: '#a87b10' },
+    stuck: { background: 'rgba(227, 115, 24, 0.12)', color: '#e37318' },
+  }
+  return map[kind]
 }
 const { locale } = useI18n()
 function formatTime(iso: string): string {
@@ -534,7 +679,7 @@ function filterOf(type: string): TlFilter {
   if (type === 'answer_cite' || type === 'backfill_cite' || type === 'topic_signal' || type === 'wiki_tool_read') return 'cite'
   if (type === 'cross_ref') return 'cross'
   if (type === 're_ask') return 'reask'
-  if (type === 'quiz_correct' || type === 'quiz_wrong') return 'quiz'
+  if (type === 'quiz_correct' || type === 'quiz_wrong' || type === 'quiz_unsure') return 'quiz'
   return 'other'
 }
 const filteredTimeline = computed(() => {
@@ -630,7 +775,7 @@ async function refresh() {
       getLearningChanges(props.knowledgeBaseId, 20),
     ])
     progress.value = (p as any).data ?? p
-    recommendations.value = (r as any).data ?? r ?? []
+    recommendations.value = (r as any).data ?? []
     timeline.value = ((tl as any).data ?? tl) as TimelineItem[]
     timelineTotal.value = ((tl as any).total ?? 0) as number
     passiveChanges.value = ((ch as any).data ?? ch) as PassiveChangesSummary
@@ -639,6 +784,7 @@ async function refresh() {
     timelinePage.value = 1
     collectDisabled.value = (s as any).data?.collect_disabled ?? false
     masteryList.value = null // 画像可能已变化，档位清单缓存失效
+    ensureMasteryList() // 星图随刷新重建
     loadFailed.value = false
   } catch (err) {
     console.error('[LearningTab] refresh failed:', err)
@@ -679,8 +825,6 @@ async function loadMoreTimeline() {
   }
 }
 
-const quizSectionRef = ref<HTMLElement | null>(null)
-
 // 作答前后档位对比：掌握度变化透明可见（推演 2.3 的"实时看到行为如何改变掌握度"）。
 // 停采时不显示（本就不记录）；档位未变时也如实显示当前档位与 p_eff，让"分数在动"可见。
 // 刻意不展示 ±权重数值：形成性练习的研究共识是负分框架损害动机，档位与概率已足够透明。
@@ -706,6 +850,17 @@ const reviewScheduleText = computed(() => {
   if (days == null) return t('knowledgeEditor.learningTab.reviewNow')
   return t('knowledgeEditor.learningTab.nextReviewDays', { n: Math.max(1, Math.round(days)) })
 })
+// 快变量正反馈：作答前后的有效掌握度对比（服务端折叠前后各取一次）。
+// 首次作答无 before（节点此前无状态），只显示"→ 72%"式单值。
+const pEffMoveText = computed(() => {
+  const r = quiz.value.result
+  if (!r || collectDisabled.value) return ''
+  const after = r.p_eff_after
+  if (after == null) return ''
+  const a = Math.round(after * 100)
+  if (r.p_eff_before == null) return t('knowledgeEditor.learningTab.pEffMove', { from: '—', to: a })
+  return t('knowledgeEditor.learningTab.pEffMove', { from: Math.round(r.p_eff_before * 100), to: a })
+})
 // 当前题的出处文档：作答后的溯源链接数据源。
 const currentSourceDocs = computed(() => quizCurrent.value?.source_docs ?? [])
 async function currentMasteryOf(slug: string): Promise<MasteryView | null> {
@@ -718,11 +873,17 @@ async function currentMasteryOf(slug: string): Promise<MasteryView | null> {
   }
 }
 
+// Bug fix: generation counter — when quiz A is closed and quiz B opened
+// quickly, A's late-arriving response would overwrite B's items/levelBefore
+// (wrong questions displayed under B's slug, wrong mastery comparison).
+let quizGeneration = 0
 async function startQuiz(rec: Recommendation) {
+  const gen = ++quizGeneration
   quiz.value = { active: true, slug: rec.slug, title: rec.title || rec.slug, loading: true, items: [], index: 0, chosen: '', result: null, levelBefore: '', levelAfter: '', levelAfterP: 0, levelBeforeFaded: false, levelAfterFaded: false }
   const [before] = await Promise.all([currentMasteryOf(rec.slug), (async () => {
     try {
       const res = await getLearningQuiz(props.knowledgeBaseId, rec.slug)
+      if (gen !== quizGeneration) return // a newer quiz session superseded this one
       quiz.value.items = ((res as any).data ?? res) as QuizQuestion[]
     } catch (err) {
       // 取题失败给出明确反馈，而不是静默渲染"暂无题目"的误导性空态。
@@ -733,18 +894,29 @@ async function startQuiz(rec: Recommendation) {
       quiz.value.loading = false
     }
   })()])
+  if (gen !== quizGeneration) return // stale session: don't overwrite a newer quiz's state
   quiz.value.levelBefore = before?.level || ''
   quiz.value.levelBeforeFaded = fadedOf(before)
-  // 答题卡渲染在推荐列表下方：滚动定位过去，让"练一练"点了就有可见反馈。
+  // URL 直达（图谱抽屉"练一练"）传入的 title 是 slug：用掌握度列表里的
+  // 中文标题回填，标题栏永远显示中文而不是概念路径。
+  if ((!quiz.value.title || quiz.value.title === rec.slug) && before?.title) {
+    quiz.value.title = before.title
+  }
+  // 答题卡以抽屉呈现：quiz.active 即可见，无需滚动定位。
   await nextTick()
-  quizSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 function chooseOption(key: string) {
   if (!quiz.value.result) quiz.value.chosen = key
 }
+// Bug fix: in-flight guard — without this, holding Enter (auto-repeat) or
+// double-clicking during network RTT fires multiple POSTs; the backend has
+// no idempotency key, so each lands as a duplicate attempt+event.
+const quizSubmitting = ref(false)
 async function submitAnswer() {
+  if (quizSubmitting.value) return
   const current = quizCurrent.value
   if (!current || !quiz.value.chosen) return
+  quizSubmitting.value = true
   try {
     const res = await submitLearningAnswer(props.knowledgeBaseId, current.id, quiz.value.chosen)
     quiz.value.result = ((res as any).data ?? res) as AnswerResult
@@ -760,14 +932,17 @@ async function submitAnswer() {
     quiz.value.levelAfter = after?.level || quiz.value.levelBefore
     quiz.value.levelAfterFaded = fadedOf(after)
     quiz.value.levelAfterP = after?.p_eff ?? 0
-    recommendations.value = (r as any).data ?? r ?? []
+    recommendations.value = (r as any).data ?? []
     timeline.value = ((tl as any).data ?? tl) as TimelineItem[]
     timelineTotal.value = ((tl as any).total ?? 0) as number
     timelinePage.value = 1
     masteryList.value = null // 档位清单缓存失效
+    ensureMasteryList()
   } catch (err) {
     console.error('[LearningTab] submit failed:', err)
     MessagePlugin.error(t('knowledgeEditor.learningTab.submitFailed'))
+  } finally {
+    quizSubmitting.value = false
   }
 }
 function nextQuestion() {
@@ -839,12 +1014,20 @@ async function doDelete() {
   }
 }
 
-// 键盘作答：A–D 选择选项、Enter 提交/下一题——练一练可以全程不碰鼠标。
+// 键盘作答：A–D 选择选项、E 选择「不确定」、Enter 提交/下一题——练一练可以全程不碰鼠标。
 function onKeydown(e: KeyboardEvent) {
   if (!quiz.value.active) return
+  // Bug fix: don't hijack modified keys (Ctrl+A select-all, Cmd+C copy,
+  // Alt+Tab, IME composition) — the bare-letter quiz shortcuts must not
+  // fire when the user is doing something else with the keyboard.
+  if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return
+  if (e.repeat && e.key === 'Enter') return // Bug fix: Enter auto-repeat re-submits
   const key = e.key.toUpperCase()
   if (quiz.value.result === null) {
-    if (/^[A-D]$/.test(key) && quizCurrent.value && key in quizCurrent.value.options) {
+    if (key === 'E') {
+      chooseOption('E')
+      e.preventDefault()
+    } else if (/^[A-D]$/.test(key) && quizCurrent.value && key in quizCurrent.value.options) {
       chooseOption(key)
       e.preventDefault()
     } else if (e.key === 'Enter' && quiz.value.chosen) {
@@ -857,23 +1040,113 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// 时间线触底自动翻页：哨兵进入视口即加载下一页（root 缺省按视口计算，
+// 嵌套滚动容器同样生效），加载到与 total 持平后哨兵隐藏、不再触发。
+// 时间线本体在抽屉里，抽屉内容首次打开才挂载，故此处做成幂等的 ensure。
+function ensureTimelineObserver() {
+  if (timelineObserver || typeof IntersectionObserver === 'undefined') return
+  timelineObserver = new IntersectionObserver(
+    (entries) => {
+      sentinelVisible.value = entries.some((e) => e.isIntersecting)
+      if (sentinelVisible.value) loadMoreTimeline()
+    },
+    { rootMargin: '200px' },
+  )
+  if (timelineEndRef.value) timelineObserver.observe(timelineEndRef.value)
+}
+
+// Bug fix: the sentinel element lives inside `<template v-else>` of the
+// timeline drawer — it does not exist at onMounted time (initialLoading
+// renders the loading branch), and the drawer-open watch's
+// ensureTimelineObserver early-returns because the observer already
+// exists. Watch the ref itself: every time the sentinel enters the DOM,
+// observe it (re-observing the same element is a spec-defined no-op).
+watch(timelineEndRef, (el) => {
+  if (el && timelineObserver) timelineObserver.observe(el)
+})
+
 onMounted(() => {
   refresh()
   maybeOpenPracticeFromQuery()
   window.addEventListener('keydown', onKeydown)
-  // 时间线触底自动翻页：哨兵进入视口即加载下一页（root 缺省按视口计算，
-  // 嵌套滚动容器同样生效），加载到与 total 持平后哨兵隐藏、不再触发。
-  if (typeof IntersectionObserver !== 'undefined') {
-    timelineObserver = new IntersectionObserver(
-      (entries) => {
-        sentinelVisible.value = entries.some((e) => e.isIntersecting)
-        if (sentinelVisible.value) loadMoreTimeline()
-      },
-      { rootMargin: '200px' },
-    )
-    if (timelineEndRef.value) timelineObserver.observe(timelineEndRef.value)
-  }
+  ensureTimelineObserver()
+  // The sentinel may already exist by the time the observer is created
+  // (e.g., timeline data arrived before mount finished).
+  if (timelineEndRef.value && timelineObserver) timelineObserver.observe(timelineEndRef.value)
 })
+
+// 时间线抽屉首次打开时哨兵才存在于 DOM：挂载后再挂观察器
+watch(timelineDrawer, (open) => {
+  if (open) nextTick(() => {
+    ensureTimelineObserver()
+    if (timelineEndRef.value && timelineObserver) timelineObserver.observe(timelineEndRef.value)
+  })
+})
+
+// 今日学习记录条数：徽标直接告诉刚回来的用户"今天的动作都记上了"
+const todayTimelineCount = computed(() => {
+  const today = new Date().toDateString()
+  return timeline.value.filter((it) => new Date(it.occurred_at).toDateString() === today).length
+})
+
+// ---- 技能矩阵自评轨：挑战系统对自己的判断 ----
+// 「更熟」：分数直接抬进已掌握区间（后端 set-point 事件），档位仍被直接证据
+// 门控封顶——系统说"来做题证明"；「更生」：四原因降档（全部=重置到地板，
+// 三种部分原因=降一档并落内容反馈标签）。
+const selfAssessDownOpen = ref(false)
+const selfAssessReason = ref<SelfAssessDownReason | ''>('')
+const selfAssessTarget = ref<Recommendation | null>(null)
+const selfAssessReasonOptions = computed(() => [
+  { value: 'all' as const, label: t('knowledgeEditor.learningTab.saReasonAll'), hint: t('knowledgeEditor.learningTab.saReasonAllHint') },
+  { value: 'doc_gap' as const, label: t('knowledgeEditor.learningTab.saReasonDocGap'), hint: t('knowledgeEditor.learningTab.saReasonDocGapHint') },
+  { value: 'doc_updated' as const, label: t('knowledgeEditor.learningTab.saReasonDocUpdated'), hint: t('knowledgeEditor.learningTab.saReasonDocUpdatedHint') },
+  { value: 'quiz_easy' as const, label: t('knowledgeEditor.learningTab.saReasonQuizEasy'), hint: t('knowledgeEditor.learningTab.saReasonQuizEasyHint') },
+])
+const selfAssessTargetTitle = computed(() => selfAssessTarget.value?.title || selfAssessTarget.value?.slug || '')
+
+async function confirmSelfAssessUp(rec: Recommendation) {
+  try {
+    await selfAssess(props.knowledgeBaseId, rec.slug, 'up')
+    MessagePlugin.success(t('knowledgeEditor.learningTab.selfAssessUpDone'))
+    await refresh()
+    // 引导验证闭环：抬分完成，立刻请用户"做两道题证明"（跨 48h 门控）。
+    if (rec.has_quiz) startQuiz(rec)
+  } catch (err) {
+    console.error('[LearningTab] self-assess up failed:', err)
+    MessagePlugin.error(t('knowledgeEditor.learningTab.selfAssessFailed'))
+  }
+}
+function openSelfAssessDown(rec: Recommendation) {
+  selfAssessTarget.value = rec
+  selfAssessReason.value = ''
+  selfAssessDownOpen.value = true
+}
+async function submitSelfAssessDown() {
+  const rec = selfAssessTarget.value
+  const reason = selfAssessReason.value
+  if (!rec || !reason) return
+  try {
+    await selfAssess(props.knowledgeBaseId, rec.slug, 'down', reason)
+    MessagePlugin.success(t('knowledgeEditor.learningTab.selfAssessDownDone'))
+    selfAssessDownOpen.value = false
+    await refresh()
+  } catch (err) {
+    console.error('[LearningTab] self-assess down failed:', err)
+    MessagePlugin.error(t('knowledgeEditor.learningTab.selfAssessFailed'))
+  }
+}
+// 悬停回显：7 天内的自评状态（星图与档位明细共用）。
+function selfAssessText(m?: { direction: string; event_type: string }): string {
+  if (!m) return ''
+  if (m.direction === 'up') return t('knowledgeEditor.learningTab.saBadgeUp')
+  const reasonMap: Record<string, string> = {
+    self_assess_down_all: t('knowledgeEditor.learningTab.saBadgeDownAll'),
+    self_assess_down_doc_gap: t('knowledgeEditor.learningTab.saBadgeDownDocGap'),
+    self_assess_down_doc_updated: t('knowledgeEditor.learningTab.saBadgeDownDocUpdated'),
+    self_assess_down_quiz_easy: t('knowledgeEditor.learningTab.saBadgeDownQuizEasy'),
+  }
+  return reasonMap[m.event_type] || t('knowledgeEditor.learningTab.saBadgeDownAll')
+}
 
 // 图谱抽屉"练一练"直连：?tab=learning&practice=slug 打开该节点答题卡，
 // 打开后即从 URL 移除，刷新不重放。watch 兼容已挂载时的再次跳转。
@@ -899,26 +1172,68 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.learning-tab { padding: 16px 20px; max-width: 920px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
-/* 入场动态：各区卡片淡入上滑、按序 stagger（对齐文档页签"若隐若现滑出"的语言） */
-.learning-tab > * { animation: learning-enter 0.4s ease both; }
-.learning-tab > *:nth-child(2) { animation-delay: 0.06s; }
-.learning-tab > *:nth-child(3) { animation-delay: 0.12s; }
-.learning-tab > *:nth-child(4) { animation-delay: 0.18s; }
-.learning-tab > *:nth-child(5) { animation-delay: 0.24s; }
+/* 单屏星空：无卡片框。左 2/3 星图（占满视口高），右 1/3 数据栏（内部滚动） */
+.learning-tab { box-sizing: border-box; height: 100%; min-height: 0; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
+.sky { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(330px, 1fr); gap: 0 18px; animation: learning-enter 0.4s ease both; }
+/* 左：星图区（圆图四角天然留空，标题悬浮左上空角） */
+.sky-chart { position: relative; min-width: 0; min-height: 0; display: flex; }
+.sky-head { position: absolute; top: 6px; left: 6px; z-index: 1; pointer-events: none; }
+.sky-head .help-icon { pointer-events: auto; }
+.ts-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.ts-line { font-size: 12px; color: var(--td-text-color-secondary, #666); }
+.ts-stat { font-size: 12px; color: var(--td-text-color-secondary, #555); white-space: nowrap; }
+/* 右：数据栏。滚动区承载统计/档位/待巩固/分组/推荐，底栏固定放时间线/画像放大入口 */
+.sky-side { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--td-component-border, #eee); padding-left: 16px; }
+.side-scroll { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 10px; scrollbar-width: thin; }
+.side-stats { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.side-block { display: flex; flex-direction: column; gap: 8px; }
+.side-title { font-size: 12px; font-weight: 600; color: var(--td-text-color-secondary, #555); display: flex; align-items: center; gap: 6px; }
+.side-title::before { content: ''; width: 3px; height: 12px; border-radius: 2px; background: var(--td-brand-color, #07c05f); flex-shrink: 0; }
+.side-foot { display: flex; gap: 8px; padding-top: 10px; margin-top: 2px; border-top: 1px solid var(--td-component-border, #eee); }
+.side-foot :deep(.t-button) { flex: 1; }
+.foot-badge {
+  margin-left: 6px;
+  background: var(--td-brand-color, #07c05f);
+  color: #fff;
+  border-radius: 999px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.sky-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
+/* ② 今日待巩固清单 */
+.todo-list { display: flex; flex-direction: column; gap: 6px; }
+.todo-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--td-component-border, #eee); border-radius: 8px; cursor: pointer; transition: border-color 0.15s; flex-wrap: wrap; }
+.todo-row:hover { border-color: rgba(7, 192, 95, 0.5); }
+.todo-tag { font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+.todo-detail { font-size: 11px; color: var(--td-text-color-placeholder, #999); white-space: nowrap; }
+.todo-actions { margin-left: auto; display: flex; gap: 6px; flex-shrink: 0; }
+.todo-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+/* 推荐卡：档位内进度条（快变量）与下档提示 */
+.rec-progress { display: inline-flex; align-items: center; }
+.rec-progress-track { display: inline-block; width: 72px; height: 4px; border-radius: 2px; background: var(--td-bg-color-component, #f0f0f0); overflow: hidden; }
+.rec-progress-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+.rec-hint-line { font-size: 11px; color: var(--td-text-color-placeholder, #999); line-height: 1.4; }
+/* 分组进度：右栏内轻量折叠 */
+.units-compact { border-top: 1px dashed var(--td-component-border, #eee); padding-top: 8px; }
+/* 「不确定」选项：视觉上明确它不是第 5 个答案 */
+.quiz-option.unsure { border-style: dashed; }
+.quiz-option.unsure .option-key { border-style: dashed; }
+.quiz-option.unsure.selected { border-color: #ed7b2f; background: rgba(237, 155, 47, 0.08); border-style: solid; }
+.quiz-result.unsure { background: rgba(237, 155, 47, 0.07); }
 @keyframes learning-enter {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .learning-tab > * { animation: none; }
+  .sky { animation: none; }
   .unit-bar-fill { transition: none; }
 }
-.learning-header { display: flex; align-items: center; gap: 24px; padding: 18px 20px; border: 1px solid var(--td-component-border, #e7e7e7); border-radius: 10px; background: var(--td-bg-color-container, #fff); box-shadow: var(--td-shadow-1); flex-wrap: wrap; }
-.ring-text { font-size: 22px; font-weight: 600; fill: var(--td-text-color-primary, #333); }
-.ring-sub { font-size: 11px; fill: var(--td-text-color-placeholder, #999); }
-.learning-progress-meta { flex: 1; min-width: 240px; }
-.meta-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
 .help-icon { color: var(--td-text-color-placeholder, #999); cursor: help; display: inline-flex; align-items: center; }
 .help-icon:hover { color: var(--td-brand-color, #07c05f); }
 .meta-line { color: var(--td-text-color-secondary, #666); font-size: 13px; margin-bottom: 10px; }
@@ -939,7 +1254,6 @@ onUnmounted(() => {
 .howto { max-width: 360px; display: flex; flex-direction: column; gap: 6px; }
 .howto-title { font-weight: 600; }
 .howto-line { font-size: 12px; color: var(--td-text-color-secondary, #555); line-height: 1.6; }
-.learning-units { min-width: 230px; max-width: 280px; display: flex; flex-direction: column; gap: 6px; border-left: 1px solid var(--td-component-border, #eee); padding-left: 20px; }
 .units-title { font-size: 12px; color: var(--td-text-color-placeholder, #999); display: flex; align-items: center; gap: 4px; cursor: pointer; user-select: none; }
 .units-chevron { transition: transform 0.2s; }
 .units-chevron.collapsed { transform: rotate(0deg); }
@@ -950,29 +1264,55 @@ onUnmounted(() => {
 .unit-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--td-bg-color-component, #f0f0f0); overflow: hidden; }
 .unit-bar-fill { height: 100%; background: var(--td-brand-color, #07c05f); border-radius: 3px; transition: width 0.4s ease; }
 .unit-count { color: var(--td-text-color-secondary, #666); flex-shrink: 0; }
-.learning-section { border: 1px solid var(--td-component-border, #e7e7e7); border-radius: 10px; padding: 14px 16px; background: var(--td-bg-color-container, #fff); box-shadow: var(--td-shadow-1); }
-.section-title { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 12px; }
-.section-title::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: var(--td-brand-color, #07c05f); flex-shrink: 0; }
 .section-empty { color: var(--td-text-color-placeholder, #999); font-size: 13px; }
-.recommend-list { display: flex; flex-direction: column; gap: 8px; }
-.recommend-card { display: flex; align-items: center; gap: 12px; border: 1px solid var(--td-component-border, #eee); border-radius: 8px; padding: 10px 12px; cursor: pointer; transition: border-color 0.2s, box-shadow 0.2s; }
-.recommend-card:hover { border-color: rgba(7, 192, 95, 0.5); box-shadow: 0 2px 8px rgba(7, 192, 95, 0.1); }
-.rec-rank { width: 22px; height: 22px; border-radius: 50%; background: var(--td-bg-color-component, #f0f0f0); color: var(--td-text-color-secondary, #666); font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* 窄栏推荐紧凑行：标题/元信息/提示三行内聚，单按钮操作（整行点击=打开页面） */
+.rec-mini-list { display: flex; flex-direction: column; gap: 8px; }
+.rec-mini { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background-color 0.15s; }
+.rec-mini:hover { background: rgba(7, 192, 95, 0.05); }
+.rec-mini.featured {
+  background: radial-gradient(140% 160% at 0% 0%, rgba(7, 192, 95, 0.1), transparent 60%);
+  border: 1px solid rgba(7, 192, 95, 0.25);
+}
+.rec-mini.featured .rec-mini-name { font-weight: 600; font-size: 14px; }
+.rec-mini.featured .rec-rank { background: rgba(7, 192, 95, 0.14); color: #049b38; }
+.rec-mini-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.rec-mini-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rec-mini-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-mini-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; row-gap: 5px; }
+.rec-mini-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; align-items: stretch; }
+/* 行内操作按钮给足最小宽度：窄栏下「练一练」三个字不再被压扁换行 */
+.rec-mini-actions :deep(.t-button), .todo-actions :deep(.t-button) { min-width: 68px; justify-content: center; }
+.rec-rank { width: 20px; height: 20px; border-radius: 50%; background: var(--td-bg-color-component, #f0f0f0); color: var(--td-text-color-secondary, #666); font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .rec-rank.top { background: rgba(7, 192, 95, 0.12); color: #049b38; }
-.rec-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.rec-title-line { display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap; }
 .rec-type-badge { font-size: 11px; line-height: 1; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; }
 .rec-type-badge.entity { background: rgba(43, 164, 113, 0.1); color: #2ba471; }
 .rec-type-badge.concept { background: rgba(227, 115, 24, 0.1); color: #e37318; }
-.rec-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.rec-folder { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--td-text-color-placeholder, #999); flex-shrink: 0; }
-.rec-reason-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rec-reason-tag { font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
+/* 推荐卡：档位内进度条（快变量）与下档提示 */
+.rec-progress { display: inline-flex; align-items: center; }
+.rec-progress-track { display: inline-block; width: 60px; height: 4px; border-radius: 2px; background: var(--td-bg-color-component, #f0f0f0); overflow: hidden; }
+.rec-progress-fill { display: block; height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+.rec-hint-line { font-size: 11px; color: var(--td-text-color-placeholder, #999); line-height: 1.4; }
 .explain { max-width: 320px; display: flex; flex-direction: column; gap: 6px; }
 .explain-title { font-weight: 600; }
 .explain-line { font-size: 12px; color: var(--td-text-color-secondary, #555); line-height: 1.6; }
 .explain-warn { color: #b8860b; }
 .explain-improve { color: #049b38; }
+.explain-self-assess { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--td-component-border, #eee); }
+.esa-label { font-size: 11px; color: var(--td-text-color-placeholder, #999); display: block; margin-bottom: 6px; }
+.esa-buttons { display: flex; gap: 6px; }
+.esa-btn { font-size: 11px; line-height: 1; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-family: inherit; border: 1px solid var(--td-component-border, #eee); background: var(--td-bg-color-container, #fff); color: var(--td-text-color-secondary, #666); transition: all 0.15s; }
+.esa-btn.up:hover { border-color: var(--td-brand-color, #07c05f); color: #049b38; }
+.esa-btn.down:hover { border-color: #7b61ff; color: #7b61ff; }
+.sa-dialog { display: flex; flex-direction: column; gap: 8px; }
+.sa-node { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.sa-option { display: flex; gap: 10px; padding: 8px 10px; border: 1px solid var(--td-component-border, #eee); border-radius: 8px; cursor: pointer; transition: border-color 0.15s; }
+.sa-option:hover { border-color: rgba(123, 97, 255, 0.5); }
+.sa-option.selected { border-color: #7b61ff; background: rgba(123, 97, 255, 0.06); }
+.sa-radio { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--td-component-border, #ccc); flex-shrink: 0; margin-top: 2px; }
+.sa-option.selected .sa-radio { border-color: #7b61ff; background: radial-gradient(circle, #7b61ff 40%, transparent 45%); }
+.sa-option-label { font-size: 13px; font-weight: 500; }
+.sa-option-hint { font-size: 11px; color: var(--td-text-color-placeholder, #999); margin-top: 2px; }
 .rec-level.faded { border: 1px dashed #d4a017; }
 .rec-level { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; line-height: 1; padding: 3px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
 .rec-actions { display: flex; gap: 8px; flex-shrink: 0; }
@@ -1011,8 +1351,6 @@ onUnmounted(() => {
 .result-ref-link:hover { color: #038626; border-bottom-style: solid; }
 .result-ref-count { color: var(--td-text-color-placeholder, #999); font-size: 10px; margin-left: 1px; }
 .quiz-kbd-hint { margin-left: auto; font-size: 11px; color: var(--td-text-color-placeholder, #999); }
-.learning-header-error { justify-content: center; }
-.error-body { display: flex; align-items: center; gap: 12px; padding: 20px 0; }
 .error-text { color: var(--td-text-color-secondary, #666); font-size: 13px; }
 .kept-note { font-size: 12px; color: var(--td-text-color-placeholder, #999); margin-bottom: 10px; }
 .collect-note { font-size: 12px; color: #8a6116; background: rgba(237, 155, 47, 0.1); border-radius: 6px; padding: 7px 10px; margin-bottom: 10px; }
@@ -1029,7 +1367,7 @@ onUnmounted(() => {
 .timeline-box::before { content: ''; position: absolute; left: 3.5px; top: 8px; bottom: 8px; width: 1px; background: var(--td-component-stroke, #e7e7e7); }
 /* 内层滚动区：固定可视 12 行（行高 24px + 行距 8px），最新在顶部，向下滚动翻阅 */
 .timeline-list { display: flex; flex-direction: column; gap: 8px; max-height: calc(12 * 24px + 11 * 8px + 2 * 22px); overflow-y: auto; }
-.timeline-item { display: flex; align-items: center; gap: 8px; font-size: 12px; height: 24px; }
+.timeline-item { display: flex; align-items: center; gap: 8px; font-size: 12px; min-height: 24px; }
 .tl-group-header { font-size: 11px; color: var(--td-text-color-placeholder, #999); padding-left: 18px; height: 22px; display: flex; align-items: center; font-weight: 500; }
 .tl-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b9bd8; flex-shrink: 0; position: relative; z-index: 1; box-shadow: 0 0 0 2px var(--td-bg-color-container, #fff); }
 .tl-dot.ev-answer_cite { background: #4b9bd8; }
@@ -1038,8 +1376,17 @@ onUnmounted(() => {
 .tl-dot.ev-topic_signal { background: #a6a6a6; }
 .tl-dot.ev-quiz_correct { background: #049b38; box-shadow: 0 0 0 2px var(--td-bg-color-container, #fff), 0 0 0 3px rgba(4, 155, 56, 0.35); }
 .tl-dot.ev-quiz_wrong { background: #e34d59; }
+.tl-dot.ev-quiz_unsure { background: transparent; border: 1.5px dashed #ed7b2f; box-shadow: none; width: 7px; height: 7px; }
 .tl-dot.ev-backfill_cite { background: transparent; border: 1.5px dashed #a6a6a6; box-shadow: none; width: 7px; height: 7px; }
-.tl-type { color: var(--td-text-color-secondary, #666); width: 72px; flex-shrink: 0; }
+.tl-dot.ev-self_assess_up { background: #0052d9; box-shadow: 0 0 0 2px var(--td-bg-color-container, #fff), 0 0 0 3px rgba(0, 82, 217, 0.3); }
+.tl-dot[class*="ev-self_assess_down"] { background: #7b61ff; box-shadow: none; width: 7px; height: 7px; }
+/* 事件类型列：min/max 宽度 + 单行省略——"自评降档·题目效度"这类长标签在
+   固定 72px 下会折成两行，而行高固定 24px 导致与下一行叠压 */
+.tl-type {
+  color: var(--td-text-color-secondary, #666);
+  min-width: 72px; max-width: 112px; flex-shrink: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .tl-badge {
   flex-shrink: 0;
   font-size: 11px;
@@ -1053,7 +1400,7 @@ onUnmounted(() => {
 .tl-badge-concept { background: rgba(227, 115, 24, 0.1); color: #e37318; }
 .tl-slug { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-time { color: var(--td-text-color-placeholder, #999); flex-shrink: 0; }
-.tl-filters { display: inline-flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.tl-filters { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
 .tl-filter { font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--td-component-border, #eee); background: var(--td-bg-color-container, #fff); color: var(--td-text-color-secondary, #666); cursor: pointer; transition: all 0.15s; font-family: inherit; }
 .tl-filter:hover { border-color: rgba(7, 192, 95, 0.5); }
 .tl-filter.active { background: rgba(7, 192, 95, 0.1); border-color: rgba(7, 192, 95, 0.5); color: #049b38; }
@@ -1082,13 +1429,20 @@ onUnmounted(() => {
 }
 .delete-body { display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.6; }
 .delete-optout { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--td-text-color-secondary, #555); }
+@media (max-width: 980px) {
+  /* 窄屏放弃单屏锁定：恢复自然纵向流，星图给足高度后数据栏自然下排 */
+  .learning-tab { height: auto; }
+  .sky { display: flex; flex-direction: column; }
+  .sky-chart { min-height: 68vw; max-height: 78vh; }
+  .sky-head { position: static; }
+  .sky-side { border-left: none; padding-left: 0; border-top: 1px solid var(--td-component-border, #eee); padding-top: 12px; }
+  .side-scroll { overflow-y: visible; }
+}
 @media (max-width: 640px) {
-  .learning-header { flex-direction: column; align-items: flex-start; }
-  .learning-units { width: 100%; max-width: none; border-left: none; padding-left: 0; }
-  .recommend-card { flex-direction: column; align-items: flex-start; }
-  .rec-actions { width: 100%; justify-content: flex-start; }
+  .todo-row { flex-wrap: wrap; }
+  .todo-actions { margin-left: 0; width: 100%; justify-content: flex-start; }
+  .rec-mini-actions { flex-direction: row; }
   .timeline-item { flex-wrap: wrap; height: auto; }
   .tl-slug { min-width: 0; max-width: 180px; }
-  .tl-filters { margin-left: 0; }
 }
 </style>

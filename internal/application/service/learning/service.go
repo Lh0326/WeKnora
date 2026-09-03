@@ -2,9 +2,12 @@ package learning
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -32,6 +35,16 @@ type Service struct {
 	wikiRepo pageReader
 	pages    pageIndexCache
 	prefs    prefsCache
+
+	// foldMu serializes the read-modify-write fold cycle per (scope, slug).
+	// Bug fix: concurrent writers on the same node — the QA goroutine
+	// (RecordAnswerTouches) racing a quiz SubmitAnswer or a wiki Read —
+	// both read the same stale state, fold independently, and the later
+	// upsert silently overwrites the earlier fold's weight. The event row
+	// survives but the mastery state permanently drops one contribution.
+	// A keyed mutex eliminates the in-process race; horizontal scaling
+	// would need SELECT…FOR UPDATE, noted as a deployment note.
+	foldMu sync.Map // key: scopeKey → *sync.Mutex
 
 	// LLM write paths (stage 3): model channel, chunk evidence, KB config.
 	modelService interfaces.ModelService
@@ -235,6 +248,159 @@ func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug string) error {
 	return nil
 }
 
+// directFacts loads the subject's per-slug direct-evidence facts for one
+// KB — the distinct-item correct answers the tier gate reads. One indexed
+// query per read path; a failure degrades to "no direct evidence" (the
+// gate then caps at touched), which is the conservative side.
+func (s *Service) directFacts(ctx context.Context, scope interfaces.LearningScope) map[string][]DirectQuizFact {
+	attempts, err := s.repo.ListCorrectAttempts(ctx, scope)
+	if err != nil {
+		logger.Warnf(ctx, "learning: direct-evidence read failed (kb %s): %v", scope.KnowledgeBaseID, err)
+		return nil
+	}
+	return CollectDirectFacts(attempts)
+}
+
+// RecordSelfAssess lands the skills-matrix self-assessment track: the user
+// claims to know a node better (or worse) than the system believes.
+//
+// "Better" lifts the frozen logit straight into the mastered band — the
+// progress becomes instantly visible in p_eff and the in-tier progress bar —
+// yet self-assessment is indirect evidence, so the direct-evidence gate
+// still caps the displayed tier until quiz facts arrive. The system is
+// literally saying "prove it": the frontend follows an up assessment by
+// offering the practice quiz.
+//
+// "Worse" is a demotion with a reason taxonomy (the skills-matrix interview
+// question "which part?"). all = mis-click, reset to the floor; the three
+// partial reasons demote exactly one band, landing on the lower band's
+// demotion line (hysteresis keeps the node inside that band), and the reason
+// itself rides the event type as a content-feedback label for future
+// maintenance (quiz regeneration, doc refresh hints).
+//
+// One self-assessment per (subject, node, direction) per re-ask window —
+// repeats are idempotent no-ops; switching direction inside the window is
+// allowed (people change their minds). The computed weight is frozen on the
+// event row like every other weight, so replays reproduce the set-point.
+func (s *Service) RecordSelfAssess(ctx context.Context, kbID, slug string, up bool, reason string) error {
+	if !learningEnabled() {
+		return nil
+	}
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return err
+	}
+	if s.prefs.collectionDisabled(ctx, s.repo, scope.TenantID, scope.SubjectID) {
+		return nil // opted out: assessments stay private, silently
+	}
+	index, err := s.pages.index(ctx, s.wikiRepo, kbID)
+	if err != nil {
+		return err
+	}
+	if _, ok := index.pages[slug]; !ok {
+		return ErrWikiReadTarget // not a knowledge node of this KB
+	}
+
+	now := time.Now()
+	prior, err := s.repo.ListEvents(ctx, scope, now.Add(-touchLookback), 0)
+	if err != nil {
+		logger.Warnf(ctx, "learning: self-assess dedup lookup failed (slug %s): %v", slug, err)
+		return nil // conservative: skip rather than risk spamming
+	}
+	for _, ev := range prior {
+		if ev.Slug != slug || !strings.HasPrefix(ev.Type, "self_assess_") {
+			continue
+		}
+		wasUp := ev.Type == types.LearningEventSelfAssessUp
+		if wasUp == up && now.Sub(ev.OccurredAt) <= ReAskWindowHours*time.Hour {
+			return nil // same-direction repeat inside the window: idempotent
+		}
+	}
+
+	row, err := s.repo.GetMastery(ctx, scope, slug)
+	if err != nil {
+		return err
+	}
+	var state FoldState
+	if row != nil {
+		state = StateFromModel(row)
+	}
+
+	var eventType string
+	var weight float64
+	if up {
+		eventType = types.LearningEventSelfAssessUp
+		target := logitOf(LevelMasteredUp)
+		if state.Logit >= target {
+			return nil // already at or above the mastered band: nothing to lift
+		}
+		weight = target - state.Logit
+	} else {
+		switch reason {
+		case "all":
+			eventType = types.LearningEventSelfAssessDownAll
+		case "doc_gap":
+			eventType = types.LearningEventSelfAssessDownDocGap
+		case "doc_updated":
+			eventType = types.LearningEventSelfAssessDownDocUpdated
+		case "quiz_easy":
+			eventType = types.LearningEventSelfAssessDownQuizEasy
+		default:
+			return fmt.Errorf("invalid self-assess reason %q", reason)
+		}
+		// "all" is a full reset to the floor; the partial reasons demote
+		// exactly one band via the gated level.
+		var target float64
+		if reason == "all" {
+			target = LogitFloor
+		} else {
+			target = selfAssessDemotionTarget(state, s.directFacts(ctx, scope)[slug], now)
+		}
+		if state.Logit <= target {
+			return nil // already at/below the target band: nothing to demote
+		}
+		weight = target - state.Logit
+	}
+
+	if err := s.repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID:        scope.TenantID,
+		SubjectID:       scope.SubjectID,
+		KnowledgeBaseID: scope.KnowledgeBaseID,
+		Slug:            slug,
+		Type:            eventType,
+		Weight:          weight,
+		OccurredAt:      now,
+	}); err != nil {
+		return err
+	}
+	s.foldOne(ctx, scope, slug, Event{Type: eventType, Weight: weight, OccurredAt: now})
+	return nil
+}
+
+// selfAssessDemotionTarget is the logit set-point a "less proficient"
+// assessment lands on: exactly one band lower than the current gated level.
+// Bug fix: the target must sit on the lower band's UP threshold (not its
+// Down line) — LevelOf re-derives the display level from the logit alone
+// each read (no persisted prevLevel for hysteresis on this path), and a
+// p_eff below the Up line would display as yet another band lower.
+// Sitting ON the Up threshold means the node enters that band immediately.
+// A node already at the bottom has nothing to demote (caller checks).
+func selfAssessDemotionTarget(state FoldState, facts []DirectQuizFact, now time.Time) float64 {
+	switch gatedAnchoredLevel(state, facts, now).Level {
+	case LevelMastered:
+		return logitOf(LevelFamiliarUp)
+	case LevelFamiliar:
+		return logitOf(LevelTouchedUp)
+	default: // touched (or unseen with stale evidence): into the faded zone
+		return logitOf(LevelTouchedUp) - 1.0
+	}
+}
+
+// logitOf is the inverse sigmoid: the logit at which p equals the threshold.
+func logitOf(p float64) float64 {
+	return math.Log(p / (1 - p))
+}
+
 // foldOne incrementally folds one event into the persisted mastery row.
 // The append already happened, so a fold failure only means the state is
 // stale until the next event (or a replay) refreshes it — worth a warning,
@@ -242,6 +408,15 @@ func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug string) error {
 func (s *Service) foldOne(
 	ctx context.Context, scope interfaces.LearningScope, slug string, event Event,
 ) {
+	// Bug fix: serialize the read-modify-write cycle per (scope, slug) —
+	// without this, a QA goroutine and a quiz SubmitAnswer racing on the
+	// same node both fold from the same stale state and the later upsert
+	// silently drops the earlier contribution.
+	mu, _ := s.foldMu.LoadOrStore(fmt.Sprintf("%d|%s|%s|%s",
+		scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, slug), &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	defer mu.(*sync.Mutex).Unlock()
+
 	row, err := s.repo.GetMastery(ctx, scope, slug)
 	if err != nil {
 		logger.Warnf(ctx, "learning: mastery read failed (slug %s): %v", slug, err)

@@ -234,6 +234,23 @@ func runWalk() error {
 		quizDone = correct2 && moved && hasQuizEvent
 		w.record("L10 测验入流+折叠", quizDone, "答对=%v 证据 %d→增加=%v 时间线含测验事件=%v", correct2, int(evBefore), moved, hasQuizEvent)
 		w.record("L10b 复习计划返回", schedPresent && (!correct2 || sched > 0), "next_review_days=%v", sched)
+
+		// ---- L10c direct-evidence gate integrity: hint/progress fields ----
+		var views3 []map[string]interface{}
+		w.do("GET", "/api/v1/learning/kb/"+kb+"/map", nil, &views3)
+		validHints := map[string]bool{"first_touch": true, "quiz_unlock_familiar": true, "quiz_unlock_mastered": true, "grow_mastery": true, "keep_reviewing": true}
+		hintOK, progOK := true, true
+		for _, v := range views3 {
+			if s, _ := mapGet(v, "slug").(string); s == slug {
+				if h, _ := mapGet(v, "next_tier_hint").(string); h != "" && !validHints[h] {
+					hintOK = false
+				}
+				if p, ok := mapGet(v, "tier_progress").(float64); ok && (p < 0 || p > 1) {
+					progOK = false
+				}
+			}
+		}
+		w.record("L10c 门控字段完整", err == nil && hintOK && progOK, "next_tier_hint 枚举合法=%v, tier_progress∈[0,1]=%v", hintOK, progOK)
 	} else {
 		w.record("L9 确定性判卷", true, "（该节点暂无题，跳过——题库由 KB 开关生成的写路径维护）")
 		w.record("L10 测验入流+折叠", true, "（无题可答，跳过）")

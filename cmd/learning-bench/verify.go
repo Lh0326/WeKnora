@@ -239,9 +239,11 @@ func runVerify(outPath string) error {
 		g1, _ := learning.GradeQuiz("A", "A", 0)
 		g2, _ := learning.GradeQuiz("A", "B", 0)
 		g3, _ := learning.GradeQuiz("A", "A", 2)
-		_, errBad := learning.GradeQuiz("A", "E", 0)
-		ok6 := g1.Correct && !g2.Correct && g3.Weight == learning.WeightQuizCorrect*learning.QuizRepeatDecay*learning.QuizRepeatDecay && errBad != nil
-		r.add("度量层", checkf("确定性判卷", ok6, "键匹配判对错（零 LLM）；同题第3次作答权重=%.2f（防刷题衰减）；非法选项拒绝", g3.Weight))
+		gU, errU := learning.GradeQuiz("A", learning.QuizUnsureKey, 0)
+		_, errBad := learning.GradeQuiz("A", "F", 0)
+		ok6 := g1.Correct && !g2.Correct && g3.Weight == learning.WeightQuizCorrect*learning.QuizRepeatDecay*learning.QuizRepeatDecay &&
+			errU == nil && gU.Weight == 0 && gU.EventType == types.LearningEventQuizUnsure && errBad != nil
+		r.add("度量层", checkf("确定性判卷", ok6, "键匹配判对错（零 LLM）；同题第3次作答权重=%.2f（防刷题衰减）；「不确定」零权重申报；非法选项拒绝", g3.Weight))
 
 		ord := learning.WeightQuizCorrect > learning.WeightCrossRef &&
 			learning.WeightCrossRef > learning.WeightAnswerCite &&

@@ -37,7 +37,10 @@ func TestGetProgressCountsTiersAndUnits(t *testing.T) {
 		}
 	}
 
-	// Touch rag twice (logit 2 → p≈0.88 → mastered), leave the rest unseen.
+	// Touch rag twice (logit 2 → p≈0.88), leave the rest unseen. The two
+	// citations are indirect evidence, so without direct quiz facts the
+	// gate caps rag at touched; the distinct-item corrects below unlock
+	// mastered (two items straddling the session gap).
 	now := time.Now()
 	for i := 0; i < 2; i++ {
 		_ = repo.AppendEvent(ctx, &types.LearningEvent{
@@ -46,6 +49,13 @@ func TestGetProgressCountsTiersAndUnits(t *testing.T) {
 		})
 		svc.foldOne(ctx, newReadScope(1, "web_user:alice"), "concept/rag",
 			Event{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: now})
+	}
+	for i, item := range []string{"q1", "q2"} {
+		_ = repo.InsertAttempt(ctx, &types.LearningQuizAttempt{
+			TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+			QuizItemID: item, Slug: "concept/rag", ChosenKey: "A", IsCorrect: true,
+			AnsweredAt: now.Add(-time.Duration(i) * (MasteredSessionGap + time.Hour)),
+		})
 	}
 
 	progress, err := svc.GetProgress(ctx, testKB)
@@ -403,8 +413,11 @@ func TestListMasteryViewCoversUnseenNodes(t *testing.T) {
 	for _, v := range views {
 		bySlug[v.Slug] = v
 	}
-	if v := bySlug["concept/rag"]; v.Level != string(LevelFamiliar) || v.EvidenceCount != 1 {
-		t.Fatalf("touched node = %+v, want familiar with 1 evidence", v)
+	if v := bySlug["concept/rag"]; v.Level != string(LevelTouched) || v.EvidenceCount != 1 {
+		t.Fatalf("cited node = %+v, want touched (indirect evidence is gate-capped) with 1 evidence", v)
+	}
+	if v := bySlug["concept/rag"]; v.NextTierHint != HintQuizUnlockFamiliar {
+		t.Fatalf("cited node hint = %q, want %q", v.NextTierHint, HintQuizUnlockFamiliar)
 	}
 	for _, slug := range []string{"concept/decay", "entity/weknora"} {
 		v := bySlug[slug]
@@ -414,6 +427,51 @@ func TestListMasteryViewCoversUnseenNodes(t *testing.T) {
 	}
 	if bySlug["entity/weknora"].Title != "WeKnora 知识库" {
 		t.Fatalf("unseen entry title = %q, want page title", bySlug["entity/weknora"].Title)
+	}
+}
+
+// TestListMasteryViewLastActivitySeesZeroWeightTouches: the twinkle marker
+// must reflect raw activity, not the fold. A deduped re-read or an unsure
+// answer carries weight 0 by design and never folds — yet the learner just
+// touched the node, so LastActivityAt (not LastEvidenceAt) must move.
+func TestListMasteryViewLastActivitySeesZeroWeightTouches(t *testing.T) {
+	svc, repo, _ := readFixture(t)
+	ctx := collectorCtx(1, "alice")
+	now := time.Now()
+	stale := now.Add(-72 * time.Hour)
+	scope := newReadScope(1, "web_user:alice")
+	// Old scored touch: folds, sets last_evidence_at three days back.
+	_ = repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: stale,
+	})
+	svc.foldOne(ctx, scope, "concept/rag", Event{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: stale})
+	// Fresh zero-weight touch (an unsure answer): recorded, never folded.
+	_ = repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventQuizUnsure, Weight: 0, OccurredAt: now,
+	})
+
+	views, err := svc.ListMasteryView(ctx, testKB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySlug := map[string]MasteryView{}
+	for _, v := range views {
+		bySlug[v.Slug] = v
+	}
+	v := bySlug["concept/rag"]
+	if v.LastActivityAt.Before(now.Add(-time.Minute)) {
+		t.Fatalf("LastActivityAt = %v, want the fresh zero-weight touch (now-ish)", v.LastActivityAt)
+	}
+	if !v.LastEvidenceAt.Before(now.Add(-time.Hour)) {
+		t.Fatalf("LastEvidenceAt = %v, want the stale folded timestamp (zero-weight must not fold)", v.LastEvidenceAt)
+	}
+	// Nodes with no events at all fall back to the zero time — the client
+	// renders them non-recent either way.
+	if bySlug["concept/decay"].LastActivityAt.IsZero() {
+		// acceptable: never touched → zero activity
+		_ = bySlug["concept/decay"]
 	}
 }
 

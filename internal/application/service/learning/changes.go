@@ -36,15 +36,18 @@ func (s *Service) PassiveChanges(ctx context.Context, kbID string, limit int) (*
 			states[rows[i].Slug] = StateFromModel(&rows[i])
 		}
 	}
-	return derivePassiveChanges(pages, states, time.Now(), limit), nil
+	return derivePassiveChanges(pages, states, s.directFacts(ctx, scope), time.Now(), limit), nil
 }
 
 // derivePassiveChanges is the pure, table-testable core: which earned
 // tiers has forgetting already demoted, which will demote within
 // PassiveDueSoonDays, and the most urgent items first. Nodes with nothing
-// earned (anchor unseen) are skipped — nothing to forget.
+// earned (anchor unseen) are skipped — nothing to forget. The anchor is
+// direct-gate capped: a tier the gate would not grant can never read as
+// "demoted from" it.
 func derivePassiveChanges(
-	pages []*types.WikiPage, states map[string]FoldState, now time.Time, limit int,
+	pages []*types.WikiPage, states map[string]FoldState,
+	direct map[string][]DirectQuizFact, now time.Time, limit int,
 ) *interfaces.PassiveChangesSummary {
 	titleBySlug := map[string]string{}
 	for _, p := range pages {
@@ -65,7 +68,7 @@ func derivePassiveChanges(
 		if st.EvidenceCount == 0 || st.LastEvidenceAt.IsZero() {
 			continue
 		}
-		anchor, view := anchorAndView(st, now)
+		anchor, view := gatedAnchorAndView(st, direct[slug], now)
 		ar, vr := levelRank(anchor), levelRank(view)
 		if ar == 0 {
 			continue // never earned a lit tier: nothing to forget

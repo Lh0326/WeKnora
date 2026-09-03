@@ -27,11 +27,15 @@ type BenchRecommendInput struct {
 	Affinity      map[string]bool
 	HasQuiz       map[string]bool
 	QuizStruggled map[string]bool
+	DirectFacts   map[string][]DirectQuizFact
 }
 
 // BenchRecommendNodes is the exported rule-based recommender.
 func BenchRecommendNodes(in BenchRecommendInput, now time.Time, rng *rand.Rand, limit int) []Recommendation {
-	return recommendNodes(recommendInput(in), now, rng, limit)
+	return recommendNodes(recommendInput{
+		Pages: in.Pages, Edges: in.Edges, States: in.States, Affinity: in.Affinity,
+		HasQuiz: in.HasQuiz, QuizStruggled: in.QuizStruggled, DirectFacts: in.DirectFacts,
+	}, now, rng, limit)
 }
 
 // ---- Verify-mode seams (stage "five-layer verification"): thin exported

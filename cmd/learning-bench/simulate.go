@@ -111,11 +111,15 @@ func runSimulate(scriptPath string, verbose bool) error {
 	// 2. Assert curve shapes per slug.
 	simulateAssertShapes(asserts, script, states, baseTime, eventTypes, weights)
 
-	// 3. Assert hysteresis absorbs boundary jitter.
-	simulateAssertHysteresis(asserts, baseTime)
+		// 3. Assert hysteresis absorbs boundary jitter.
+		simulateAssertHysteresis(asserts, baseTime)
 
-	// 4. Assert reconcile migration preserves p_eff.
-	simulateAssertReconcile(asserts, baseTime)
+		// 3b. Assert the direct-evidence gate separates the four adversarial
+		// learner personas (the shallow-clicker complaint, formalised).
+		simulateAssertGate(asserts, baseTime)
+
+		// 4. Assert reconcile migration preserves p_eff.
+		simulateAssertReconcile(asserts, baseTime)
 
 	fmt.Printf("  assertions: %d passed, %d failed\n", asserts.passes, len(asserts.failures))
 	return asserts.err()
@@ -200,6 +204,82 @@ func simulateAssertHysteresis(a *assertCollector, baseTime time.Time) {
 	} else {
 		a.check("hysteresis_below_demotes", true, "")
 	}
+}
+
+// simulateAssertGate: the direct-evidence gate must keep the four adversarial
+// personas apart — the formalisation of the real-world complaint that three
+// page clicks (or one lucky four-way guess) used to reach "mastered".
+//
+//	shallow-clicker: page reads only          → capped at touched
+//	lucky-guesser:   ONE correct item          → capped at familiar
+//	same-item-farmer: one memorised item ×5    → capped at familiar
+//	genuine-learner: 2 distinct items ≥48h apart → mastered reachable
+func simulateAssertGate(a *assertCollector, now time.Time) {
+	read := learning.Event{Type: types.LearningEventWikiToolRead, Weight: learning.WeightTopicSignal, OccurredAt: now}
+	reads := func(n int) learning.FoldState { return learning.FoldAll(learning.FoldState{}, repeatReadEvents(read, n, 49*time.Hour)) }
+	correct := func(at time.Time) learning.Event {
+		return learning.Event{Type: types.LearningEventQuizCorrect, Weight: learning.WeightQuizCorrect, OccurredAt: at}
+	}
+	oneCorrect := learning.FoldAll(learning.FoldState{}, []learning.Event{correct(now.Add(-24 * time.Hour))})
+	oneFact := []learning.DirectQuizFact{{ItemID: "q1", FirstCorrectAt: now.Add(-24 * time.Hour)}}
+	farmFacts := []learning.DirectQuizFact{{ItemID: "q1", FirstCorrectAt: now.Add(-72 * time.Hour)}}
+	genuineFacts := []learning.DirectQuizFact{
+		{ItemID: "q1", FirstCorrectAt: now.Add(-5 * 24 * time.Hour)},
+		{ItemID: "q2", FirstCorrectAt: now.Add(-1 * 24 * time.Hour)},
+	}
+
+	a.check("gate_reads_cap_touched", learning.ApplyDirectGate(learning.LevelMastered, nil, now) == learning.LevelTouched,
+		"indirect-only node must cap at touched")
+	a.check("gate_eight_reads_still_touched",
+		learning.ApplyDirectGate(learning.LevelMastered, nil, now) == learning.LevelTouched &&
+			reads(8).Logit > 0,
+		fmt.Sprintf("eight scored reads still cap at touched (logit %.2f folded, tier gated)", reads(8).Logit))
+	a.check("gate_one_guess_caps_familiar", learning.ApplyDirectGate(learning.LevelMastered, oneFact, now) == learning.LevelFamiliar,
+		"one distinct correct item must cap at familiar")
+	a.check("gate_farming_one_item_caps_familiar", learning.ApplyDirectGate(learning.LevelMastered, farmFacts, now) == learning.LevelFamiliar,
+		"re-answering one memorised item must not unlock mastered")
+	a.check("gate_cross_session_unlocks_mastered", learning.ApplyDirectGate(learning.LevelMastered, genuineFacts, now) == learning.LevelMastered,
+		"two distinct items ≥48h apart unlock mastered")
+	sameSitting := []learning.DirectQuizFact{
+		{ItemID: "q1", FirstCorrectAt: now.Add(-2 * time.Hour)},
+		{ItemID: "q2", FirstCorrectAt: now},
+	}
+	a.check("gate_same_sitting_stays_familiar", learning.DirectGateTier(sameSitting, now) == learning.LevelFamiliar,
+		"two items in one sitting must not unlock mastered")
+
+	// The fast feedback variables stay well-formed whatever the gate does.
+	for _, lvl := range []learning.Level{learning.LevelUnseen, learning.LevelTouched, learning.LevelFamiliar, learning.LevelMastered} {
+		p := learning.TierProgress(lvl, 0.5)
+		a.check("tier_progress_bounds", p >= 0 && p <= 1, fmt.Sprintf("TierProgress(%s, 0.5) = %.3f out of [0,1]", lvl, p))
+	}
+	hints := map[string]bool{"first_touch": true, "quiz_unlock_familiar": true, "quiz_unlock_mastered": true, "grow_mastery": true, "keep_reviewing": true}
+	for _, c := range []struct {
+		lvl   learning.Level
+		facts []learning.DirectQuizFact
+		want  string
+	}{
+		{learning.LevelTouched, nil, "quiz_unlock_familiar"},
+		{learning.LevelTouched, oneFact, "grow_mastery"}, // unlocked once, decayed back
+		{learning.LevelFamiliar, oneFact, "quiz_unlock_mastered"},
+		{learning.LevelFamiliar, genuineFacts, "grow_mastery"},
+		{learning.LevelMastered, genuineFacts, "keep_reviewing"},
+	} {
+		h := learning.NextTierHint(c.lvl, c.facts, now)
+		a.check("next_tier_hint", h == c.want, fmt.Sprintf("NextTierHint(%s, %d facts) = %s, want %s", c.lvl, len(c.facts), h, c.want))
+		_ = hints
+	}
+	_ = oneCorrect
+}
+
+// repeatReadEvents builds n copies of ev spaced `gap` apart, oldest first.
+func repeatReadEvents(ev learning.Event, n int, gap time.Duration) []learning.Event {
+	out := make([]learning.Event, 0, n)
+	for i := 0; i < n; i++ {
+		e := ev
+		e.OccurredAt = ev.OccurredAt.Add(-time.Duration(n-1-i) * gap)
+		out = append(out, e)
+	}
+	return out
 }
 
 // simulateAssertReconcile: a pure slug move preserves p_eff.

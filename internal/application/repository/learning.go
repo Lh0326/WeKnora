@@ -98,6 +98,54 @@ func (r *learningRepository) ListMastery(
 	return states, err
 }
 
+func (r *learningRepository) ListLastActivity(
+	ctx context.Context, scope interfaces.LearningScope,
+) (map[string]time.Time, error) {
+	var rows []struct {
+		Slug string    `gorm:"column:slug"`
+		Last time.Time `gorm:"column:last"`
+	}
+	err := r.scoped(ctx, scope).
+		Model(&types.LearningEvent{}).
+		Select("slug, MAX(occurred_at) AS last").
+		Group("slug").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]time.Time, len(rows))
+	for _, row := range rows {
+		out[row.Slug] = row.Last
+	}
+	return out, nil
+}
+
+func (r *learningRepository) ListSelfAssess(
+	ctx context.Context, scope interfaces.LearningScope,
+) (map[string]interfaces.SelfAssessMark, error) {
+	var events []types.LearningEvent
+	err := r.scoped(ctx, scope).
+		Where("event_type LIKE ?", "self_assess_%").
+		Order("occurred_at DESC").
+		Find(&events).Error
+	if err != nil {
+		return nil, err
+	}
+	cutoff := time.Now().Add(-interfaces.SelfAssessVisibleWindow)
+	out := map[string]interfaces.SelfAssessMark{}
+	for _, ev := range events {
+		if _, seen := out[ev.Slug]; seen || ev.OccurredAt.Before(cutoff) {
+			continue
+		}
+		direction := "down"
+		if ev.Type == types.LearningEventSelfAssessUp {
+			direction = "up"
+		}
+		out[ev.Slug] = interfaces.SelfAssessMark{Direction: direction, EventType: ev.Type, At: ev.OccurredAt}
+	}
+	return out, nil
+}
+
 func (r *learningRepository) GetSubjectPrefs(
 	ctx context.Context, tenantID uint64, subjectID string,
 ) (*types.LearningSubjectPrefs, error) {
@@ -188,6 +236,16 @@ func (r *learningRepository) ListAttempts(
 ) ([]types.LearningQuizAttempt, error) {
 	var attempts []types.LearningQuizAttempt
 	err := r.scoped(ctx, scope).Where("slug = ?", slug).
+		Order("answered_at ASC").
+		Find(&attempts).Error
+	return attempts, err
+}
+
+func (r *learningRepository) ListCorrectAttempts(
+	ctx context.Context, scope interfaces.LearningScope,
+) ([]types.LearningQuizAttempt, error) {
+	var attempts []types.LearningQuizAttempt
+	err := r.scoped(ctx, scope).Where("is_correct = ?", true).
 		Order("answered_at ASC").
 		Find(&attempts).Error
 	return attempts, err

@@ -10,11 +10,20 @@ import { get, post, put, del } from '../../utils/request';
 
 // ---- response payload types ----
 
+/** 今日学习摘要：答题数/正确数/今日点亮/连续天数（读时从事件派生）。 */
+export interface TodaySummary {
+  answers: number;
+  correct_count: number;
+  lit_today: number;
+  streak_days: number;
+}
+
 export interface LearningProgress {
   total_nodes: number;
   lit_nodes: number;
   levels: Record<string, number>;
   units: { folder_id: string; folder_name: string; total: number; lit: number }[];
+  today?: TodaySummary;
 }
 
 export interface MasteryView {
@@ -24,8 +33,15 @@ export interface MasteryView {
   evidence_count: number;
   low_confidence: boolean;
   last_evidence_at: string;
+  /** 最新一次原始事件时间（含零权重活动：48h内重读、答「不确定」）——星图闪烁依据。 */
+  last_activity_at: string;
+  /** 7 天内最新一次自评（悬停回显用；不参与档位计算）。 */
+  self_assess?: { direction: 'up' | 'down'; event_type: string; occurred_at: string };
   /** 节点页中文标题（读时批量解析）；页面不存在时为空。 */
   title?: string;
+  /** 档位内进度（0–1，p_eff 在当前档区间的位置）与下档路径提示。 */
+  tier_progress?: number;
+  next_tier_hint?: string;
 }
 
 export interface Recommendation {
@@ -43,6 +59,9 @@ export interface Recommendation {
   positive_count?: number;
   negative_count?: number;
   faded?: boolean;
+  /** 档位内进度（0–1）与下档路径提示（直接证据门控的解锁条件）。 */
+  tier_progress?: number;
+  next_tier_hint?: string;
 }
 
 export interface QuizSourceDoc {
@@ -68,6 +87,11 @@ export interface AnswerResult {
   chunk_refs: string[];
   /** 确定性复习计划：档位预计保持 N 天（衰减到降档阈值的时长）。 */
   next_review_days?: number;
+  /** 「不确定」申报：按声明处理（零权重事件），不奖不罚。 */
+  unsure?: boolean;
+  /** 作答前后的有效掌握度（快变量正反馈：45% → 58%）。 */
+  p_eff_before?: number;
+  p_eff_after?: number;
 }
 
 export interface TimelineItem {
@@ -149,6 +173,14 @@ export function submitLearningAnswer(kbId: string, itemId: string, chosenKey: st
 // the backend dedupes per slug per 48h window, so fire-and-forget is safe.
 export function recordWikiRead(kbId: string, slug: string) {
   return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/read`, { slug });
+}
+
+export type SelfAssessDirection = 'up' | 'down';
+export type SelfAssessDownReason = 'all' | 'doc_gap' | 'doc_updated' | 'quiz_easy';
+
+/** Skill-matrix self-assessment: up lifts the score into the mastered band (tier still gated on quiz proof); down demotes by reason. */
+export function selfAssess(kbId: string, slug: string, direction: SelfAssessDirection, reason?: SelfAssessDownReason) {
+  return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/self-assess`, { slug, direction, reason });
 }
 
 export function getLearningTimeline(kbId: string, page = 1, pageSize = 20) {

@@ -9,7 +9,7 @@
         <div v-if="masteryCard.visible" class="wiki-graph-mastery-card" :class="{ 'card-shifted': graphDrawerVisible }">
           <div class="mc-head">
             <span class="mc-ring" :style="{ borderColor: masteryRingColor(masteryCard.level) }"></span>
-            <span class="mc-title" :title="masteryCard.slug">{{ masteryCard.title }}</span>
+            <span class="mc-title" :title="$t('knowledgeEditor.wikiBrowser.mcOpenNode')">{{ masteryCard.title }}</span>
             <span class="mc-tier">{{ masteryCardTierLabel(masteryCard.level) }}</span>
           </div>
           <div class="mc-row">
@@ -3727,6 +3727,9 @@ async function selectPage(page: WikiPage) {
     const res = await getWikiPage(props.knowledgeBaseId, page.slug)
     selectedPage.value = (res as any).data || res as any
     await loadPageIssues(page.slug)
+    // 侧边栏点击与图谱抽屉/双链跳转同权记读——三条打开路径的信号采集必须
+    // 一致，否则"哪种点法算学习"变成隐藏规则（60 秒护盾与 48h 计分窗在后端）。
+    recordWikiRead(props.knowledgeBaseId, page.slug).catch(() => {})
   } catch (e) {
     console.error('Failed to load wiki page:', e)
   }

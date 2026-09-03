@@ -16,10 +16,11 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "", "simulate | replay | verify | walk")
+	mode := flag.String("mode", "", "simulate | replay | verify | walk | optimize")
 	flag.StringVar(&weightOverrides, "w", "", "replay: weight overrides K=V,K=V (offline tuning sweep only)")
 	flag.BoolVar(&refold, "refold", false, "replay: recompute weights from current vars instead of frozen row values (tuning mode)")
 	verifyOut := flag.String("verify-out", "", "verify: write JSON artifact to this path")
+	optReport := flag.String("report", "", "optimize: write JSON calibration report to this path")
 	script := flag.String("script", "", "simulate: path to persona JSON script")
 	export := flag.String("export", "", "replay: path to exported profile JSON file")
 	topK := flag.String("topk", "5,10", "replay: comma-separated K values (default 5,10)")
@@ -52,6 +53,13 @@ func main() {
 			fatal(fmt.Sprintf("walk failed: %v", err))
 		}
 		fmt.Println("✓ walk: simulated learner completed the full chain")
+	case "optimize":
+		if *export == "" {
+			fatal("optimize mode requires -export=<path>")
+		}
+		if err := runOptimize(*export, *optReport, *verbose); err != nil {
+			fatal(fmt.Sprintf("optimize failed: %v", err))
+		}
 	default:
 		flag.Usage()
 		os.Exit(1)

@@ -29,12 +29,37 @@ const (
 	// LearningEventQuizWrong: the person answered a grounded quiz item on
 	// this node wrongly. The only direct negative mastery evidence.
 	LearningEventQuizWrong = "quiz_wrong"
+	// LearningEventQuizUnsure: the person declared "not sure" instead of
+	// guessing. Carries zero weight — an honest admission is neither
+	// evidence of mastery nor of failure — but lands in the timeline as a
+	// metacognitive trace and counts toward repeat-attempt decay so
+	// unsure-then-answer within the window still earns decayed weight.
+	LearningEventQuizUnsure = "quiz_unsure"
 	// LearningEventBackfillCite: historical doc affinity replayed as an
 	// event. Document-grained, so it carries the backfill discount.
 	LearningEventBackfillCite = "backfill_cite"
 	// LearningEventWikiToolRead: an agent wiki_read_page call, collected
 	// opportunistically where a hook exists. May never be produced.
 	LearningEventWikiToolRead = "wiki_tool_read"
+	// LearningEventSelfAssessUp: the person self-assessed "I know this
+	// better than my tier" (skills-matrix self-assessment track). The write
+	// path lifts the frozen logit straight into the mastered band so the
+	// progress is instantly visible — but self-assessment is indirect
+	// evidence, so the direct-evidence gate still caps the displayed tier
+	// until quiz facts arrive: the system is saying "prove it".
+	LearningEventSelfAssessUp = "self_assess_up"
+	// LearningEventSelfAssessDownAll: "not proficient at all — I mis-clicked
+	// earlier". Resets the fold to the logit floor; a full restart.
+	LearningEventSelfAssessDownAll = "self_assess_down_all"
+	// LearningEventSelfAssessDownDocGap: "the docs don't cover the part I'm
+	// weak on". Demotes one band and records a content-gap label.
+	LearningEventSelfAssessDownDocGap = "self_assess_down_doc_gap"
+	// LearningEventSelfAssessDownDocUpdated: "the docs gained new content I
+	// haven't learned". Demotes one band and records a staleness label.
+	LearningEventSelfAssessDownDocUpdated = "self_assess_down_doc_updated"
+	// LearningEventSelfAssessDownQuizEasy: "I only passed because the quiz
+	// was too easy". Demotes one band and records a quiz-validity label.
+	LearningEventSelfAssessDownQuizEasy = "self_assess_down_quiz_easy"
 )
 
 // learning_edges stores only prerequisite relations; related/none pairs are

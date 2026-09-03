@@ -48,6 +48,7 @@ func resolveReadScope(ctx context.Context, kbID string) (interfaces.LearningScop
 type (
 	LearningProgress     = interfaces.LearningProgress
 	LearningUnitProgress = interfaces.LearningUnitProgress
+	TodaySummary         = interfaces.TodaySummary
 	MasteryView          = interfaces.MasteryView
 	QuizQuestion         = interfaces.QuizQuestion
 	QuizSourceDoc        = interfaces.QuizSourceDoc
@@ -80,6 +81,7 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 	}
 
 	now := time.Now()
+	direct := s.directFacts(ctx, scope)
 	progress := &LearningProgress{Levels: map[string]int{}}
 	// Folder names are the human-readable labels of the rolled-up units;
 	// a missing folder (deleted between reads) degrades to the root label.
@@ -96,7 +98,7 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 	unitIndex := map[string]*LearningUnitProgress{}
 	for _, p := range pages {
 		progress.TotalNodes++
-		lv := anchoredLevel(states[p.Slug], now)
+		lv := gatedAnchoredLevel(states[p.Slug], direct[p.Slug], now)
 		progress.Levels[string(lv.Level)]++
 		if lv.Level != LevelUnseen {
 			progress.LitNodes++
@@ -119,7 +121,62 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 	for _, id := range ids {
 		progress.Units = append(progress.Units, *unitIndex[id])
 	}
+	progress.Today = s.todaySummary(ctx, scope, states, now)
 	return progress, nil
+}
+
+// todaySummary derives the daily digest from the same rows the tab already
+// reads: today's events (answers and their outcomes), nodes whose first
+// evidence landed today, and the consecutive-day streak. Collection-free by
+// construction — it summarises events that were already stored.
+func (s *Service) todaySummary(
+	ctx context.Context, scope interfaces.LearningScope, states map[string]FoldState, now time.Time,
+) *TodaySummary {
+	today := &TodaySummary{}
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Bug fix: an unbounded ListEvents silently caps at 500 rows (repo
+	// default), truncating streak and quizStruggled for heavy users. Bound
+	// the lookback to a year — no streak or struggle signal survives longer.
+	streakLookback := 365 * 24 * time.Hour
+	events, err := s.repo.ListEvents(ctx, scope, now.Add(-streakLookback), 0)
+	if err != nil {
+		logger.Warnf(ctx, "learning: today summary read failed (kb %s): %v", scope.KnowledgeBaseID, err)
+		return today
+	}
+	daySeen := map[string]bool{}
+	for _, ev := range events {
+		d := ev.OccurredAt.Format("2006-01-02")
+		if !daySeen[d] {
+			daySeen[d] = true
+		}
+		if !ev.OccurredAt.Before(start) {
+			switch ev.Type {
+			case types.LearningEventQuizCorrect, types.LearningEventQuizWrong, types.LearningEventQuizUnsure:
+				today.Answers++
+				if ev.Type == types.LearningEventQuizCorrect {
+					today.CorrectCount++
+				}
+			}
+		}
+	}
+	for _, st := range states {
+		if !st.FirstSeenAt.IsZero() && !st.FirstSeenAt.Before(start) && st.EvidenceCount > 0 {
+			today.LitToday++
+		}
+	}
+	// Streak: consecutive days ending today (or yesterday, so this morning
+	// does not read as a broken streak before the first action).
+	// Bug fix: daySeen must contain ONLY days with actual events — seeding
+	// today unconditionally manufactured streak=1 for never-active users.
+	day := start
+	if !daySeen[day.Format("2006-01-02")] {
+		day = day.AddDate(0, 0, -1)
+	}
+	for daySeen[day.Format("2006-01-02")] {
+		today.StreakDays++
+		day = day.AddDate(0, 0, -1)
+	}
+	return today
 }
 
 // ListMasteryView derives every node's current level and decayed
@@ -145,17 +202,54 @@ func (s *Service) ListMasteryView(ctx context.Context, kbID string) ([]MasteryVi
 		}
 	}
 	now := time.Now()
+	direct := s.directFacts(ctx, scope)
+	// Raw last activity per slug (zero-weight touches included) — the
+	// constellation's "studied within 48h" marker must see deduped re-reads
+	// and unsure answers, which never enter the fold. Failure is soft: the
+	// view falls back to the folded last_evidence_at, exactly the old
+	// behavior.
+	activity := map[string]time.Time{}
+	if m, err := s.repo.ListLastActivity(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: last-activity read failed (kb %s): %v", kbID, err)
+	} else {
+		activity = m
+	}
+	selfAssess := map[string]interfaces.SelfAssessMark{}
+	if m, err := s.repo.ListSelfAssess(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: self-assess read failed (kb %s): %v", kbID, err)
+	} else {
+		selfAssess = m
+	}
 	out := make([]MasteryView, 0, len(pages))
 	for _, p := range pages {
 		if p == nil || p.Slug == "" {
 			continue
 		}
 		state := states[p.Slug]
-		lv := anchoredLevel(state, now)
+		lv := gatedAnchoredLevel(state, direct[p.Slug], now)
+		lastActivity := activity[p.Slug]
+		if lastActivity.IsZero() || lastActivity.Before(state.LastEvidenceAt) {
+			lastActivity = state.LastEvidenceAt
+		}
+		var mark *interfaces.SelfAssessMark
+		if m, ok := selfAssess[p.Slug]; ok {
+			mark = &m
+		}
+		pEff := EffectiveP(state, now)
+		// Bug fix: a node with zero evidence and zero timestamps has a raw
+		// sigmoid(0)=0.5 — "a statement nobody earned" (anchoredLevel's own
+		// words). The mastery map must report p_eff=0 and tier_progress=0
+		// for never-touched nodes, not a half-full progress bar.
+		if state.EvidenceCount == 0 && state.LastEvidenceAt.IsZero() {
+			pEff = 0
+		}
 		out = append(out, MasteryView{
 			Slug: p.Slug, Level: string(lv.Level), Title: p.Title,
-			PEff: EffectiveP(state, now), EvidenceCount: state.EvidenceCount,
+			PEff: pEff, EvidenceCount: state.EvidenceCount,
 			LowConfidence: lv.LowConfidence, LastEvidenceAt: state.LastEvidenceAt,
+			LastActivityAt: lastActivity, SelfAssess: mark,
+			TierProgress:   TierProgress(lv.Level, pEff),
+			NextTierHint:   NextTierHint(lv.Level, direct[p.Slug], now),
 		})
 	}
 	// Deterministic order: lit tiers first (mastered → touched), unseen
@@ -253,7 +347,9 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 	// Direct-evidence struggle: slugs this subject answered wrong at least
 	// once — the strongest remedial signal, one indexed event scan.
 	quizStruggled := map[string]bool{}
-	if history, err := s.repo.ListEvents(ctx, scope, time.Time{}, 0); err != nil {
+	// Bug fix: bound the lookback — unbounded ListEvents silently caps at
+	// 500 rows, hiding older wrong-answer slugs from the struggle signal.
+	if history, err := s.repo.ListEvents(ctx, scope, time.Now().Add(-touchLookback), 0); err != nil {
 		logger.Warnf(ctx, "learning: recommend history read failed (kb %s): %v", kbID, err)
 	} else {
 		for _, ev := range history {
@@ -263,9 +359,10 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 		}
 	}
 
+	direct := s.directFacts(ctx, scope)
 	recs := recommendNodes(recommendInput{
 		Pages: pages, Edges: edges, States: states, Affinity: affinity, HasQuiz: hasQuiz,
-		QuizStruggled: quizStruggled,
+		QuizStruggled: quizStruggled, DirectFacts: direct,
 	}, time.Now(), rand.New(rand.NewSource(time.Now().UnixNano())), limit)
 
 	// Display extras, derived here so the pure recommender stays a pure
@@ -290,7 +387,7 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 		recs[i].FolderName = folderNames[folderBySlug[slug]]
 		recs[i].QuizCount = quizCount[slug]
 		if state, ok := states[slug]; ok {
-			lv := anchoredLevel(state, now)
+			lv := gatedAnchoredLevel(state, direct[slug], now)
 			recs[i].Level = string(lv.Level)
 			// Explainability: the numbers behind the tier, plus the faded
 			// distinction (unseen tier WITH history) so the client can say
@@ -300,6 +397,15 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 			recs[i].PositiveCount = state.PositiveCount
 			recs[i].NegativeCount = state.NegativeCount
 			recs[i].Faded = lv.Level == LevelUnseen && state.EvidenceCount > 0
+			recs[i].TierProgress = TierProgress(lv.Level, recs[i].PEff)
+			recs[i].NextTierHint = NextTierHint(lv.Level, direct[slug], now)
+		} else {
+			// Bug fix: explore/bypass/blind-spot picks are state-less by
+			// definition — the level must be the explicit "unseen" enum,
+			// not empty (client tier maps and fade logic expect the same
+			// enumeration the /map endpoint returns).
+			recs[i].Level = string(LevelUnseen)
+			recs[i].NextTierHint = HintFirstTouch
 		}
 	}
 	return recs, nil
@@ -429,8 +535,10 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	// anti-farm guarantee), but practice spaced across days earns the full
 	// weight again — the spacing effect, so a learner who returns tomorrow
 	// is never trapped in near-zero-weight drills.
+	var priorAttempts []types.LearningQuizAttempt
 	prior := 0
 	if attempts, err := s.repo.ListAttempts(ctx, scope, item.Slug); err == nil {
+		priorAttempts = attempts
 		windowStart := time.Now().Add(-ReAskWindowHours * time.Hour)
 		for _, a := range attempts {
 			if a.QuizItemID == itemID && a.AnsweredAt.After(windowStart) {
@@ -445,6 +553,7 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	result := &AnswerResult{
 		Correct: grade.Correct, CorrectKey: item.CorrectKey,
 		Explanation: item.Explanation, ChunkRefs: []string(item.ChunkRefs),
+		Unsure: grade.EventType == types.LearningEventQuizUnsure,
 	}
 
 	if s.prefs.collectionDisabled(ctx, s.repo, scope.TenantID, scope.SubjectID) {
@@ -452,6 +561,14 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	}
 
 	now := time.Now()
+	// The fast-feedback bracket: p_eff immediately before this answer.
+	facts := CollectDirectFacts(priorAttempts)[item.Slug]
+	var before *float64
+	if row, err := s.repo.GetMastery(ctx, scope, item.Slug); err == nil && row != nil {
+		if p := EffectiveP(StateFromModel(row), now); p > 0 {
+			before = &p
+		}
+	}
 	if err := s.repo.InsertAttempt(ctx, &types.LearningQuizAttempt{
 		TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
 		QuizItemID: itemID, Slug: item.Slug,
@@ -465,12 +582,40 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	}); err != nil {
 		return nil, err
 	}
-	s.foldOne(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now})
+	if grade.Weight != 0 {
+		// A correct answer adds one distinct-item fact for the gate; an
+		// unsure declaration folds nothing and grants nothing.
+		// Bug fix: only append when this item isn't already in the facts —
+		// CollectDirectFacts deduplicates by first-correct per item, but a
+		// re-correct on the same item was appending a duplicate, letting
+		// the gate see "2 facts" from one memorized answer.
+		if grade.Correct {
+			duplicate := false
+			for _, f := range facts {
+				if f.ItemID == itemID {
+					duplicate = true
+					break
+				}
+			}
+			if !duplicate {
+				facts = append(facts, DirectQuizFact{ItemID: itemID, FirstCorrectAt: now})
+			}
+		}
+		s.foldOne(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now})
+	}
 	// The deterministic review schedule: how many days the folded state
-	// keeps its tier before decay pulls it below the demotion gate.
+	// keeps its tier before decay pulls it below the demotion gate, plus
+	// the fast-feedback bracket around the fold.
 	if row, err := s.repo.GetMastery(ctx, scope, item.Slug); err == nil && row != nil {
 		state := StateFromModel(row)
-		if threshold := tierDownThreshold(anchoredLevel(state, now).Level); threshold > 0 {
+		if grade.Weight != 0 {
+			if p := EffectiveP(state, now); p > 0 {
+				after := p
+				result.PEffAfter = &after
+				result.PEffBefore = before // nil on the node's first evidence
+			}
+		}
+		if threshold := tierDownThreshold(gatedAnchoredLevel(state, facts, now).Level); threshold > 0 {
 			result.NextReviewDays = NextReviewDays(state, now, threshold)
 		}
 	}
@@ -711,12 +856,13 @@ func (s *Service) MasteryOverlay(ctx context.Context, kbID string, slugs []strin
 		return nil, err
 	}
 	now := time.Now()
+	direct := s.directFacts(ctx, scope)
 	out := map[string]MasteryOverlayEntry{}
 	for i := range rows {
 		out[rows[i].Slug] = MasteryOverlayEntry{}
 	}
 	for i := range rows {
-		lv := anchoredLevel(StateFromModel(&rows[i]), now)
+		lv := gatedAnchoredLevel(StateFromModel(&rows[i]), direct[rows[i].Slug], now)
 		out[rows[i].Slug] = MasteryOverlayEntry{Level: string(lv.Level), LowConfidence: lv.LowConfidence}
 	}
 	_ = slugs // overlay carries all the caller's nodes; the graph handler filters

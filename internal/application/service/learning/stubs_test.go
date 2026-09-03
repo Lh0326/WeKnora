@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"strings"
 	"context"
 	"sort"
 	"strconv"
@@ -210,6 +211,19 @@ func (s *stubLearningRepo) ListAttempts(_ context.Context, scope interfaces.Lear
 	return out, nil
 }
 
+func (s *stubLearningRepo) ListCorrectAttempts(_ context.Context, scope interfaces.LearningScope) ([]types.LearningQuizAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningQuizAttempt
+	for _, a := range s.quizAttempts {
+		if a.TenantID == scope.TenantID && a.SubjectID == scope.SubjectID &&
+			a.KnowledgeBaseID == scope.KnowledgeBaseID && a.IsCorrect {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 func (s *stubLearningRepo) InsertAttempt(_ context.Context, a *types.LearningQuizAttempt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,6 +328,45 @@ func (s *stubLearningRepo) ListMastery(_ context.Context, scope interfaces.Learn
 	for _, row := range s.mastery {
 		if row.TenantID == scope.TenantID && row.SubjectID == scope.SubjectID && row.KnowledgeBaseID == scope.KnowledgeBaseID {
 			out = append(out, *row)
+		}
+	}
+	return out, nil
+}
+
+func (s *stubLearningRepo) ListSelfAssess(_ context.Context, scope interfaces.LearningScope) (map[string]interfaces.SelfAssessMark, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]interfaces.SelfAssessMark{}
+	cutoff := time.Now().Add(-interfaces.SelfAssessVisibleWindow)
+	for i := len(s.events) - 1; i >= 0; i-- { // newest first
+		ev := s.events[i]
+		if ev.TenantID != scope.TenantID || ev.SubjectID != scope.SubjectID || ev.KnowledgeBaseID != scope.KnowledgeBaseID {
+			continue
+		}
+		if !strings.HasPrefix(ev.Type, "self_assess_") || ev.OccurredAt.Before(cutoff) {
+			continue
+		}
+		if _, seen := out[ev.Slug]; seen {
+			continue
+		}
+		direction := "down"
+		if ev.Type == types.LearningEventSelfAssessUp {
+			direction = "up"
+		}
+		out[ev.Slug] = interfaces.SelfAssessMark{Direction: direction, EventType: ev.Type, At: ev.OccurredAt}
+	}
+	return out, nil
+}
+
+func (s *stubLearningRepo) ListLastActivity(_ context.Context, scope interfaces.LearningScope) (map[string]time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]time.Time{}
+	for _, ev := range s.events {
+		if ev.TenantID == scope.TenantID && ev.SubjectID == scope.SubjectID && ev.KnowledgeBaseID == scope.KnowledgeBaseID {
+			if at := ev.OccurredAt; at.After(out[ev.Slug]) {
+				out[ev.Slug] = at
+			}
 		}
 	}
 	return out, nil

@@ -70,8 +70,22 @@ func NextReviewDays(state FoldState, now time.Time, threshold float64) *float64 
 		stability = StabilityBaseDays
 	}
 	days := stability / DecayFactor * (math.Pow(p0/threshold, -1/DecayExponent) - 1)
-	if days < 0 {
-		days = 0
+	// Bug fix: the formula yields days FROM LastEvidenceAt, but callers
+	// (review schedule, due-soon test) read it as days FROM NOW. Subtract
+	// the already-elapsed idle time; ≤0 means the node has already fallen
+	// to/below the threshold — review now (nil per the doc contract).
+	if !now.After(state.LastEvidenceAt) {
+		if days < 0 {
+			days = 0
+		}
+		if days > 365 {
+			days = 365
+		}
+		return &days
+	}
+	days -= now.Sub(state.LastEvidenceAt).Hours() / 24
+	if days <= 0 {
+		return nil
 	}
 	if days > 365 {
 		days = 365
