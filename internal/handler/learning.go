@@ -219,6 +219,23 @@ func (h *LearningHandler) SubmitAnswer(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
 }
 
+// KnowledgeHealth godoc — the owner/admin org aggregate: coverage counts,
+// expert nodes, single-person and stale-doc risks, folder roll-ups and
+// recent self-assessment maintenance marks. Deterministic read path; no
+// LLM anywhere. Unlike the personal routes above, the subject dimension
+// does not exist here at all — people are counted, never named.
+func (h *LearningHandler) KnowledgeHealth(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	health, err := h.learningService.KnowledgeHealth(c.Request.Context(), c.Param("kb_id"))
+	if err != nil {
+		h.fail(c, err, "Failed to load knowledge health")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": health})
+}
+
 // Timeline godoc
 func (h *LearningHandler) Timeline(c *gin.Context) {
 	if !h.requireLearningEnabled(c) {

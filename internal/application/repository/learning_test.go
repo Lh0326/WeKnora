@@ -190,3 +190,67 @@ func TestLearningRepositoryAttemptHistory(t *testing.T) {
 	assert.False(t, attempts[0].IsCorrect)
 	assert.True(t, attempts[1].IsCorrect)
 }
+
+func TestLearningRepositoryListMasteryByKB(t *testing.T) {
+	db := setupLearningTestDB(t)
+	repo := NewLearningRepository(db)
+	ctx := context.Background()
+
+	write := func(tenantID uint64, subjectID, kbID, slug string) {
+		require.NoError(t, repo.UpsertMastery(ctx, &types.MasteryState{
+			TenantID: tenantID, SubjectID: subjectID, KnowledgeBaseID: kbID, Slug: slug,
+			Logit: 1.5, EvidenceCount: 2,
+		}))
+	}
+	// Two subjects in the KB, plus foreign rows the query must not see:
+	// another tenant (same kb) and another kb (same tenant).
+	write(10000, "web_user:bob", "kb-1", "concept/zeta")
+	write(10000, "web_user:alice", "kb-1", "concept/alpha")
+	write(20000, "web_user:eve", "kb-1", "concept/alpha")
+	write(10000, "web_user:alice", "kb-2", "concept/alpha")
+
+	rows, err := repo.ListMasteryByKB(ctx, 10000, "kb-1")
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
+	// Deterministic order: subject then slug — alice/alpha before bob/zeta.
+	assert.Equal(t, "web_user:alice", rows[0].SubjectID)
+	assert.Equal(t, "concept/alpha", rows[0].Slug)
+	assert.Equal(t, "web_user:bob", rows[1].SubjectID)
+	assert.Equal(t, "concept/zeta", rows[1].Slug)
+}
+
+func TestLearningRepositoryListMaintenanceMarks(t *testing.T) {
+	db := setupLearningTestDB(t)
+	repo := NewLearningRepository(db)
+	ctx := context.Background()
+
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	events := []types.LearningEvent{
+		// In window, in vocabulary: kept.
+		{TenantID: 10000, SubjectID: "web_user:a", KnowledgeBaseID: "kb-1", Slug: "concept/rag",
+			Type: types.LearningEventSelfAssessDownDocGap, OccurredAt: at.Add(-24 * time.Hour)},
+		{TenantID: 10000, SubjectID: "web_user:b", KnowledgeBaseID: "kb-1", Slug: "concept/rag",
+			Type: types.LearningEventSelfAssessUp, OccurredAt: at.Add(-48 * time.Hour)},
+		// Out of the since cutoff: dropped.
+		{TenantID: 10000, SubjectID: "web_user:a", KnowledgeBaseID: "kb-1", Slug: "concept/rag",
+			Type: types.LearningEventSelfAssessDownAll, OccurredAt: at.Add(-40 * 24 * time.Hour)},
+		// In window but not a self-assessment: dropped.
+		{TenantID: 10000, SubjectID: "web_user:a", KnowledgeBaseID: "kb-1", Slug: "concept/rag",
+			Type: types.LearningEventQuizCorrect, OccurredAt: at.Add(-time.Hour)},
+		// Foreign scope: dropped.
+		{TenantID: 20000, SubjectID: "web_user:e", KnowledgeBaseID: "kb-1", Slug: "concept/rag",
+			Type: types.LearningEventSelfAssessUp, OccurredAt: at.Add(-time.Hour)},
+		{TenantID: 10000, SubjectID: "web_user:a", KnowledgeBaseID: "kb-2", Slug: "concept/rag",
+			Type: types.LearningEventSelfAssessUp, OccurredAt: at.Add(-time.Hour)},
+	}
+	for i := range events {
+		require.NoError(t, repo.AppendEvent(ctx, &events[i]))
+	}
+
+	marks, err := repo.ListMaintenanceMarks(ctx, 10000, "kb-1", at.Add(-30*24*time.Hour))
+	require.NoError(t, err)
+	require.Len(t, marks, 2)
+	// Newest first.
+	assert.Equal(t, types.LearningEventSelfAssessDownDocGap, marks[0].Type)
+	assert.Equal(t, types.LearningEventSelfAssessUp, marks[1].Type)
+}

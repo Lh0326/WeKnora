@@ -2387,7 +2387,7 @@ async function createNewSession(value: string): Promise<void> {
 
       <!-- Wiki Browser / Graph (shown when wiki or graph tab is active) -->
       <div v-if="isWiki && activeKbTab === 'learning'" class="learning-main-area">
-        <LearningTab v-if="kbId" :key="kbId" :knowledge-base-id="kbId"
+        <LearningTab v-if="kbId" :key="kbId" :knowledge-base-id="kbId" :can-manage="canManage"
           @open-source-doc="openSourceDoc" />
       </div>
       <div v-if="isWiki && (activeKbTab === 'wiki' || activeKbTab === 'graph')" class="wiki-main-area">

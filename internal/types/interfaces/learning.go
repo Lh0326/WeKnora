@@ -125,6 +125,18 @@ type LearningRepository interface {
 	// DeleteLearningDataByKB removes EVERY subject's learning data inside
 	// one knowledge base — the orphan sweep for KBs that no longer exist.
 	DeleteLearningDataByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) error
+	// ListMasteryByKB returns every subject's folded rows inside one KB,
+	// deterministically ordered (subject, slug). The knowledge-health
+	// aggregate's only cross-subject read; reachable solely through the
+	// owner/admin-gated health route, so — like ListAllMastery's background
+	// jobs — it is a deliberate subject-less exception, never a handler
+	// parameter away from someone else's data.
+	ListMasteryByKB(ctx context.Context, tenantID uint64, kbID string) ([]types.MasteryState, error)
+	// ListMaintenanceMarks returns the KB's self-assessment events (the
+	// five types whose reason taxonomy carries maintenance semantics)
+	// since the given time, newest first — the health view's content-work
+	// queue. Tenant- and KB-scoped like every query here.
+	ListMaintenanceMarks(ctx context.Context, tenantID uint64, kbID string, since time.Time) ([]types.LearningEvent, error)
 }
 
 // LearningService is the write-path entry the QA handler calls after each
@@ -183,6 +195,74 @@ type LearningService interface {
 	// nothing is persisted, nothing enters the event stream (the timeline
 	// stays a log of real actions; passive drift is a separate channel).
 	PassiveChanges(ctx context.Context, kbID string, limit int) (*PassiveChangesSummary, error)
+	// KnowledgeHealth assembles the owner/admin org aggregate for one KB:
+	// coverage counts, expert nodes, single-person and stale-doc risks,
+	// folder roll-ups and recent self-assessment maintenance marks. Fully
+	// deterministic (no LLM); no subject identifier ever leaves the
+	// aggregate — people are counted, never named.
+	KnowledgeHealth(ctx context.Context, kbID string) (*KnowledgeHealth, error)
+}
+
+// KnowledgeHealth is the owner/admin org view of one KB's learning state:
+// who-knows-what reduced to counts, plus the risks and maintenance marks
+// an owner can act on. Every member slice is sorted deterministically
+// (count desc, then title, then key) so two opens of the same moment
+// render identically.
+type KnowledgeHealth struct {
+	NodesTotal     int                     `json:"nodes_total"`
+	NodesCovered   int                     `json:"nodes_covered"`
+	SubjectsActive int                     `json:"subjects_active"`
+	Folders        []HealthFolder          `json:"folders"`
+	Experts        []HealthExpert          `json:"experts"`
+	Risks          []HealthRisk            `json:"risks"`
+	Maintenance    []HealthMaintenanceMark `json:"maintenance"`
+}
+
+// HealthFolder rolls one wiki folder up: how many nodes it holds, how many
+// are covered by at least one person, and the deepest familiar bench (the
+// maximum distinct-familiar-people count across its nodes — the folder's
+// bus-factor at a glance). The root folder keeps FolderID "" and an empty
+// FolderName; the client labels it via its root key like the progress tab.
+type HealthFolder struct {
+	FolderID      string `json:"folder_id"`
+	FolderName    string `json:"folder_name"`
+	TotalNodes    int    `json:"total_nodes"`
+	CoveredNodes  int    `json:"covered_nodes"`
+	FamiliarUsers int    `json:"familiar_users"`
+}
+
+// HealthExpert is a node with at least one person in the familiar band.
+type HealthExpert struct {
+	Slug          string `json:"slug"`
+	Title         string `json:"title"`
+	FamiliarCount int    `json:"familiar_count"`
+}
+
+// HealthRisk is one actionable org-level risk. Kind is "single_point" (a
+// node exactly one person is familiar with) or "stale_doc" (a source
+// document everyone learned from and has since forgotten). Key is the node
+// slug or the document id; FamiliarCount/BestPEff mean per-kind: people
+// familiar / people who ever folded evidence on the covering nodes.
+type HealthRisk struct {
+	Kind          string  `json:"kind"`
+	Key           string  `json:"key"`
+	Title         string  `json:"title"`
+	FamiliarCount int     `json:"familiar_count"`
+	BestPEff      float64 `json:"best_p_eff"`
+	Note          string  `json:"note"`
+}
+
+// HealthMaintenanceMark groups the recent self-assessment events of one
+// node by their kind (the raw event type — the down reason taxonomy is
+// what makes them content-maintenance signals). Count/LatestAt describe
+// the group; Title resolves from the live page (empty when the page is
+// gone, the client falls back to the slug).
+type HealthMaintenanceMark struct {
+	Kind     string    `json:"kind"`
+	Slug     string    `json:"slug"`
+	Title    string    `json:"title"`
+	Count    int       `json:"count"`
+	LatestAt time.Time `json:"latest_at"`
 }
 
 // LearningProgress is the tab header: node totals per tier and per folder.
@@ -248,7 +328,7 @@ type MasteryView struct {
 
 // SelfAssessMark is one self-assessment as the read side surfaces it.
 type SelfAssessMark struct {
-	Direction string    `json:"direction"` // "up" | "down"
+	Direction string `json:"direction"` // "up" | "down"
 	// EventType is the raw event type; for "down" it encodes the reason
 	// (…_all / …_doc_gap / …_doc_updated / …_quiz_easy).
 	EventType string    `json:"event_type"`
@@ -290,15 +370,15 @@ type PassiveChange struct {
 	// (anchor tier strictly above the decayed view).
 	Demoted bool `json:"demoted"`
 	// LowConfidence mirrors the mastery honesty flag (< 3 evidence).
-	LowConfidence bool      `json:"low_confidence"`
+	LowConfidence  bool      `json:"low_confidence"`
 	LastEvidenceAt time.Time `json:"last_evidence_at"`
 }
 
 // PassiveChangesSummary aggregates the passive channel for one KB: full-set
 // counts plus the most urgent items (demotions first, then soonest due).
 type PassiveChangesSummary struct {
-	DemotedCount int            `json:"demoted_count"`
-	DueSoonCount int            `json:"due_soon_count"`
+	DemotedCount int             `json:"demoted_count"`
+	DueSoonCount int             `json:"due_soon_count"`
 	Items        []PassiveChange `json:"items"`
 }
 
@@ -413,11 +493,11 @@ type Recommendation struct {
 	// node that HAS learning history (wrong answers / decay sank it below
 	// the lit threshold), which the client renders as 已淡化 rather than
 	// the misleading 未接触.
-	PEff           float64 `json:"p_eff,omitempty"`
-	EvidenceCount  int     `json:"evidence_count,omitempty"`
-	PositiveCount  int     `json:"positive_count,omitempty"`
-	NegativeCount  int     `json:"negative_count,omitempty"`
-	Faded          bool    `json:"faded,omitempty"`
+	PEff          float64 `json:"p_eff,omitempty"`
+	EvidenceCount int     `json:"evidence_count,omitempty"`
+	PositiveCount int     `json:"positive_count,omitempty"`
+	NegativeCount int     `json:"negative_count,omitempty"`
+	Faded         bool    `json:"faded,omitempty"`
 	// TierProgress is the fast feedback variable: p_eff's position inside
 	// the current tier band (0..1). It moves with every answer even when
 	// the (gated) tier does not, so progress is continuous while promotion

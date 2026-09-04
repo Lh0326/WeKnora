@@ -35,4 +35,16 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.POST("/read", g.KBAccessRead("kb_id"), learningHandler.RecordRead)
 	kbGroup.POST("/self-assess", g.KBAccessRead("kb_id"), learningHandler.SelfAssess)
 	kbGroup.GET("/timeline", g.KBAccessRead("kb_id"), learningHandler.Timeline)
+
+	// Knowledge health is the owner/admin org aggregate (cross-subject
+	// counts, risks, maintenance marks) — a different audience from every
+	// route above, so it deliberately leaves the viewer group AND the
+	// api-key wrapper: same JWT-only + OwnedWikiKBOrAdmin + KBAccessRead
+	// matrix as the KB activity feed (RegisterKnowledgeBaseActivityRoutes),
+	// because no existing API-key capability grants an audit-like surface.
+	// KBAccessRead also rewrites the effective tenant, the only identity
+	// the aggregate needs — subjects are counted, never named, so there is
+	// no subject parameter to forge anywhere on this path.
+	healthGroup := r.Group("/learning/kb/:kb_id", g.OwnedWikiKBOrAdmin(), g.KBAccessRead("kb_id"))
+	healthGroup.GET("/health", learningHandler.KnowledgeHealth)
 }

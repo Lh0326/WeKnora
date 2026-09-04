@@ -18,9 +18,12 @@
 
     <!-- 单屏星空：左 2/3 知识星图（无边框、标题悬浮于圆图左上空角），右 1/3 数据栏
          （今日统计→档位→待巩固→分组→推荐，内部滚动），底部固定入口放大查看时间线/画像 -->
-    <div v-else class="sky">
-      <div class="sky-chart">
-        <div class="sky-head">
+    <div v-else class="sky" :class="{ 'health-view': healthView }">
+      <!-- 头部行：左上标题 + 右上视图切换（仅 owner/admin 可见）；健康视图下标题
+           切换为「知识资产健康」，星图与数据栏整体让位给健康面板，个人视图保持原样 -->
+      <div class="sky-head">
+        <div class="sky-head-main">
+          <template v-if="!healthView">
           <div class="ts-title">
             {{ $t('knowledgeEditor.learningTab.title') }}
             <t-popup trigger="hover" placement="bottom-left" show-arrow :overlay-style="{ maxWidth: '380px' }">
@@ -40,10 +43,20 @@
             {{ $t('knowledgeEditor.learningTab.litOf', { lit: displayLit, total: progress?.total_nodes ?? 0 }) }}
             <span v-if="masteredCount" class="meta-mastered">· {{ $t('knowledgeEditor.learningTab.masteredOf', { n: masteredCount }) }}</span>
           </div>
+          </template>
+          <div v-else class="ts-title">{{ $t('knowledgeEditor.learningTab.healthTitle') }}</div>
         </div>
-        <LearningConstellation :nodes="constellationNodes" @open="openPage" />
+        <!-- 视图切换：tl-filter 同款胶囊按钮（个人视图 / 知识健康） -->
+        <div v-if="canManage" class="view-toggle">
+          <button class="vt-btn" :class="{ active: !healthView }" @click="healthView = false">{{ $t('knowledgeEditor.learningTab.viewPersonal') }}</button>
+          <button class="vt-btn" :class="{ active: healthView }" @click="healthView = true">{{ $t('knowledgeEditor.learningTab.viewHealth') }}</button>
+        </div>
       </div>
-      <div class="sky-side">
+      <template v-if="!healthView">
+        <div class="sky-chart">
+          <LearningConstellation :nodes="constellationNodes" @open="openPage" />
+        </div>
+        <div class="sky-side">
         <div class="side-scroll">
           <!-- 今日处理记录：企业数据整合视角的事实性状态。连续学习天数一类的
                激励话术属于教育产品语境，不符合 WeKnora（企业级数据管理）定位 -->
@@ -117,60 +130,67 @@
               </div>
             </div>
           </div>
-          <!-- 下一步看什么：窄栏紧凑行 -->
+          <!-- 下一步看什么：窄栏紧凑行（岗位覆盖计划：按目录分组展示，行结构/排名/操作不变） -->
           <div class="side-block">
             <div class="side-title">{{ $t('knowledgeEditor.learningTab.recommendTitle') }}</div>
+            <div v-if="recommendations.length" class="role-plan-intro">
+              <span class="role-plan-name">{{ $t('knowledgeEditor.learningTab.rolePlanTitle') }}</span>
+              <span>{{ $t('knowledgeEditor.learningTab.rolePlanIntro') }}</span>
+            </div>
             <div v-if="recommendLoading" class="section-empty">{{ $t('common.loading') }}</div>
             <div v-else-if="!recommendations.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.recommendEmpty') }}</div>
             <div v-else class="rec-mini-list">
-              <div v-for="(rec, idx) in recommendations" :key="rec.slug" class="rec-mini"
-                :class="{ featured: idx === 0 }" @click="openPage(rec.slug)">
-                <span class="rec-rank" :class="{ top: idx === 0 }">{{ idx + 1 }}</span>
-                <div class="rec-mini-main">
-                  <div class="rec-mini-title">
-                    <span v-if="pageTypeOf(rec.slug)" class="rec-type-badge" :class="pageTypeOf(rec.slug)">{{ pageTypeText(pageTypeOf(rec.slug)) }}</span>
-                    <span class="rec-mini-name" :title="$t('knowledgeEditor.learningTab.hoverOpenNode')">{{ rec.title || titleOf(rec.slug) }}</span>
-                  </div>
-                  <div class="rec-mini-meta">
-                    <span class="rec-reason-tag" :style="reasonStyle(rec.reason)">{{ reasonText(rec.reason) }}</span>
-                    <t-popup trigger="hover" placement="bottom" show-arrow :overlay-style="{ maxWidth: '340px' }">
-                      <template #content>
-                        <div class="explain">
-                          <div class="explain-title">{{ $t('knowledgeEditor.learningTab.explainTitle') }}</div>
-                          <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainPEff', { p: Math.round((rec.p_eff ?? 0) * 100) }) }}（{{ $t('knowledgeEditor.learningTab.explainThresholds') }}）</div>
-                          <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainEvidence', { pos: rec.positive_count ?? 0, neg: rec.negative_count ?? 0 }) }}</div>
-                          <div v-if="rec.faded" class="explain-line explain-warn">{{ $t('knowledgeEditor.learningTab.explainFaded') }}</div>
-                          <div class="explain-line explain-improve">{{ $t('knowledgeEditor.learningTab.explainImprove') }}</div>
-                          <!-- 技能矩阵自评轨：挑战这个判断——更熟则抬分+引导验证，更生则按原因降档 -->
-                          <div class="explain-self-assess">
-                            <span class="esa-label">{{ $t('knowledgeEditor.learningTab.selfAssessSection') }}</span>
-                            <div class="esa-buttons">
-                              <button class="esa-btn up" @click="confirmSelfAssessUp(rec)">{{ $t('knowledgeEditor.learningTab.selfAssessUp') }}</button>
-                              <button class="esa-btn down" @click="openSelfAssessDown(rec)">{{ $t('knowledgeEditor.learningTab.selfAssessDown') }}</button>
+              <div v-for="group in groupedRecommendations" :key="group.name" class="rec-group">
+                <div class="rec-group-header">{{ group.name }}</div>
+                <div v-for="item in group.items" :key="item.rec.slug" class="rec-mini"
+                  :class="{ featured: item.rank === 0 }" @click="openPage(item.rec.slug)">
+                  <span class="rec-rank" :class="{ top: item.rank === 0 }">{{ item.rank + 1 }}</span>
+                  <div class="rec-mini-main">
+                    <div class="rec-mini-title">
+                      <span v-if="pageTypeOf(item.rec.slug)" class="rec-type-badge" :class="pageTypeOf(item.rec.slug)">{{ pageTypeText(pageTypeOf(item.rec.slug)) }}</span>
+                      <span class="rec-mini-name" :title="$t('knowledgeEditor.learningTab.hoverOpenNode')">{{ item.rec.title || titleOf(item.rec.slug) }}</span>
+                    </div>
+                    <div class="rec-mini-meta">
+                      <span class="rec-reason-tag" :style="reasonStyle(item.rec.reason)">{{ reasonText(item.rec.reason) }}</span>
+                      <t-popup trigger="hover" placement="bottom" show-arrow :overlay-style="{ maxWidth: '340px' }">
+                        <template #content>
+                          <div class="explain">
+                            <div class="explain-title">{{ $t('knowledgeEditor.learningTab.explainTitle') }}</div>
+                            <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainPEff', { p: Math.round((item.rec.p_eff ?? 0) * 100) }) }}（{{ $t('knowledgeEditor.learningTab.explainThresholds') }}）</div>
+                            <div class="explain-line">{{ $t('knowledgeEditor.learningTab.explainEvidence', { pos: item.rec.positive_count ?? 0, neg: item.rec.negative_count ?? 0 }) }}</div>
+                            <div v-if="item.rec.faded" class="explain-line explain-warn">{{ $t('knowledgeEditor.learningTab.explainFaded') }}</div>
+                            <div class="explain-line explain-improve">{{ $t('knowledgeEditor.learningTab.explainImprove') }}</div>
+                            <!-- 技能矩阵自评轨：挑战这个判断——更熟则抬分+引导验证，更生则按原因降档 -->
+                            <div class="explain-self-assess">
+                              <span class="esa-label">{{ $t('knowledgeEditor.learningTab.selfAssessSection') }}</span>
+                              <div class="esa-buttons">
+                                <button class="esa-btn up" @click="confirmSelfAssessUp(item.rec)">{{ $t('knowledgeEditor.learningTab.selfAssessUp') }}</button>
+                                <button class="esa-btn down" @click="openSelfAssessDown(item.rec)">{{ $t('knowledgeEditor.learningTab.selfAssessDown') }}</button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </template>
-                      <span v-if="rec.level" class="rec-level" :style="levelStyle(rec.level, rec.faded)"
-                        :class="{ faded: rec.faded }">
-                        <span class="tier-dot" :style="{ background: fadedColor(rec) }"></span>{{ levelLabel(rec.level, rec.faded) }}
+                        </template>
+                        <span v-if="item.rec.level" class="rec-level" :style="levelStyle(item.rec.level, item.rec.faded)"
+                          :class="{ faded: item.rec.faded }">
+                          <span class="tier-dot" :style="{ background: fadedColor(item.rec) }"></span>{{ levelLabel(item.rec.level, item.rec.faded) }}
+                        </span>
+                      </t-popup>
+                      <span class="rec-progress" v-if="item.rec.level && item.rec.level !== 'unseen'">
+                        <span class="rec-progress-track">
+                          <span class="rec-progress-fill" :style="{ width: Math.round((item.rec.tier_progress ?? 0) * 100) + '%', background: fadedColor(item.rec) }"></span>
+                        </span>
                       </span>
-                    </t-popup>
-                    <span class="rec-progress" v-if="rec.level && rec.level !== 'unseen'">
-                      <span class="rec-progress-track">
-                        <span class="rec-progress-fill" :style="{ width: Math.round((rec.tier_progress ?? 0) * 100) + '%', background: fadedColor(rec) }"></span>
-                      </span>
-                    </span>
+                    </div>
+                    <div v-if="item.rec.next_tier_hint && item.rec.level" class="rec-hint-line">{{ hintText(item.rec.next_tier_hint) }}</div>
                   </div>
-                  <div v-if="rec.next_tier_hint && rec.level" class="rec-hint-line">{{ hintText(rec.next_tier_hint) }}</div>
-                </div>
-                <div class="rec-mini-actions" @click.stop>
-                  <t-button v-if="rec.has_quiz" size="small" @click="startQuiz(rec)">
-                    {{ rec.quiz_count ? $t('knowledgeEditor.learningTab.practiceN', { n: rec.quiz_count }) : $t('knowledgeEditor.learningTab.practice') }}
-                  </t-button>
-                  <t-button v-else size="small" variant="outline" @click="openPage(rec.slug)">
-                    {{ $t('knowledgeEditor.learningTab.openPage') }}
-                  </t-button>
+                  <div class="rec-mini-actions" @click.stop>
+                    <t-button v-if="item.rec.has_quiz" size="small" @click="startQuiz(item.rec)">
+                      {{ item.rec.quiz_count ? $t('knowledgeEditor.learningTab.practiceN', { n: item.rec.quiz_count }) : $t('knowledgeEditor.learningTab.practice') }}
+                    </t-button>
+                    <t-button v-else size="small" variant="outline" @click="openPage(item.rec.slug)">
+                      {{ $t('knowledgeEditor.learningTab.openPage') }}
+                    </t-button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -191,6 +211,9 @@
           </t-button>
         </div>
       </div>
+      </template>
+      <!-- 知识健康面板：整幅接管星图+数据栏（403/错误在面板内降级为失败文案） -->
+      <KnowledgeHealthPanel v-else class="health-host" :kb-id="knowledgeBaseId" @open="openPage" />
     </div>
 
     <!-- 测验答题抽屉：放大作答，不打断单屏星空布局 -->
@@ -357,6 +380,7 @@ import { useI18n } from 'vue-i18n'
 import { Button as TButton, Dialog as TDialog, Drawer as TDrawer, MessagePlugin, Popup as TPopup, Switch as TSwitch } from 'tdesign-vue-next'
 import { ChevronRightIcon, HelpCircleIcon } from 'tdesign-icons-vue-next'
 import LearningConstellation from './LearningConstellation.vue'
+import KnowledgeHealthPanel from './KnowledgeHealthPanel.vue'
 import {
   getLearningProgress, getLearningRecommend, getLearningQuiz, submitLearningAnswer,
   getLearningTimeline, exportLearningProfile, deleteLearningProfile, selfAssess,
@@ -365,7 +389,8 @@ import {
   type LearningProgress, type Recommendation, type QuizQuestion, type AnswerResult, type TimelineItem, type MasteryView, type PassiveChangesSummary,
 } from '@/api/learning'
 
-const props = defineProps<{ knowledgeBaseId: string }>()
+// canManage：owner/admin 才渲染「知识健康」视图切换（健康接口仅 owner/admin 可调）。
+const props = defineProps<{ knowledgeBaseId: string; canManage?: boolean }>()
 // 出处文档跳转复用知识库页既有的源文档打开通道（WikiBrowser 同款事件）。
 const emit = defineEmits<{ (e: 'open-source-doc', knowledgeId: string): void }>()
 const router = useRouter()
@@ -378,6 +403,11 @@ const recommendLoading = ref(false)
 const passiveChanges = ref<PassiveChangesSummary | null>(null)
 const initialLoading = ref(true)
 const loadFailed = ref(false)
+// 知识健康视图开关（owner/admin 才渲染切换入口）；默认个人视图。
+const healthView = ref(false)
+// 权限撤回（canManage 变 false）时退出健康视图：健康接口仅 owner/admin 可调，
+// 避免留下一个必然 403 的空态视图。
+watch(() => props.canManage, (v) => { if (!v) healthView.value = false })
 const timeline = ref<TimelineItem[]>([])
 const timelinePage = ref(1)
 const timelineTotal = ref(0)
@@ -560,6 +590,24 @@ function pageTypeOf(slug: string): string {
   const i = slug.indexOf('/')
   return i > 0 ? slug.slice(0, i) : ''
 }
+
+// 岗位覆盖计划：推荐按目录分组展示——保持服务端顺序、按首次出现归组，
+// 根目录（无 folder_name）沿用 rootUnit 文案；行内排名/结构/操作完全不变。
+const groupedRecommendations = computed(() => {
+  const groups: { name: string; items: { rec: Recommendation; rank: number }[] }[] = []
+  const byName = new Map<string, { name: string; items: { rec: Recommendation; rank: number }[] }>()
+  recommendations.value.forEach((rec, rank) => {
+    const name = rec.folder_name || t('knowledgeEditor.learningTab.rootUnit')
+    let g = byName.get(name)
+    if (!g) {
+      g = { name, items: [] }
+      byName.set(name, g)
+      groups.push(g)
+    }
+    g.items.push({ rec, rank })
+  })
+  return groups
+})
 
 // 页面类型徽标：时间线/推荐卡用"实体/概念"中文徽标替代 slug 前缀。
 function pageTypeText(pageType: string): string {
@@ -1177,11 +1225,20 @@ onUnmounted(() => {
 <style scoped>
 /* 单屏星空：无卡片框。左 2/3 星图（占满视口高），右 1/3 数据栏（内部滚动） */
 .learning-tab { box-sizing: border-box; height: 100%; min-height: 0; padding: 14px 18px; display: flex; flex-direction: column; gap: 12px; }
-.sky { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(330px, 1fr); gap: 0 18px; animation: learning-enter 0.4s ease both; }
+.sky { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(330px, 1fr); gap: 0 18px; animation: learning-enter 0.4s ease both; }
 /* 左：星图区（圆图四角天然留空，标题悬浮左上空角） */
 .sky-chart { position: relative; min-width: 0; min-height: 0; display: flex; }
-.sky-head { position: absolute; top: 6px; left: 6px; z-index: 1; pointer-events: none; }
+.sky-head { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 1; pointer-events: none; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
 .sky-head .help-icon { pointer-events: auto; }
+/* 视图切换（个人视图 / 知识健康）：tl-filter 同款胶囊按钮，仅 owner/admin 渲染 */
+.view-toggle { display: inline-flex; gap: 4px; pointer-events: auto; }
+.vt-btn { font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--td-component-border, #eee); background: var(--td-bg-color-container, #fff); color: var(--td-text-color-secondary, #666); cursor: pointer; transition: all 0.15s; font-family: inherit; }
+.vt-btn:hover { border-color: rgba(7, 192, 95, 0.5); }
+.vt-btn.active { background: rgba(7, 192, 95, 0.1); border-color: rgba(7, 192, 95, 0.5); color: #049b38; }
+/* 知识健康视图：星图+数据栏的二栏网格让位，头部转为常规行（标题+切换），面板整幅接管 */
+.sky.health-view { display: flex; flex-direction: column; gap: 10px; }
+.sky.health-view .sky-head { position: static; pointer-events: auto; }
+.health-host { flex: 1; min-height: 0; }
 .ts-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .ts-line { font-size: 12px; color: var(--td-text-color-secondary, #666); }
 .ts-stat { font-size: 12px; color: var(--td-text-color-secondary, #555); white-space: nowrap; }
@@ -1270,6 +1327,12 @@ onUnmounted(() => {
 .section-empty { color: var(--td-text-color-placeholder, #999); font-size: 13px; }
 /* 窄栏推荐紧凑行：标题/元信息/提示三行内聚，单按钮操作（整行点击=打开页面） */
 .rec-mini-list { display: flex; flex-direction: column; gap: 8px; }
+/* 岗位覆盖计划：推荐按目录分组（units-title 同款小标题），组内行结构不变 */
+.rec-group { display: flex; flex-direction: column; gap: 8px; }
+.rec-group + .rec-group { margin-top: 4px; }
+.rec-group-header { font-size: 11px; color: var(--td-text-color-placeholder, #999); font-weight: 500; }
+.role-plan-intro { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 11px; color: var(--td-text-color-placeholder, #999); line-height: 1.5; }
+.role-plan-name { color: var(--td-text-color-secondary, #555); font-weight: 500; white-space: nowrap; }
 .rec-mini { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; transition: background-color 0.15s; }
 .rec-mini:hover { background: rgba(7, 192, 95, 0.05); }
 .rec-mini.featured {
