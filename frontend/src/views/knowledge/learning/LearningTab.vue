@@ -1228,7 +1228,7 @@ onUnmounted(() => {
 .sky { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 2fr) minmax(330px, 1fr); gap: 0 18px; animation: learning-enter 0.4s ease both; }
 /* 左：星图区（圆图四角天然留空，标题悬浮左上空角） */
 .sky-chart { position: relative; min-width: 0; min-height: 0; display: flex; }
-.sky-head { position: absolute; top: 6px; left: 6px; right: 6px; z-index: 1; pointer-events: none; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.sky-head { position: absolute; top: 6px; left: 6px; z-index: 1; pointer-events: none; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .sky-head .help-icon { pointer-events: auto; }
 /* 视图切换（个人视图 / 知识健康）：tl-filter 同款胶囊按钮，仅 owner/admin 渲染 */
 .view-toggle { display: inline-flex; gap: 4px; pointer-events: auto; }
@@ -1237,7 +1237,7 @@ onUnmounted(() => {
 .vt-btn.active { background: rgba(7, 192, 95, 0.1); border-color: rgba(7, 192, 95, 0.5); color: #049b38; }
 /* 知识健康视图：星图+数据栏的二栏网格让位，头部转为常规行（标题+切换），面板整幅接管 */
 .sky.health-view { display: flex; flex-direction: column; gap: 10px; }
-.sky.health-view .sky-head { position: static; pointer-events: auto; }
+.sky.health-view .sky-head { position: static; pointer-events: auto; flex-direction: row; align-items: center; justify-content: space-between; }
 .health-host { flex: 1; min-height: 0; }
 .ts-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
 .ts-line { font-size: 12px; color: var(--td-text-color-secondary, #666); }

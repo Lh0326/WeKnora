@@ -2,7 +2,9 @@ package learning
 
 import (
 	"context"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -60,6 +62,7 @@ func (s *Service) KnowledgeHealth(ctx context.Context, kbID string) (*KnowledgeH
 	if err != nil {
 		return nil, err
 	}
+
 	// Folder names are display-only labels; a missing name degrades to the
 	// id-less root convention rather than failing the view (GetProgress's
 	// own softness, same reason).
@@ -96,6 +99,16 @@ func deriveKnowledgeHealth(
 	marks []types.LearningEvent,
 	now time.Time,
 ) *KnowledgeHealth {
+	// Machine principals are not people. API-key calls (subject ids of the
+	// form "api_*:...") legitimately write learning events — they answer
+	// questions and read pages like anyone else — but counting an API key
+	// in "N 人有学习记录" or "who is familiar with this" misleads the owner
+	// about the org's human coverage. Drop them from every aggregate; the
+	// machine subject's own export/delete paths are unaffected.
+	rows = slices.DeleteFunc(rows, func(r types.MasteryState) bool {
+		return r.SubjectID != "" && strings.HasPrefix(r.SubjectID, "api_")
+	})
+
 	// Node universe lookups: a mastery row whose slug no longer resolves
 	// to an entity/concept page (page deleted or renamed between reads)
 	// describes a node the org view cannot show, so it never enters the

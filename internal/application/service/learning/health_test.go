@@ -301,3 +301,35 @@ func TestKnowledgeHealthTenantAndKBIsolation(t *testing.T) {
 		t.Fatalf("maintenance = %+v, foreign-tenant marks leaked in", health.Maintenance)
 	}
 }
+
+// TestKnowledgeHealthExcludesMachinePrincipals: API-key subjects (subject
+// ids "api_*:...") legitimately accumulate mastery rows, but they are not
+// people — the org aggregate must not count them as 熟悉人数/活跃主体.
+func TestKnowledgeHealthExcludesMachinePrincipals(t *testing.T) {
+	now := time.Now()
+	pages := []*types.WikiPage{
+		{Slug: "concept/alpha", PageType: "concept", Title: "甲"},
+		{Slug: "concept/beta", PageType: "concept", Title: "乙"},
+	}
+	human := FoldAll(FoldState{}, []Event{
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now.Add(-24 * time.Hour)},
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now},
+	}) // logit 4.4 -> clamped 4 -> p ≈ 98%: familiar
+	machine := FoldAll(FoldState{}, []Event{
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now},
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now},
+	})
+	rows := []types.MasteryState{
+		*healthMastery(1, "web_user:u1", testKB, "concept/alpha", human.Logit, human.EvidenceCount, now),
+		*healthMastery(1, "api_tenant:10000", testKB, "concept/beta", machine.Logit, machine.EvidenceCount, now),
+	}
+	h := deriveKnowledgeHealth(rows, pages, map[string]string{}, nil, now)
+	if h.SubjectsActive != 1 {
+		t.Fatalf("SubjectsActive = %d, want 1 (api key must not count as a person)", h.SubjectsActive)
+	}
+	for _, e := range h.Experts {
+		if e.Slug == "concept/beta" {
+			t.Fatalf("api-key-only node must not appear in experts, got %+v", e)
+		}
+	}
+}
