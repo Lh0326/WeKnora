@@ -3404,6 +3404,7 @@ export default {
       reasonStuck: '前置知识长期未掌握，建议先补',
       reasonBypass: '目标被前置卡住，先看相邻节点',
       reasonExplore: '探索一个盲区',
+      reasonSelfVerify: '自评待验证：你刚标记过此节点，来做题确认',
       changesTitle: '遗忘动态',
       changesDemoted: '{n} 个节点因遗忘降档',
       changesDue: '{n} 个节点临近降档',

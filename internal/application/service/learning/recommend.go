@@ -26,6 +26,14 @@ type recommendInput struct {
 	// signal (the spec's hierarchy: quiz verdicts outrank every indirect
 	// signal).
 	QuizStruggled map[string]bool
+	// SelfAssess carries the subject's latest self-assessment per slug,
+	// already bounded to the visible window by the caller. The freshest
+	// explicit user claim outranks every INFERRED signal when attributing
+	// the reason: a "quiz too easy" demotion followed by a 错题重练 label
+	// (built from stale wrong answers the user just re-contextualised) is
+	// the system ignoring the user — the self-verify channel exists so the
+	// recommendation says "you claimed a state; confirm it" instead.
+	SelfAssess map[string]interfaces.SelfAssessMark
 	// DirectFacts carries the subject's distinct-item correct answers per
 	// slug, so the pool's tier decisions (frontier readiness, dam
 	// detection, consolidation) see the same gated tiers the display
@@ -151,7 +159,12 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 		rec      Recommendation
 		score    float64
 		remedial bool // mistake-notebook channel; ordered most-struggling-first
-		logit    float64
+		// selfVerify: the user explicitly claimed this node's state inside
+		// the visible window and the tier is not yet proven — the claim is
+		// the reason, and the channel leads the list, freshest claim first.
+		selfVerify bool
+		assessAt   time.Time
+		logit      float64
 	}
 	var pool []scored
 	var shoreUp []Recommendation
@@ -212,9 +225,22 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 			days := now.Sub(st.LastEvidenceAt).Hours() / 24
 			score += ScoreRecency * math.Exp(-days/RecencyHalfLifeDays) * EffectiveP(st, now)
 		}
+		// Self-verification channel: an explicit claim (up = "I know this
+		// better", down = "less, because …") outranks every inferred label —
+		// including the mistake notebook built from wrong answers the user
+		// may have just re-contextualised ("题目太简单"). Once quiz proof
+		// lands (tier reaches mastered for an up claim) the claim is settled
+		// and the ordinary channels take over again.
+		var selfVerify bool
+		var assessAt time.Time
+		if mark, ok := in.SelfAssess[slug]; ok && levelOf(slug) != LevelMastered {
+			selfVerify = true
+			assessAt = mark.At
+			reason = "self-verify"
+		}
 		pool = append(pool, scored{rec: Recommendation{
 			Slug: slug, Title: p.Title, Reason: reason, HasQuiz: in.HasQuiz[slug],
-		}, score: score, remedial: remedial, logit: st.Logit})
+		}, score: score, remedial: remedial, selfVerify: selfVerify, assessAt: assessAt, logit: st.Logit})
 	}
 
 	// Dams are decided before the main loop so page order cannot matter: a
@@ -290,15 +316,23 @@ func recommendNodes(in recommendInput, now time.Time, rng *rand.Rand, limit int)
 		addToPool(p.Slug, 0, reason)
 	}
 
-	// Ordering: the mistake-notebook channel leads (drilling failed
-	// retrievals is the highest-value practice), then the weighted
-	// multi-objective score (the spec's ranking). Within the notebook,
-	// direct quiz failures come before indirect struggle and order by
-	// severity (most negative logit first); indirect struggle orders by
-	// closeness to promotion — the desirable-difficulty zone, never the
-	// demoralizing end. Remaining ties: least-evidence first (blind spots
-	// lead), then title — a deterministic total order.
+	// Ordering: the self-verification channel leads (an explicit claim is
+	// a conversation the system must answer — freshest first), then the
+	// mistake-notebook channel (drilling failed retrievals is the
+	// highest-value practice), then the weighted multi-objective score (the
+	// spec's ranking). Within the notebook, direct quiz failures come
+	// before indirect struggle and order by severity (most negative logit
+	// first); indirect struggle orders by closeness to promotion — the
+	// desirable-difficulty zone, never the demoralizing end. Remaining
+	// ties: least-evidence first (blind spots lead), then title — a
+	// deterministic total order.
 	sort.SliceStable(pool, func(i, j int) bool {
+		if pool[i].selfVerify != pool[j].selfVerify {
+			return pool[i].selfVerify
+		}
+		if pool[i].selfVerify {
+			return pool[i].assessAt.After(pool[j].assessAt) // freshest claim first
+		}
 		if pool[i].remedial != pool[j].remedial {
 			return pool[i].remedial
 		}

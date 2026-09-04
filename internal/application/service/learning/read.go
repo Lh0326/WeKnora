@@ -359,10 +359,21 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 		}
 	}
 
+	// Self-assessment marks (latest per slug, visible-window bounded by the
+	// repo): the freshest explicit user claim must shape reason attribution —
+	// without it a "题目太简单" demotion keeps the stale 错题重练 label built
+	// from old wrong answers the user just re-contextualised.
+	selfAssess := map[string]interfaces.SelfAssessMark{}
+	if marks, err := s.repo.ListSelfAssess(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: recommend self-assess read failed (kb %s): %v", kbID, err)
+	} else {
+		selfAssess = marks
+	}
+
 	direct := s.directFacts(ctx, scope)
 	recs := recommendNodes(recommendInput{
 		Pages: pages, Edges: edges, States: states, Affinity: affinity, HasQuiz: hasQuiz,
-		QuizStruggled: quizStruggled, DirectFacts: direct,
+		QuizStruggled: quizStruggled, DirectFacts: direct, SelfAssess: selfAssess,
 	}, time.Now(), rand.New(rand.NewSource(time.Now().UnixNano())), limit)
 
 	// Display extras, derived here so the pure recommender stays a pure

@@ -534,6 +534,7 @@ function reasonText(reason: string): string {
     'prerequisite-stuck': t('knowledgeEditor.learningTab.reasonStuck'),
     bypass: t('knowledgeEditor.learningTab.reasonBypass'),
     explore: t('knowledgeEditor.learningTab.reasonExplore'),
+    'self-verify': t('knowledgeEditor.learningTab.reasonSelfVerify'),
   }
   return map[reason] || reason
 }
@@ -550,6 +551,8 @@ function reasonStyle(reason: string): { background: string; color: string } {
     'prerequisite-stuck': { background: 'rgba(227, 115, 24, 0.12)', color: '#e37318' },
     bypass: { background: 'rgba(93, 155, 218, 0.12)', color: '#3d6f9e' },
     explore: { background: 'rgba(140, 224, 175, 0.25)', color: '#3d8f66' },
+    // 自评验证轨用与自评按钮一致的紫：用户显式声明 awaiting confirmation
+    'self-verify': { background: 'rgba(123, 97, 255, 0.10)', color: '#7b61ff' },
   }
   return map[reason] || { background: 'rgba(0, 0, 0, 0.06)', color: '#666' }
 }

@@ -3402,6 +3402,7 @@ export default {
       reasonStuck: '선수 지식이 오래 낮은 상태입니다 — 먼저 보완하세요',
       reasonBypass: '선수 지식에 막혀 있습니다 — 인접 노드부터 보세요',
       reasonExplore: '미개척 영역 탐색',
+      reasonSelfVerify: '자기 평가 검증 대기: 방금 표시한 노드입니다 — 퀴즈로 확인하세요',
       changesTitle: '망각 동향',
       changesDemoted: '{n}개 노드가 망각으로 강등됨',
       changesDue: '{n}개 노드가 강등 임박',

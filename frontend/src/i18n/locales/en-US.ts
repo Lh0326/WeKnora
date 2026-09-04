@@ -2398,6 +2398,7 @@ export default {
       reasonStuck: 'A prerequisite has been stuck low; shore it up first',
       reasonBypass: 'Target blocked by a prerequisite — try a neighbor first',
       reasonExplore: 'Exploring a blind spot',
+      reasonSelfVerify: 'Self-verify: you just flagged this node — confirm with a quiz',
       changesTitle: 'Forgetting digest',
       changesDemoted: '{n} nodes demoted by forgetting',
       changesDue: '{n} nodes near demotion',

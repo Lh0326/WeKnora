@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 // TestRecommendOrderingRespondsToLearning is the regression lock for the
@@ -241,5 +242,83 @@ func TestRecommendRemedialMistakeNotebook(t *testing.T) {
 		if r.Slug == "concept/hopeless" && r.Reason == "remedial" {
 			t.Fatal("floor-clamped node must not be remedial (it is a fresh start)")
 		}
+	}
+}
+
+// TestRecommendSelfVerifyOutranksInferredLabels is the round-40 regression
+// lock for the user-reported mismatch: a node self-assessed down
+// ("题目太简单") minutes ago must NOT wear the 错题重练 label built from
+// five-day-old wrong answers — the wrongs are exactly what the user just
+// re-contextualised. The freshest explicit claim is the reason, and the
+// self-verify channel leads the list.
+func TestRecommendSelfVerifyOutranksInferredLabels(t *testing.T) {
+	now := time.Now()
+	// claimed: textbook remedial shape — 2 correct + 3 wrong ≈ logit −0.1
+	// (recoverable struggle, 5 evidence) with real wrong answers on record.
+	claimed := FoldAll(FoldState{}, []Event{
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now.Add(-124 * time.Hour)},
+		{Type: types.LearningEventQuizCorrect, Weight: WeightQuizCorrect, OccurredAt: now.Add(-123 * time.Hour)},
+		{Type: types.LearningEventQuizWrong, Weight: WeightQuizWrong, OccurredAt: now.Add(-122 * time.Hour)},
+		{Type: types.LearningEventQuizWrong, Weight: WeightQuizWrong, OccurredAt: now.Add(-121 * time.Hour)},
+		{Type: types.LearningEventQuizWrong, Weight: WeightQuizWrong, OccurredAt: now.Add(-120 * time.Hour)},
+	})
+	struggler := FoldAll(FoldState{}, []Event{
+		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: now.Add(-26 * time.Hour)},
+		{Type: types.LearningEventReAsk, Weight: WeightReAsk, OccurredAt: now.Add(-25 * time.Hour)},
+		{Type: types.LearningEventQuizWrong, Weight: WeightQuizWrong, OccurredAt: now.Add(-24 * time.Hour)},
+	})
+	pages := []*types.WikiPage{
+		{Slug: "concept/claimed", PageType: "concept", Title: "甲"},
+		{Slug: "concept/struggler", PageType: "concept", Title: "乙"},
+	}
+	recs := recommendNodes(recommendInput{
+		Pages:    pages,
+		States:   map[string]FoldState{"concept/claimed": claimed, "concept/struggler": struggler},
+		QuizStruggled: map[string]bool{"concept/claimed": true, "concept/struggler": true},
+		SelfAssess: map[string]interfaces.SelfAssessMark{
+			"concept/claimed": {Direction: "down", EventType: "self_assess_down_quiz_easy", At: now.Add(-40 * time.Minute)},
+		},
+	}, now, nil, 5)
+
+	if len(recs) < 2 {
+		t.Fatalf("recs = %v, want 2", slugList(recs))
+	}
+	// The claimed node leads with the honest label — not 错题重练.
+	if recs[0].Slug != "concept/claimed" || recs[0].Reason != "self-verify" {
+		t.Fatalf("claimed node must lead as self-verify, got %s (%s)", recs[0].Slug, recs[0].Reason)
+	}
+	// The unclaimed struggler keeps the ordinary notebook label.
+	if recs[1].Slug != "concept/struggler" || recs[1].Reason != "remedial" {
+		t.Fatalf("struggler stays remedial, got %s (%s)", recs[1].Slug, recs[1].Reason)
+	}
+}
+
+// TestRecommendSelfVerifyFreshestFirst: two pending claims — the more
+// recent conversation leads (an up-claim and a down-claim both await proof;
+// recency is the only fair tiebreak between them).
+func TestRecommendSelfVerifyFreshestFirst(t *testing.T) {
+	now := time.Now()
+	touched := func(hoursAgo float64) FoldState {
+		return FoldAll(FoldState{}, []Event{
+			{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: now.Add(-time.Duration(hoursAgo) * time.Hour)},
+		})
+	}
+	pages := []*types.WikiPage{
+		{Slug: "concept/older-claim", PageType: "concept", Title: "甲"},
+		{Slug: "concept/fresher-claim", PageType: "concept", Title: "乙"},
+	}
+	recs := recommendNodes(recommendInput{
+		Pages:  pages,
+		States: map[string]FoldState{"concept/older-claim": touched(30), "concept/fresher-claim": touched(30)},
+		SelfAssess: map[string]interfaces.SelfAssessMark{
+			"concept/older-claim":   {Direction: "down", EventType: "self_assess_down_all", At: now.Add(-6 * time.Hour)},
+			"concept/fresher-claim": {Direction: "up", EventType: "self_assess_up", At: now.Add(-20 * time.Minute)},
+		},
+	}, now, nil, 5)
+	if len(recs) != 2 || recs[0].Slug != "concept/fresher-claim" || recs[0].Reason != "self-verify" {
+		t.Fatalf("fresher claim must lead as self-verify, got %v", slugList(recs))
+	}
+	if recs[1].Slug != "concept/older-claim" || recs[1].Reason != "self-verify" {
+		t.Fatalf("older claim second as self-verify, got %s (%s)", recs[1].Slug, recs[1].Reason)
 	}
 }
