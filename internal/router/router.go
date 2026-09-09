@@ -151,8 +151,9 @@ func NewRouter(params RouterParams) *gin.Engine {
 		r.Use(embedFrameAncestorsMiddleware(params.EmbedChannelService))
 	}
 
-	// 前端静态文件（仅 Lite 版本内嵌前端）
-	if handler.Edition == "lite" {
+	// 前端静态文件（Lite 版本内嵌前端）。标准版可经 WEKNORA_SERVE_STATIC=1
+	// 显式开启同一逻辑，用于单进程本地部署（API 与 SPA 同端口），不改能力集。
+	if handler.Edition == "lite" || os.Getenv("WEKNORA_SERVE_STATIC") == "1" {
 		serveFrontendStatic(r)
 	}
 

@@ -254,3 +254,237 @@ func TestKebabSlugMirrorsWikiRules(t *testing.T) {
 		}
 	}
 }
+
+// TestReconcileRunOnceRepairsFoldDrift: a mastery row that lost a
+// contribution — the crash window between AppendEvent and foldOne — is
+// rewritten from the from-scratch replay, and zero-weight events (deduped
+// re-reads) must not count as evidence while replaying.
+func TestReconcileRunOnceRepairsFoldDrift(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Rag Doc"}))
+	runner := newTestRunner(repo, wiki, kbsWithTestKB())
+	ctx := context.Background()
+	scope := interfaces.LearningScope{TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	append := func(slug, evType string, weight float64, at time.Time) {
+		t.Helper()
+		if err := repo.AppendEvent(ctx, &types.LearningEvent{
+			TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+			Slug: slug, Type: evType, Weight: weight, OccurredAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	append("concept/rag", types.LearningEventAnswerCite, WeightAnswerCite, base)
+	append("concept/rag", types.LearningEventAnswerCite, WeightAnswerCite, base.Add(time.Hour))
+	append("concept/rag", types.LearningEventWikiToolRead, 0, base.Add(2*time.Hour))
+	// The third citation's fold was lost (crash between append and fold).
+	append("concept/rag", types.LearningEventAnswerCite, WeightAnswerCite, base.Add(3*time.Hour))
+
+	// Persisted state reflects only the first two citations.
+	if err := repo.UpsertMastery(ctx, &types.MasteryState{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB, Slug: "concept/rag",
+		Logit: 2 * WeightAnswerCite, EvidenceCount: 2, PositiveCount: 2,
+		Stability:      derivedStability(2, 0),
+		LastEvidenceAt: base.Add(time.Hour), FirstSeenAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runner.runOnce(ctx); err != nil {
+		t.Fatalf("runOnce failed: %v", err)
+	}
+
+	got, err := repo.GetMastery(ctx, scope, "concept/rag")
+	if err != nil || got == nil {
+		t.Fatalf("repaired row missing: %v, %v", got, err)
+	}
+	want := FoldAll(FoldState{}, []Event{
+		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: base},
+		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: base.Add(time.Hour)},
+		{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: base.Add(3 * time.Hour)},
+	})
+	if got.EvidenceCount != want.EvidenceCount || got.PositiveCount != want.PositiveCount {
+		t.Fatalf("repaired counters = %+v, want replay %+v", got, want)
+	}
+	if math.Abs(got.Logit-want.Logit) > 1e-9 {
+		t.Fatalf("repaired logit = %v, want %v", got.Logit, want.Logit)
+	}
+	if !got.LastEvidenceAt.Equal(want.LastEvidenceAt) {
+		t.Fatalf("repaired last_evidence_at = %v, want %v", got.LastEvidenceAt, want.LastEvidenceAt)
+	}
+}
+
+// TestReconcileRunOnceWritesMissingFold: events exist for a node whose row
+// was never written (first fold lost). The audit walks the subject through
+// its other folded node and must materialise the missing fold exactly.
+func TestReconcileRunOnceWritesMissingFold(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Rag Doc"}))
+	wiki.addPage(testKB, testWikiPage("concept/decay", []string{"c1"}, []string{"d1|Decay Doc"}))
+	runner := newTestRunner(repo, wiki, kbsWithTestKB())
+	ctx := context.Background()
+	scope := interfaces.LearningScope{TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB}
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/decay", Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite,
+		OccurredAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The subject is visible to the walk through this other folded node…
+	if err := repo.UpsertMastery(ctx, &types.MasteryState{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB, Slug: "concept/rag",
+		Logit: WeightAnswerCite, EvidenceCount: 1, PositiveCount: 1,
+		Stability: derivedStability(1, 0), LastEvidenceAt: base, FirstSeenAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runner.runOnce(ctx); err != nil {
+		t.Fatalf("runOnce failed: %v", err)
+	}
+
+	got, err := repo.GetMastery(ctx, scope, "concept/decay")
+	if err != nil || got == nil {
+		t.Fatalf("missing fold not materialised: %v, %v", got, err)
+	}
+	if got.EvidenceCount != 1 || math.Abs(got.Logit-WeightAnswerCite) > 1e-9 {
+		t.Fatalf("materialised fold = %+v, want one folded citation", got)
+	}
+}
+
+// TestReconcileRunOnceNoRewriteOfConvergedState: a subject whose folds
+// already equal the replay (including zero-weight events in history) must
+// come out of the audit untouched — drift repair never manufactures writes.
+func TestReconcileRunOnceNoRewriteOfConvergedState(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Rag Doc"}))
+	runner := newTestRunner(repo, wiki, kbsWithTestKB())
+	ctx := context.Background()
+
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite,
+		OccurredAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventWikiToolRead, Weight: 0,
+		OccurredAt: base.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state := FoldEvent(FoldState{}, Event{Type: types.LearningEventAnswerCite, Weight: WeightAnswerCite, OccurredAt: base})
+	row := &types.MasteryState{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB, Slug: "concept/rag",
+	}
+	state.ApplyTo(row)
+	if err := repo.UpsertMastery(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+
+	// The seeding upsert itself counts; measure from here.
+	before := repo.masteryUpserts.Load()
+	if err := runner.runOnce(ctx); err != nil {
+		t.Fatalf("runOnce failed: %v", err)
+	}
+	if n := repo.masteryUpserts.Load() - before; n != 0 {
+		t.Fatalf("converged state rewritten %d times, want zero", n)
+	}
+}
+
+// TestReconcileMovesSkipOnlySubject: the P1 regression lock. A subject who
+// ONLY ever skipped a node (no folded mastery — the "看一眼就会了"
+// archetype) must still receive alias repair: a rename that goes unrepaired
+// would silently resurrect the retired recommendation.
+func TestReconcileMovesSkipOnlySubject(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	// The skipped page was renamed after the skip was declared.
+	wiki.addPage(testKB, &types.WikiPage{
+		Slug: "concept/retrieval", PageType: "concept",
+		ChunkRefs: types.StringArray{"c1"}, Aliases: types.StringArray{"rag"},
+	})
+	runner := newTestRunner(repo, wiki, kbsWithTestKB())
+
+	scope := interfaces.LearningScope{TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB}
+	declared := time.Now().Add(-24 * time.Hour)
+	if err := repo.AddSkip(context.Background(), scope, "concept/rag", declared); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runner.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce failed: %v", err)
+	}
+
+	skips, err := repo.ListSkips(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skips) != 1 {
+		t.Fatalf("skips = %v, want exactly the migrated one", skips)
+	}
+	if at, ok := skips["concept/retrieval"]; !ok || at != declared {
+		t.Fatalf("skip must move to the live slug keeping its declared-at, got %v", skips)
+	}
+	if _, ok := skips["concept/rag"]; ok {
+		t.Fatal("stale skip slug must be retired")
+	}
+}
+
+
+// TestReconcileRepairsEdges: the F2 storage-side lock. Edges whose
+// endpoints drifted with a rename follow the alias index; edges pointing
+// at pages that resolve nowhere are dropped — neither may keep gating the
+// target forever.
+func TestReconcileRepairsEdges(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	// Live page renamed from "rag"; the "ghost" page no longer exists.
+	wiki.addPage(testKB, &types.WikiPage{
+		Slug: "concept/retrieval", PageType: "concept",
+		ChunkRefs: types.StringArray{"c1"}, Aliases: types.StringArray{"rag"},
+	})
+	wiki.addPage(testKB, &types.WikiPage{Slug: "concept/user", PageType: "concept"})
+	runner := newTestRunner(repo, wiki, kbsWithTestKB())
+
+	ctx := context.Background()
+	if err := repo.UpsertEdge(ctx, &types.LearningEdge{
+		TenantID: 1, KnowledgeBaseID: testKB,
+		FromSlug: "concept/rag", ToSlug: "concept/user",
+		Relation: types.LearningEdgePrerequisite, Confidence: 0.9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpsertEdge(ctx, &types.LearningEdge{
+		TenantID: 1, KnowledgeBaseID: testKB,
+		FromSlug: "concept/ghost", ToSlug: "concept/user",
+		Relation: types.LearningEdgePrerequisite, Confidence: 0.9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runner.runOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	edges, err := repo.ListEdges(ctx, 1, testKB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("one edge must survive (renamed, not dropped), got %v", edges)
+	}
+	if edges[0].FromSlug != "concept/retrieval" || edges[0].ToSlug != "concept/user" {
+		t.Fatalf("rename must migrate the edge onto the live slug, got %+v", edges[0])
+	}
+}

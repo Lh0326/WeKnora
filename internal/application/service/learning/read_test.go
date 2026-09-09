@@ -2,7 +2,9 @@ package learning
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -194,7 +196,7 @@ func TestSubmitAnswerGradesAndFolds(t *testing.T) {
 		t.Fatalf("quiz_wrong event missing: %+v", events)
 	}
 
-	// Correct answer (second attempt on the same item: decayed weight).
+	// Correct answer after feedback: verdict is correct, evidence weight zero.
 	res, err = svc.SubmitAnswer(ctx, testKB, "q-1", "B")
 	if err != nil {
 		t.Fatal(err)
@@ -206,12 +208,12 @@ func TestSubmitAnswerGradesAndFolds(t *testing.T) {
 	if len(events) != 2 || events[1].Type != types.LearningEventQuizCorrect {
 		t.Fatalf("quiz_correct event missing: %+v", events)
 	}
-	if events[1].Weight != WeightQuizCorrect*QuizRepeatDecay {
-		t.Fatalf("repeat attempt weight = %v, want decayed %v", events[1].Weight, WeightQuizCorrect*QuizRepeatDecay)
+	if events[1].Weight != 0 {
+		t.Fatalf("feedback-exposed retry weight = %v, want 0", events[1].Weight)
 	}
 	// Fold landed on the mastery row.
 	row, _ := repo.GetMastery(ctx, newReadScope(1, "web_user:alice"), "concept/rag")
-	if row == nil || row.EvidenceCount != 2 {
+	if row == nil || row.EvidenceCount != 1 {
 		t.Fatalf("quiz events not folded: %+v", row)
 	}
 }
@@ -320,12 +322,12 @@ func TestExportAndDeleteProfile(t *testing.T) {
 	if again, _ := svc.ExportProfile(ctx); len(again.Events) != 0 {
 		t.Fatalf("events survived delete: %d", len(again.Events))
 	}
-	prefs, _ := repo.GetSubjectPrefs(ctx, 1, "web_user:alice")
+	prefs, _ := repo.GetSubjectPrefs(ctx, "web_user:alice")
 	if prefs == nil || !prefs.CollectDisabled {
 		t.Fatal("opt_out must persist the collection opt-out")
 	}
 	// Mallory untouched.
-	if leaked, _ := repo.ListEventsBySubject(ctx, 1, "web_user:mallory"); len(leaked) != 1 {
+	if leaked, _ := repo.ListEventsBySubject(ctx, "web_user:mallory"); len(leaked) != 1 {
 		t.Fatal("delete crossed subject boundaries")
 	}
 }
@@ -595,16 +597,137 @@ func TestSubmitAnswerRepeatDecayWindowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	events = repo.snapshotEvents()
-	if events[len(events)-1].Weight != WeightQuizCorrect*QuizRepeatDecay {
-		t.Fatalf("same-window repeat weight = %v, want decayed %v", events[len(events)-1].Weight, WeightQuizCorrect*QuizRepeatDecay)
+	if events[len(events)-1].Weight != 0 {
+		t.Fatalf("same-window repeat weight = %v, want 0", events[len(events)-1].Weight)
 	}
 	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B"); err != nil {
 		t.Fatal(err)
 	}
 	events = repo.snapshotEvents()
-	// Third rapid repeat hits the decay floor (prior capped): diminishing,
-	// never zero — practice must always move the needle.
-	if events[len(events)-1].Weight != WeightQuizCorrect*QuizRepeatDecay*QuizRepeatDecay {
-		t.Fatalf("third same-window repeat weight = %v, want floored %v", events[len(events)-1].Weight, WeightQuizCorrect*QuizRepeatDecay*QuizRepeatDecay)
+	// Further feedback-exposed retries remain zero evidence.
+	if events[len(events)-1].Weight != 0 {
+		t.Fatalf("third same-window repeat weight = %v, want 0", events[len(events)-1].Weight)
+	}
+}
+
+// TestSubmitAnswerConcurrentDoubleSubmit is the anti-farm regression for the
+// answer cycle's critical section: two simultaneous submissions of the same
+// item must serialize, the second seeing the first's attempt and earning the
+// decayed weight — not both reading prior=0 and both banking the full score.
+func TestSubmitAnswerConcurrentDoubleSubmit(t *testing.T) {
+	svc, repo, _ := readFixture(t)
+	ctx := collectorCtx(1, "alice")
+
+	item := &types.LearningQuizItem{
+		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-race",
+		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
+		CorrectKey: "B", Explanation: "because", ChunkRefs: types.RefList{"c1"},
+		Status: types.LearningQuizStatusActive,
+	}
+	if err := repo.UpsertQuizItem(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.SubmitAnswer(ctx, testKB, "q-race", "B"); err != nil {
+				t.Errorf("concurrent submit failed: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	row, err := repo.GetMastery(ctx, newReadScope(1, "web_user:alice"), "concept/rag")
+	if err != nil || row == nil {
+		t.Fatalf("mastery row missing after concurrent submits: %v, %v", row, err)
+	}
+	want := WeightQuizCorrect
+	if math.Abs(row.Logit-want) > 1e-9 {
+		t.Fatalf("concurrent double-submit logit = %v, want %v (second submission must be decayed)", row.Logit, want)
+	}
+}
+
+// TestExportDeleteCoverSharedTenantRows: learning rows collected through a
+// shared KB are filed under the KB owner's effective tenant — the export
+// must surface them and the profile delete must remove them, or "delete my
+// profile" silently leaves data in every workspace a shared KB belongs to.
+func TestExportDeleteCoverSharedTenantRows(t *testing.T) {
+	svc, repo, _ := readFixture(t)
+	// The caller lives in tenant 1; the shared KB's owner is tenant 7.
+	ctx := collectorCtx(1, "alice")
+
+	// Home-tenant row…
+	_ = repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventAnswerCite, OccurredAt: time.Now(),
+	})
+	// …and the same person's rows filed under the shared KB's effective
+	// tenant (what the KB access guard's tenant rewrite produces).
+	shared := &types.LearningEvent{
+		TenantID: 7, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/decay", Type: types.LearningEventAnswerCite, OccurredAt: time.Now(),
+	}
+	_ = repo.AppendEvent(ctx, shared)
+	_ = repo.UpsertMastery(ctx, &types.MasteryState{
+		TenantID: 7, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/decay", Logit: 1.5, EvidenceCount: 1, PositiveCount: 1,
+	})
+
+	payload, err := svc.ExportProfile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Events) != 2 {
+		t.Fatalf("export events = %d, want 2 (home + shared-tenant rows): %+v", len(payload.Events), payload.Events)
+	}
+	if len(payload.Mastery) != 1 || payload.Mastery[0].TenantID != 7 {
+		t.Fatalf("export mastery = %+v, want the shared-tenant row", payload.Mastery)
+	}
+	if len(payload.KBSummary) != 1 || payload.KBSummary[0].Events != 2 {
+		t.Fatalf("kb summary = %+v, want one KB rolling up both rows", payload.KBSummary)
+	}
+
+	// Delete (no opt-out needed here) removes BOTH tenants' rows.
+	if err := svc.DeleteProfile(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := repo.ListEventsBySubject(ctx, "web_user:alice"); len(left) != 0 {
+		t.Fatalf("shared-tenant rows survived delete: %+v", left)
+	}
+	if m, _ := repo.ListMasteryBySubject(ctx, "web_user:alice"); len(m) != 0 {
+		t.Fatalf("shared-tenant mastery survived delete: %+v", m)
+	}
+}
+
+// TestOptOutIsSubjectGlobalForSharedKBs: the collection opt-out is a
+// property of the person — a home-tenant opt-out row must stop collection
+// even when the request runs under a shared KB's effective tenant.
+func TestOptOutIsSubjectGlobalForSharedKBs(t *testing.T) {
+	svc, repo, wiki := readFixture(t)
+	t.Setenv("LEARNING_ENABLE", "true")
+
+	// Opted out at home (tenant 1)…
+	repo.prefs["web_user:alice"] = &types.LearningSubjectPrefs{CollectDisabled: true}
+
+	// …but the read arrives under the shared KB's effective tenant 7.
+	sharedCtx := collectorCtx(7, "alice")
+	_ = wiki
+	if err := svc.RecordWikiRead(sharedCtx, testKB, "concept/rag", ""); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(repo.snapshotEvents()); n != 0 {
+		t.Fatalf("collection continued under effective tenant despite opt-out: %d events", n)
+	}
+
+	// And GetSettings (called from the home tenant) reports the opt-out.
+	disabled, err := svc.GetSettings(collectorCtx(1, "alice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !disabled.CollectDisabled {
+		t.Fatal("GetSettings must reflect the subject-scoped opt-out row")
 	}
 }

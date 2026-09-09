@@ -28,6 +28,11 @@ const (
 	BuiltinWikiResearcherID = "builtin-wiki-researcher"
 	// BuiltinWikiFixerID is the ID for the built-in wiki fixer agent
 	BuiltinWikiFixerID = "builtin-wiki-fixer"
+	// BuiltinWikiPageAssistantID is the ID for the built-in wiki page
+	// learning assistant — the companion chat embedded beside the wiki
+	// reader (frontend WikiAssistantWidget). Programmatic-only, same
+	// exclusion rationale as the wiki fixer.
+	BuiltinWikiPageAssistantID = "builtin-wiki-page-assistant"
 )
 
 // AgentMode constants for agent running mode
@@ -565,11 +570,12 @@ var BuiltinAgentRegistry = map[string]func(uint64) *CustomAgent{}
 // builtinAgentIDsOrdered defines the fixed display order of built-in agents
 // that are exposed in the user-facing agent list (ListAgents).
 //
-// NOTE: BuiltinWikiFixerID is intentionally excluded here. The wiki fixer is
-// an internal agent invoked programmatically from the Wiki editor
-// (see frontend WikiBrowser.vue) and should not clutter the tenant's agent
-// picker. It remains fully usable via GetAgentByID because the YAML entry
-// still registers it in BuiltinAgentRegistry.
+// NOTE: BuiltinWikiFixerID and BuiltinWikiPageAssistantID are intentionally
+// excluded here. Both are internal agents invoked programmatically from the
+// Wiki editor (see frontend WikiBrowser.vue / WikiAssistantWidget.vue) and
+// should not clutter the tenant's agent picker. They remain fully usable via
+// GetAgentByID because their YAML entries still register them in
+// BuiltinAgentRegistry.
 var builtinAgentIDsOrdered = []string{
 	BuiltinQuickAnswerID,
 	BuiltinSmartReasoningID,

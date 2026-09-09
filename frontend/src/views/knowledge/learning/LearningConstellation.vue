@@ -1,74 +1,103 @@
 <template>
   <div class="constellation-wrap">
-    <svg :viewBox="`0 0 ${layout.size} ${layout.size}`" class="constellation-svg" role="img"
-      :aria-label="$t('knowledgeEditor.learningTab.constellationTitle')">
+    <svg :viewBox="`0 0 ${SIZE} ${SIZE}`" class="constellation-svg" :class="{ grabbing: dragging }" role="application"
+      :aria-label="$t('knowledgeEditor.learningTab.constellationTitle')"
+      @wheel.prevent="onWheel" @selectstart.prevent
+      @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp"
+      @dblclick.prevent="resetView">
       <defs>
         <radialGradient id="cs-bg" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stop-color="rgba(7, 192, 95, 0.07)" />
           <stop offset="70%" stop-color="rgba(7, 192, 95, 0.02)" />
           <stop offset="100%" stop-color="transparent" />
         </radialGradient>
-        <filter id="cs-glow" x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="4" result="blur" />
-          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-        </filter>
       </defs>
 
-    <!-- 背景辐射渐变 + 四条环带参考线（从内到外：掌握→未接触）；
-         每条环带以不同周期慢速流转（内快外慢），像轨道一样让整图持续微动 -->
-    <circle class="cs-bg" :cx="layout.center" :cy="layout.center" :r="layout.center" fill="url(#cs-bg)" />
-    <circle v-for="band in layout.bands" :key="band.tier" class="cs-ring-guide"
-      :cx="layout.center" :cy="layout.center" :r="band.radius"
-      :stroke="tierColor(band.tier)" :style="ringStyle(band)" />
+      <circle class="cs-bg" :cx="SIZE / 2" :cy="SIZE / 2" :r="SIZE / 2" fill="url(#cs-bg)" />
 
-    <!-- 已点亮节点到中心的微光线束：星座感，同时把"向内推进"读出来 -->
-    <line v-for="p in litPlaced" :key="`spoke-${p.node.slug}`" class="cs-spoke"
-      :x1="layout.center" :y1="layout.center" :x2="p.x" :y2="p.y" :stroke="tierColor(p.tier)" />
+      <!-- 扇区分隔线：分区结构一眼可辨，淡到只做引导（随视角旋转的赤道径向线） -->
+      <line v-for="(l, i) in separatorViews" :key="`sep-${i}`" class="cs-separator"
+        :x1="l.x1" :y1="l.y1" :x2="l.x2" :y2="l.y2" />
 
-    <!-- 中心枢纽：点亮/总数 + 已掌握数；外圈呼吸涟漪向外缓释 -->
-    <circle class="cs-hub-halo" :cx="layout.center" :cy="layout.center" r="46" />
-    <g class="cs-hub">
-      <circle :cx="layout.center" :cy="layout.center" r="40" class="cs-hub-disc" />
-      <text :x="layout.center" :y="layout.center - 4" text-anchor="middle" class="cs-hub-num">{{ litCount }}/{{ totalCount }}</text>
-      <text :x="layout.center" :y="layout.center + 14" text-anchor="middle" class="cs-hub-sub">{{ $t('knowledgeEditor.learningTab.constellationLit') }}</text>
-    </g>
+      <!-- 掌握度环：内环=已验证，外环=未接触（投影后的椭圆轨道） -->
+      <polygon v-for="band in bands" :key="band.tier" class="cs-ring-guide"
+        :points="band.ring" :stroke="tierColor(band.tier)" />
 
-    <!-- 环带标签（置于各环正上方，带计数） -->
-    <text v-for="band in layout.bands" :key="`label-${band.tier}`"
-      :x="layout.center" :y="layout.center - band.radius - 8" text-anchor="middle" class="cs-band-label"
-      :fill="tierColor(band.tier)">{{ bandLabel(band) }}</text>
+      <!-- 关系线：先修实线、wiki细线、跨区虚线。悬停时相关线亮绿、其余半隐；星尘折起时其连线不画 -->
+      <line v-for="e in edgeViews" :key="`e-${e.key}`" class="cs-edge"
+        :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
+        :class="{ cross: e.cross && !e.lit, lit: e.lit, wikilink: e.wikilink && !e.lit, dim: e.dim }"
+        :stroke-width="e.lit ? 2 : e.wikilink ? 0.7 : 1"
+        :opacity="e.dim ? 0.10 : e.lit ? 0.95 : undefined" />
 
-    <!-- 知识节点：半径=证据量；虚线描边=低置信；琥珀=已淡化；
-         动效双通道刻意分离——呼吸=形状（缩放，慢节奏 4-6s）所有人都有；
-         闪烁=光（雷达 ping 环 + 亮度闪光，快节奏 1.6s）只属于近 48h 学过的
-         节点：不同运动类型 + 不同节奏 + 静态绿色标签，三重线索一眼可辨 -->
-    <g v-for="(p, i) in layout.placed" :key="p.node.slug"
-      class="cs-node" :class="{ recent: p.recent, faded: p.faded }"
-      :style="{ animationDelay: `${Math.min(i * 40, 500)}ms`, '--breathe-delay': `${(-(i * 0.53) % 4.2).toFixed(2)}s`, '--breathe-dur': `${(4.4 + (i % 5) * 0.5).toFixed(2)}s` }"
-      @click="emit('open', p.node.slug)">
-      <circle v-if="p.recent" class="cs-ping" :cx="p.x" :cy="p.y" :r="p.r + 3" />
-      <circle :cx="p.x" :cy="p.y" :r="p.r" class="cs-node-disc"
-        :fill="p.faded ? '#d4a017' : tierColor(p.tier)"
-        :stroke-dasharray="p.node.low_confidence ? '2 3' : 'none'"
-        :filter="p.tier === 'mastered' ? 'url(#cs-glow)' : undefined" />
-      <text :x="p.x" :y="p.y + p.r + 13" text-anchor="middle" class="cs-node-label">{{ nodeLabel(p.node.title, p.node.slug) }}</text>
-      <!-- 原生 SVG 悬停提示：全部中文（标题/掌握度/证据量） -->
-      <title>{{ hoverText(p) }}</title>
-    </g>
+      <!-- 中心枢纽：点亮/总数（投影原点，始终在画布中心） -->
+      <g class="cs-hub">
+        <circle :cx="SIZE / 2" :cy="SIZE / 2" r="40" class="cs-hub-disc" />
+        <text :x="SIZE / 2" :y="SIZE / 2 - 4" text-anchor="middle" class="cs-hub-num">{{ litCount }}/{{ totalCount }}</text>
+        <text :x="SIZE / 2" :y="SIZE / 2 + 14" text-anchor="middle" class="cs-hub-sub">{{ $t('knowledgeEditor.learningTab.constellationLit') }}</text>
+      </g>
+
+      <!-- 星尘：折起的未接触微点云（无标签、不挡交互） -->
+      <circle v-for="(d, i) in dustDotViews" :key="`dust-${i}`" class="cs-dust-dot"
+        :cx="d.x" :cy="d.y" :r="d.r" :opacity="d.dim ? 0.15 : 0.55" />
+
+      <!-- 知识节点：分区扇区 + 掌握度壳层，按深度排序（远者先画）。悬停时非关联半隐（图谱页语义）。
+           透明命中圆把可点区域放大到 disc+7px；标签按优先级避让裁剪（cullLabels）。 -->
+      <g v-for="p in nodeViews" :key="p.slug" class="cs-node"
+        :class="{ recent: p.recent, star: p.isNext, dim: p.dim }"
+        tabindex="0" role="button" :aria-label="p.tooltip"
+        @click.stop="onNodeClick(p.slug)"
+        @keydown.enter.prevent="emit('open', p.slug)"
+        @pointerenter="hovered = p.slug" @pointerleave="hovered = null">
+        <circle class="cs-node-hit" :cx="p.x" :cy="p.y" :r="p.r + 7" />
+        <circle v-if="p.recent" class="cs-ping" :cx="p.x" :cy="p.y" :r="p.r + 3" />
+        <circle v-if="p.isNext" class="cs-next-ring" :cx="p.x" :cy="p.y" :r="p.r + 6" />
+        <circle :cx="p.x" :cy="p.y" :r="p.r" class="cs-node-disc"
+          :fill="p.fill" :stroke-dasharray="p.lowConf ? '2 3' : 'none'"
+          :opacity="p.opacity" />
+        <text v-if="p.showLabel" :x="p.x" :y="p.y + p.r + 13" text-anchor="middle" class="cs-node-label"
+          :font-size="10" :opacity="p.opacity">{{ p.label }}</text>
+        <title>{{ p.tooltip }}</title>
+      </g>
+
+      <!-- 星尘徽章：+N 展开/收起该区未接触节点 -->
+      <g v-for="d in dustChipViews" :key="`chip-${d.zone}`" class="cs-dust-chip"
+        :class="{ dim: d.dim }" tabindex="0" role="button" :aria-label="d.tooltip"
+        @click.stop="toggleDust(d.zone)" @keydown.enter.prevent="toggleDust(d.zone)">
+        <circle :cx="d.x" :cy="d.y" r="10" />
+        <text :x="d.x" :y="d.y + 3.5" text-anchor="middle">+{{ d.count }}</text>
+        <title>{{ d.tooltip }}</title>
+      </g>
+
+      <!-- 分区名外圈：每区 1 个标签而非每节点 1 个——分布结构先读 -->
+      <text v-for="z in zoneLabelViews" :key="`zl-${z.id}`" class="cs-zone-rim"
+        :x="z.x" :y="z.y" text-anchor="middle" :opacity="z.dim ? 0.3 : 0.78">{{ z.name }}</text>
     </svg>
-    <div class="cs-caption">{{ $t('knowledgeEditor.learningTab.constellationHint') }}</div>
+    <div class="cs-caption">{{ $t('knowledgeEditor.learningTab.constellationHint3d') }}</div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { layoutConstellation, nodeLabel, type ConstellationNode, type Tier } from './constellationLayout'
-import type { MasteryView } from '@/api/learning'
+import {
+  layoutConstellation3, nodeLabel, truncateLabel, partitionDust, labelPriority, cullLabels, labelUnits,
+  projectPoint, ringPoints, DEFAULT_VIEW,
+  type ConstellationEdge, type ConstellationNode, type Tier, type Vec3, type ZoneAxis,
+} from './constellationLayout'
 
-const props = defineProps<{ nodes: MasteryView[] }>()
+const props = defineProps<{
+  nodes: ConstellationNode[]
+  edges: ConstellationEdge[]
+  zones: ZoneAxis[]
+  highlightZone?: string | null
+}>()
 const emit = defineEmits<{ (e: 'open', slug: string): void }>()
 const { t } = useI18n()
+
+const SIZE = 560
+// 3D 轨道视角：拖拽旋转（yaw/pitch），滚轮缩放，双击复位。分区扇区按方位角排列，
+// 掌握度按同心壳层，投影见 constellationLayout.projectPoint。
 
 const TIER_COLORS: Record<Tier, string> = {
   unseen: '#d0d0d0',
@@ -76,39 +105,383 @@ const TIER_COLORS: Record<Tier, string> = {
   familiar: '#07c05f',
   mastered: '#038626',
 }
+const FADED_COLOR = '#7b8ba1'
+const SKIPPED_COLOR = '#a9b7c6'
+/** 放大到该档位自动展开全部星尘（放大=要看细节） */
+const DUST_AUTO_EXPAND_ZOOM = 1.4
+/** 初始/复位视角：轻微俯角+偏航，一眼读出这是颗可旋转的球（与布局
+ *  松弛的度量视角同源，见 constellationLayout.DEFAULT_VIEW） */
+const INITIAL_YAW = DEFAULT_VIEW.yaw
+const INITIAL_PITCH = DEFAULT_VIEW.pitch
+const YAW_PER_PX = 0.0062
+const PITCH_PER_PX = 0.0048
+const PITCH_LIMIT = 1.15
+/** 拖拽在 4px 起转（旋转手感），但只有 ≥8px 才吞掉点击——触控板/鼠标
+ * 点按常见的 4-8px 微漂移仍应打开节点页，而不是被当成拖拽。 */
+const CLICK_SUPPRESS_PX = 8
+
 function tierColor(tier: Tier): string {
   return TIER_COLORS[tier] || TIER_COLORS.unseen
 }
 
-const layout = computed(() => layoutConstellation(props.nodes as ConstellationNode[]))
-const litPlaced = computed(() => layout.value.placed.filter((p) => p.tier !== 'unseen' && !p.faded))
-const litCount = computed(() => litPlaced.value.length)
+const zoom = ref(1)
+const yaw = ref(INITIAL_YAW)
+const pitch = ref(INITIAL_PITCH)
+const hovered = ref<string | null>(null)
+const dragging = ref(false)
+const expandedDust = ref<Set<string>>(new Set())
+
+function onWheel(e: WheelEvent) {
+  const dy = e.deltaY * (e.deltaMode === 1 ? 33 : 1)
+  zoom.value = Math.max(0.6, Math.min(1.8, zoom.value * Math.exp(-dy * 0.0012)))
+}
+
+function resetView() {
+  zoom.value = 1
+  yaw.value = INITIAL_YAW
+  pitch.value = INITIAL_PITCH
+}
+
+// ---- 拖拽旋转：水平拖=yaw、垂直拖=pitch（俯仰钳位），>4px 判拖拽并抑制节点 click ----
+let dragStart: { x: number; y: number; yaw: number; pitch: number; id: number } | null = null
+let suppressClick = false
+
+function onPointerDown(e: PointerEvent) {
+  if (e.button !== 0) return
+  dragStart = { x: e.clientX, y: e.clientY, yaw: yaw.value, pitch: pitch.value, id: e.pointerId }
+}
+
+function onPointerMove(e: PointerEvent) {
+  if (!dragStart || e.pointerId !== dragStart.id) return
+  const dx = e.clientX - dragStart.x
+  const dy = e.clientY - dragStart.y
+  const moved = Math.hypot(dx, dy)
+  if (!dragging.value && moved > 4) {
+    dragging.value = true
+    // 只有确认为拖拽后才捕获指针：pointerdown 即捕获会把后续 pointerup/click
+    // 全部重定向到 svg 根，节点 <g> 的 @click 永远收不到（节点点不开的根因）。
+    // 捕获失败（如已释放的指针）不影响旋转本身。
+    try { (e.currentTarget as SVGSVGElement).setPointerCapture?.(e.pointerId) } catch { /* noop */ }
+  }
+  if (dragging.value && !suppressClick && moved >= CLICK_SUPPRESS_PX) suppressClick = true
+  if (!dragging.value) return
+  yaw.value = dragStart.yaw + dx * YAW_PER_PX
+  pitch.value = Math.max(-PITCH_LIMIT, Math.min(PITCH_LIMIT, dragStart.pitch + dy * PITCH_PER_PX))
+}
+
+function onPointerUp(e: PointerEvent) {
+  if (!dragStart || e.pointerId !== dragStart.id) return
+  dragStart = null
+  if (dragging.value) {
+    dragging.value = false
+    window.setTimeout(() => { suppressClick = false }, 0)
+  }
+}
+
+function onNodeClick(slug: string) {
+  if (suppressClick) return
+  emit('open', slug)
+}
+
+let nowTimer = 0
+const nowTick = ref(Date.now())
+onMounted(() => { nowTimer = window.setInterval(() => { nowTick.value = Date.now() }, 60_000) })
+onUnmounted(() => clearInterval(nowTimer))
+// KeepAlive 失活（切去 wiki/图谱页）时清交互残留：悬停高亮与进行中的拖拽
+// 若不清，回来时会"卡"在离开前的关联减淡/旋转中态（用户实测问题）。
+onDeactivated(() => {
+  hovered.value = null
+  dragging.value = false
+  dragStart = null
+})
+onActivated(() => {
+  // 复激时视角保持用户离开前的角度——只清指针态，不重置 yaw/pitch/zoom。
+})
+
+// ---- 布局：确定性纯函数（分区扇区 + 掌握度环），见 constellationLayout.ts ----
+const layout = computed(() =>
+  layoutConstellation3(props.nodes, props.zones, new Date(nowTick.value)))
+
+const bands = computed(() =>
+  layout.value.bands.map((b) => ({ tier: b.tier, ring: ringPoints(b.radius, yaw.value, pitch.value, SIZE, zoom.value) })))
+
+const nextSlugs = computed(() => {
+  const set = new Set<string>()
+  for (const z of props.zones) if (z.next) set.add(z.next)
+  return set
+})
+
+// ---- 星尘折叠：纯函数分区 + 交互态（点开 / 高亮区 / 放大）决定最终折起集 ----
+const dustPartition = computed(() => partitionDust(props.nodes, nextSlugs.value, new Date(nowTick.value)))
+
+const collapsedDust = computed(() => {
+  const m = new Map<string, ConstellationNode[]>()
+  for (const [zone, arr] of dustPartition.value.dust) {
+    const expanded = expandedDust.value.has(zone) || zoom.value >= DUST_AUTO_EXPAND_ZOOM || props.highlightZone === zone
+    if (!expanded) m.set(zone, arr)
+  }
+  return m
+})
+
+const collapsedSlugs = computed(() => {
+  const s = new Set<string>()
+  for (const arr of collapsedDust.value.values()) for (const n of arr) s.add(n.slug)
+  return s
+})
+
+function toggleDust(zone: string) {
+  const s = new Set(expandedDust.value)
+  if (s.has(zone)) s.delete(zone)
+  else s.add(zone)
+  expandedDust.value = s
+}
+
+/** 悬停关联集（图谱页语义）：该节点 + 有边相连的实体 + 同区成员。 */
+const adjacency = computed(() => {
+  if (!hovered.value) return null
+  const set = new Set<string>([hovered.value])
+  for (const e of props.edges) {
+    if (e.from === hovered.value) set.add(e.to)
+    if (e.to === hovered.value) set.add(e.from)
+  }
+  const hoveredNode = props.nodes.find((n) => n.slug === hovered.value)
+  const hoveredZone = hoveredNode?.folder_id ?? ''
+  if (hoveredZone) {
+    for (const n of props.nodes) {
+      if ((n.folder_id ?? '') === hoveredZone) set.add(n.slug)
+    }
+  }
+  return set
+})
+
+const zoneOf = computed(() => {
+  const m = new Map<string, string>()
+  for (const p of layout.value.placed) m.set(p.node.slug, p.node.folder_id ?? '')
+  return m
+})
+
+/** 3D→2D 投影：轨道相机（yaw/pitch 由拖拽驱动）+ 透视 + 缩放。 */
+function proj(p: Vec3) {
+  return projectPoint(p, yaw.value, pitch.value, SIZE, zoom.value)
+}
+
+/** 深度→透明度：远侧节点略淡，近侧实——不用遮挡剔除也能读出球面层次。 */
+function depthOpacity(depth: number, dim: boolean): number {
+  if (dim) return 0.22
+  const k = Math.max(0, Math.min(1, (depth + 260) / 520)) // 0=近 … 1=远
+  return 0.95 - 0.33 * k
+}
+
+interface NodeView {
+  slug: string; x: number; y: number; r: number
+  fill: string; tier: Tier; label: string
+  opacity: number; lowConf: boolean; recent: boolean
+  skipped: boolean; isNext: boolean; tooltip: string; dim: boolean; showLabel: boolean
+  faded: boolean; evidence: number; selfAssess: boolean
+}
+
+const nodeViews = computed<NodeView[]>(() => {
+  const views = layout.value.placed
+    .filter((p) => !collapsedSlugs.value.has(p.node.slug))
+    .map((p) => {
+      const node = p.node
+      const isNext = nextSlugs.value.has(node.slug)
+      const inZone = props.highlightZone == null || (node.folder_id ?? '') === props.highlightZone
+      const isAdjacent = adjacency.value?.has(node.slug) ?? false
+      let dim = !inZone
+      if (!dim && adjacency.value) dim = !isAdjacent
+      const label = truncateLabel(nodeLabel(node.title, node.slug), 9)
+      const lines = [
+        nodeLabel(node.title, node.slug),
+        t('knowledgeEditor.learningTab.constellationHoverP', { p: Math.round((node.p_eff ?? 0) * 100) }),
+        t('knowledgeEditor.learningTab.constellationHoverN', { n: node.evidence_count ?? 0 }),
+      ]
+      if (p.faded) lines.push(t('knowledgeEditor.learningTab.tierFaded'))
+      if (node.skipped) lines.push(t('knowledgeEditor.learningTab.skippedBadge'))
+      const place = node.section || node.doc_title
+      if (place) lines.push(place)
+      if (node.self_assess) lines.push(selfAssessLine(node.self_assess))
+      if (isNext) lines.push(t('knowledgeEditor.learningTab.zoneNextMark'))
+      const pr = proj(p.pos)
+      return {
+        slug: node.slug,
+        x: pr.x, y: pr.y,
+        depth: pr.depth,
+        r: p.r * pr.scale * zoom.value,
+        fill: node.skipped ? SKIPPED_COLOR : p.faded ? FADED_COLOR : tierColor(p.tier),
+        tier: p.tier,
+        faded: p.faded,
+        recent: p.recent,
+        skipped: !!node.skipped,
+        isNext,
+        evidence: node.evidence_count ?? 0,
+        selfAssess: !!node.self_assess,
+        label,
+        opacity: depthOpacity(pr.depth, dim),
+        lowConf: !!node.low_confidence,
+        tooltip: lines.join('\n'),
+        dim,
+        showLabel: false,
+      }
+    })
+    .sort((a, b) => a.depth - b.depth) // 远者先画，近者覆盖在上
+  // 标签预算：优先级排序 + 贪心矩形避让（含中心枢纽与外圈分区名障碍），悬停节点钉住必显。
+  const pinned = hovered.value
+  const rimObstacles = zoneLabelViews.value.map((z) => {
+    const w = labelUnits(z.name) * 10
+    return { x0: z.x - w / 2 - 2, x1: z.x + w / 2 + 2, y0: z.y - 9, y1: z.y + 3 }
+  })
+  const keep = cullLabels(
+    views.map((v) => ({
+      slug: v.slug,
+      x: v.x,
+      y: v.y + v.r + 13,
+      widthPx: labelUnits(v.label) * 10,
+      priority: labelPriority({
+        tier: v.tier, faded: v.faded, recent: v.recent, isNext: v.isNext,
+        selfAssess: v.selfAssess, skipped: v.skipped, evidence: v.evidence,
+      }),
+      pinned: v.slug === pinned,
+    })),
+    { x: SIZE / 2, y: SIZE / 2, r: 36 },
+    rimObstacles,
+  )
+  for (const v of views) v.showLabel = keep.has(v.slug) || v.slug === pinned
+  return views
+})
+
+interface EdgeView { key: string; x1: number; y1: number; x2: number; y2: number; cross: boolean; lit: boolean; wikilink: boolean; dim: boolean }
+const edgeViews = computed<EdgeView[]>(() => {
+  const out: EdgeView[] = []
+  for (const e of props.edges) {
+    if (collapsedSlugs.value.has(e.from) || collapsedSlugs.value.has(e.to)) continue
+    const a = layout.value.placed.find((p) => p.node.slug === e.from)
+    const b = layout.value.placed.find((p) => p.node.slug === e.to)
+    if (!a || !b) continue
+    const za = zoneOf.value.get(e.from) ?? ''
+    const zb = zoneOf.value.get(e.to) ?? ''
+    const cross = za !== zb
+    const zoneLit = props.highlightZone != null && (za === props.highlightZone || zb === props.highlightZone)
+    const hoverLit = !!hovered.value && (e.from === hovered.value || e.to === hovered.value)
+    const dim = !!hovered.value && !hoverLit
+    const pa = proj(a.pos)
+    const pb = proj(b.pos)
+    out.push({
+      key: `${e.from}->${e.to}`, x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+      cross, lit: hoverLit || zoneLit, wikilink: e.kind === 'wikilink', dim,
+    })
+  }
+  return out
+})
+
+// ---- 星尘渲染：微点云（slug 哈希确定性微扰）+ 质心 +N 徽章 ----
+function slugHash(s: string): number {
+  let h = 2166136261
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+const dustDotViews = computed(() => {
+  const out: { x: number; y: number; r: number; dim: boolean }[] = []
+  for (const [zone, arr] of collapsedDust.value) {
+    const dim = props.highlightZone != null && props.highlightZone !== zone
+    for (const n of arr) {
+      const p = layout.value.placed.find((q) => q.node.slug === n.slug)
+      if (!p) continue
+      const pr = proj(p.pos)
+      const h = slugHash(n.slug)
+      out.push({
+        x: pr.x + (((h & 15) - 7.5) * 0.8),
+        y: pr.y + ((((h >>> 4) & 15) - 7.5) * 0.8),
+        r: (1.6 + (h % 5) * 0.2) * pr.scale * zoom.value,
+        dim,
+      })
+    }
+  }
+  return out
+})
+
+const dustChipViews = computed(() => {
+  const out: { zone: string; x: number; y: number; count: number; tooltip: string; dim: boolean }[] = []
+  for (const [zone, arr] of collapsedDust.value) {
+    let cx = 0
+    let cy = 0
+    let n = 0
+    for (const node of arr) {
+      const p = layout.value.placed.find((q) => q.node.slug === node.slug)
+      if (!p) continue
+      const pr = proj(p.pos)
+      cx += pr.x
+      cy += pr.y
+      n++
+    }
+    if (!n) continue
+    const names = arr.map((node) => nodeLabel(node.title, node.slug)).join('、')
+    out.push({
+      zone,
+      x: cx / n,
+      y: cy / n - 18,
+      count: arr.length,
+      tooltip: t('knowledgeEditor.learningTab.constellationDustHint', { n: arr.length }) + '\n' + names,
+      dim: props.highlightZone != null && props.highlightZone !== zone,
+    })
+  }
+  return out
+})
+
+// ---- 分区结构：分隔线 + 外圈分区名（每区 1 个标签——分布先读，细节后读） ----
+const separatorViews = computed(() => {
+  const sectors = layout.value.sectors
+  if (sectors.size < 2) return []
+  const out: { x1: number; y1: number; x2: number; y2: number }[] = []
+  for (const [start] of sectors.values()) {
+    const cos = Math.cos(start)
+    const sin = Math.sin(start)
+    const a = proj({ x: cos * 46, y: 0, z: sin * 46 })
+    const b = proj({ x: cos * 242, y: 0, z: sin * 242 })
+    out.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y })
+  }
+  return out
+})
+
+const zoneLabelViews = computed(() => {
+  const sectors = layout.value.sectors
+  const out: { id: string; name: string; x: number; y: number; dim: boolean }[] = []
+  const mids = props.zones
+    .filter((z) => sectors.has(z.id))
+    .map((z) => {
+      const [s, e] = sectors.get(z.id)!
+      return { z, mid: (s + e) / 2 }
+    })
+  const R1 = 258
+  const R2 = 270
+  let bumped = false
+  mids.forEach((m, i) => {
+    // 相邻分区名角距过近时错开到第二半径（确定性单遍）
+    const prev = mids[(i - 1 + mids.length) % mids.length]
+    const gap = Math.abs(m.mid - prev.mid)
+    if (mids.length > 1 && Math.min(gap, Math.PI * 2 - gap) < 0.42) bumped = !bumped
+    else bumped = false
+    const r = bumped ? R2 : R1
+    const pr = proj({ x: Math.cos(m.mid) * r, y: 0, z: Math.sin(m.mid) * r })
+    out.push({
+      id: m.z.id,
+      name: truncateLabel(m.z.name || m.z.id, 8),
+      x: pr.x,
+      y: pr.y,
+      dim: props.highlightZone != null && props.highlightZone !== m.z.id,
+    })
+  })
+  return out
+})
+
+const litCount = computed(() =>
+  layout.value.placed.filter((p) => p.tier !== 'unseen' && !p.faded && !p.node.skipped).length)
 const totalCount = computed(() => layout.value.placed.length)
 
-function bandLabel(band: { tier: Tier; count: number }): string {
-  const names: Record<Tier, string> = {
-    unseen: t('knowledgeEditor.learningTab.tierUnseen'),
-    touched: t('knowledgeEditor.learningTab.tierTouched'),
-    familiar: t('knowledgeEditor.learningTab.tierFamiliar'),
-    mastered: t('knowledgeEditor.learningTab.tierMastered'),
-  }
-  return `${names[band.tier]} ${band.count}`
-}
-
-function hoverText(p: { node: ConstellationNode; tier: Tier; faded: boolean }): string {
-  const lines = [
-    p.node.title || nodeLabel(p.node.title, p.node.slug),
-    t('knowledgeEditor.learningTab.constellationHoverP', { p: Math.round((p.node.p_eff ?? 0) * 100) }),
-    t('knowledgeEditor.learningTab.constellationHoverN', { n: p.node.evidence_count ?? 0 }),
-  ]
-  if (p.faded) lines.push(t('knowledgeEditor.learningTab.tierFaded'))
-  if (p.node.self_assess) lines.push(selfAssessLine(p.node.self_assess!))
-  return lines.join('\n')
-}
-
-// 环带流转周期：内环快、外环慢（开普勒式轨道感），虚线周期 9 的整数倍保证无缝循环
-
-// Hover line 4: the self-assessment echo (skills-matrix challenge track).
 function selfAssessLine(m: { direction: string; event_type: string }): string {
   if (m.direction === 'up') return t('knowledgeEditor.learningTab.saBadgeUp')
   const reasonMap: Record<string, string> = {
@@ -119,99 +492,61 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
   }
   return t('knowledgeEditor.learningTab.' + (reasonMap[m.event_type] || 'saBadgeDownAll'))
 }
-function ringStyle(band: { radius: number }) {
-  return { '--orbit-dur': `${(Math.round(9 * Math.ceil((16 + band.radius / 8) / 9))).toFixed(0)}s` }
-}
 </script>
 
 <style scoped>
 .constellation-wrap { position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.constellation-svg { width: 100%; height: 100%; max-width: none; display: block; }
-/* 背景辉光整体缓释：整幅星域的最底层呼吸 */
+.constellation-svg {
+  width: 100%; height: 100%; max-width: none; display: block;
+  cursor: grab; touch-action: none;
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+}
+.constellation-svg.grabbing { cursor: grabbing; }
 .cs-bg { animation: cs-bg-breathe 11s ease-in-out infinite; }
 @keyframes cs-bg-breathe { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
-/* 环带：透明度呼吸 + 虚线极慢流转（周期为虚线节距 9 的整数倍，衔接无跳变） */
-.cs-ring-guide {
-  fill: none; stroke-width: 1; stroke-dasharray: 3 6; opacity: 0.35;
-  transform-box: fill-box; transform-origin: center;
-  animation: cs-ring-breathe 9s ease-in-out infinite, cs-ring-orbit var(--orbit-dur, 27s) linear infinite;
-}
-@keyframes cs-ring-breathe { 0%, 100% { opacity: 0.16; } 50% { opacity: 0.5; } }
-@keyframes cs-ring-orbit { to { stroke-dashoffset: -54; } }
-.cs-spoke { stroke-width: 1; animation: cs-spoke-breathe 8s ease-in-out infinite; }
-@keyframes cs-spoke-breathe { 0%, 100% { opacity: 0.07; } 50% { opacity: 0.22; } }
-/* 中心涟漪：一圈光环由内向外缓释淡出，节奏与呼吸同源 */
-.cs-hub-halo {
-  fill: none; stroke: var(--td-brand-color, #07c05f); stroke-width: 1;
-  transform-box: fill-box; transform-origin: center;
-  animation: cs-halo 4.8s ease-out infinite;
-}
-@keyframes cs-halo {
-  0% { transform: scale(0.78); opacity: 0.42; }
-  75% { transform: scale(1.26); opacity: 0; }
-  100% { transform: scale(1.26); opacity: 0; }
-}
+.cs-separator { stroke: rgba(125, 145, 165, 0.12); stroke-width: 1; pointer-events: none; }
+.cs-ring-guide { fill: none; stroke-width: 1; stroke-dasharray: 3 6; opacity: 0.25; pointer-events: none; }
+.cs-edge { stroke: rgba(125, 145, 165, 0.30); }
+.cs-edge.cross { stroke-dasharray: 5 5; }
+.cs-edge.wikilink { opacity: 0.45; }
+.cs-edge.lit { stroke: var(--td-brand-color, #07c05f); opacity: 0.95; }
 .cs-hub-disc { fill: var(--td-bg-color-container, #fff); stroke: var(--td-brand-color, #07c05f); stroke-width: 2; }
 .cs-hub-num { font-size: 18px; font-weight: 600; fill: var(--td-text-color-primary, #333); }
 .cs-hub-sub { font-size: 9px; fill: var(--td-text-color-placeholder, #999); }
-.cs-band-label { font-size: 10px; opacity: 0.75; }
-.cs-node { cursor: pointer; transition: opacity 0.15s; animation: cs-node-in 0.5s ease both; transform-box: fill-box; transform-origin: center; }
-.cs-node:hover { opacity: 0.85; }
+.cs-dust-dot { fill: #c9cdd4; pointer-events: none; }
+.cs-dust-chip { cursor: pointer; }
+.cs-dust-chip circle { fill: var(--td-bg-color-container, #fff); stroke: var(--td-component-stroke, #dcdcdc); stroke-width: 1; }
+.cs-dust-chip text { font-size: 9px; font-weight: 600; fill: var(--td-text-color-secondary, #555); }
+.cs-dust-chip:hover circle { stroke: var(--td-brand-color, #07c05f); }
+.cs-dust-chip:focus { outline: none; }
+.cs-dust-chip:focus-visible circle { stroke: var(--td-brand-color, #07c05f); stroke-width: 2; }
+.cs-dust-chip.dim { opacity: 0.45; }
+.cs-zone-rim {
+  font-size: 10px; fill: var(--td-text-color-placeholder, #999); font-weight: 500;
+  paint-order: stroke; stroke: var(--td-bg-color-container, #fff); stroke-width: 3px; stroke-linejoin: round;
+  pointer-events: none; -webkit-user-select: none; user-select: none;
+}
+.cs-node { cursor: pointer; }
+.cs-node:focus { outline: none; }
+.cs-node:focus-visible .cs-node-disc { stroke: var(--td-brand-color, #07c05f); stroke-width: 2.5; }
+.cs-node-hit { fill: transparent; pointer-events: all; }
+.cs-node-disc { stroke: rgba(0, 0, 0, 0.12); stroke-width: 0.5; }
 .cs-node:hover .cs-node-disc { stroke: var(--td-brand-color, #07c05f); stroke-width: 2; }
-.cs-node-disc {
-  stroke: rgba(0, 0, 0, 0.12); stroke-width: 0.5;
-  transform-box: fill-box; transform-origin: center;
-  animation: cs-breathe var(--breathe-dur, 4.8s) ease-in-out infinite var(--breathe-delay, 0s);
+.cs-node-label {
+  font-size: 10px; fill: var(--td-text-color-secondary, #555); font-weight: 500;
+  paint-order: stroke; stroke: var(--td-bg-color-container, #fff); stroke-width: 3px; stroke-linejoin: round;
+  pointer-events: none;
+  -webkit-user-select: none; user-select: none;
 }
-/* 48h 标记 ①：雷达 ping 环——由内向外扩散淡出（1.6s 快节奏），
-   与呼吸的"原地缓慢缩放"是不同的运动类型，不会认错 */
-.cs-ping {
-  fill: none; stroke: var(--td-brand-color, #07c05f); stroke-width: 1.5;
-  transform-box: fill-box; transform-origin: center; pointer-events: none;
-  animation: cs-ping 1.6s cubic-bezier(0.22, 0.61, 0.36, 1) infinite;
-}
-@keyframes cs-ping {
-  0% { transform: scale(0.72); opacity: 0.95; }
-  70% { transform: scale(1.6); opacity: 0; }
-  100% { transform: scale(1.6); opacity: 0; }
-}
-/* 48h 标记 ②：亮度闪光。呼吸的 keyframes 刻意不含 opacity（亮度通道
-   独占给闪烁），闪烁也不再叠加描边加粗（描边加粗与缩放呼吸视觉相近，
-   是此前"分不清闪烁和呼吸"的主因） */
-.cs-node.recent .cs-node-disc {
-  animation: cs-breathe var(--breathe-dur, 4.8s) ease-in-out infinite var(--breathe-delay, 0s),
-    cs-twinkle 1.6s ease-in-out infinite;
-}
-/* 48h 标记 ③：静态线索——近学节点的标签用品牌绿（reduced-motion 下也可辨） */
 .cs-node.recent .cs-node-label { fill: #049b38; }
-/* 已淡化节点：只缩放不提透明度，保留琥珀暗淡观感 */
-.cs-node.faded .cs-node-disc { animation-name: cs-breathe-dim; opacity: 0.8; }
-/* 已淡化 + 近48h学过：暗淡呼吸之上闪烁必须存活——单一 animation-name
-   会整体覆盖名称列表，把 recent 的闪烁一并抹掉（曾导致"学了却不闪"） */
-.cs-node.faded.recent .cs-node-disc { animation-name: cs-breathe-dim, cs-twinkle; }
-/* 呼吸=形状通道：只做缩放，节奏 4-6s 慢起伏 */
-@keyframes cs-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
-}
-@keyframes cs-breathe-dim {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.1); }
-}
-.cs-node-label { font-size: 10px; fill: var(--td-text-color-secondary, #666); paint-order: stroke; stroke: var(--td-bg-color-container, #fff); stroke-width: 3px; stroke-linejoin: round; }
-/* 图例落在圆图左下天然空角，不遮节点 */
+.cs-next-ring { fill: none; stroke: #049b38; stroke-width: 1.1; transform-box: fill-box; transform-origin: center; pointer-events: none; animation: cs-next 3.2s ease-in-out infinite; }
+@keyframes cs-next { 0%, 100% { transform: scale(0.92); opacity: 0.42; } 50% { transform: scale(1.14); opacity: 0.16; } }
+.cs-ping { fill: none; stroke: var(--td-brand-color, #07c05f); stroke-width: 0.8; transform-box: fill-box; transform-origin: center; pointer-events: none; animation: cs-ping 3.6s ease-in-out infinite; }
+/* 近学光环：低透明度缓呼吸（曾经的强脉冲扩散在多实体时令人眼花——
+   刻意压到"有呼吸感即可"，配合球体整体不显死寂） */
+@keyframes cs-ping { 0%, 100% { transform: scale(0.92); opacity: 0.30; } 50% { transform: scale(1.16); opacity: 0.10; } }
 .cs-caption { position: absolute; left: 4px; bottom: 2px; font-size: 11px; color: var(--td-text-color-placeholder, #999); max-width: 46%; text-align: left; pointer-events: none; }
-@keyframes cs-node-in {
-  from { opacity: 0; transform: scale(0.6); }
-  to { opacity: 1; transform: none; }
-}
-@keyframes cs-twinkle {
-  /* 亮度闪光：只动辉光（亮度通道独占），与呼吸的缩放通道正交，
-     "近48h学过"是用户最关心的即时反馈，节奏与 ping 环同为 1.6s 同步脉冲 */
-  0%, 100% { filter: none; }
-  50% { filter: drop-shadow(0 0 6px rgba(7, 192, 95, 0.9)); }
-}
 @media (prefers-reduced-motion: reduce) {
-  .cs-node, .cs-node-disc, .cs-ring-guide, .cs-hub-halo, .cs-spoke, .cs-bg, .cs-ping { animation: none; }
+  .cs-bg, .cs-ping, .cs-next-ring { animation: none; }
 }
 </style>

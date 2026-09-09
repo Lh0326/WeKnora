@@ -27,10 +27,14 @@ type backfillAggregate struct {
 // learning events, so a KB that was used before the feature shipped starts
 // with a half-lit map instead of an empty one (§2.9 of the design doc).
 //
-// Idempotency is per (subject, KB, slug): slugs that already carry a
-// backfill_cite event are skipped, so re-running the task — which the
-// reconcile runner does on every startup while the gate is open — appends
-// zero new events. The weight is WeightAnswerCite × BackfillDiscount ×
+// Idempotency is per (subject, KB) scope and lives in learning_backfill_marks
+// — a tombstone that survives profile deletion. Reading it from the
+// backfill_cite events themselves (the original design) made
+// DeleteLearningDataBySubject erasable: the next startup re-derived the same
+// history from the still-present affinity rows and resurrected the deleted
+// profile. The mark is written BEFORE any event is appended, so a crash
+// between the two can only under-light a scope (safe) and never duplicate
+// folded weights. The weight is WeightAnswerCite × BackfillDiscount ×
 // min(hits,8)/8: document-grained history is coarser than the chunk-grained
 // live signal, so it is both discounted and saturating.
 func (s *Service) RunBackfill(ctx context.Context) error {
@@ -75,7 +79,7 @@ func (s *Service) RunBackfill(ctx context.Context) error {
 			}
 		}
 
-		if s.prefs.collectionDisabled(ctx, s.repo, key.tenant, key.subject) {
+		if s.prefs.collectionDisabled(ctx, s.repo, key.subject) {
 			continue
 		}
 
@@ -88,13 +92,18 @@ func (s *Service) RunBackfill(ctx context.Context) error {
 			continue
 		}
 
-		done := map[string]bool{}
-		if existing, err := s.repo.ListBackfilledSlugs(ctx, scope); err == nil {
-			for _, slug := range existing {
-				done[slug] = true
-			}
-		} else {
+		done, err := s.repo.BackfillDone(ctx, scope)
+		if err != nil {
 			logger.Warnf(ctx, "learning: backfill idempotency lookup failed (kb %s): %v", key.kb, err)
+			continue
+		}
+		if done {
+			continue
+		}
+		// Mark first: a mark without events can only under-light the scope,
+		// while events without a mark would fold twice on the next run.
+		if err := s.repo.MarkBackfillDone(ctx, scope); err != nil {
+			logger.Warnf(ctx, "learning: backfill mark write failed (kb %s): %v", key.kb, err)
 			continue
 		}
 
@@ -122,9 +131,6 @@ func (s *Service) RunBackfill(ctx context.Context) error {
 		sort.Strings(slugs)
 
 		for _, slug := range slugs {
-			if done[slug] {
-				continue
-			}
 			a := agg[slug]
 			occurredAt := a.lastUsed
 			if occurredAt.IsZero() {

@@ -28,7 +28,7 @@ type fakeLearningService struct {
 	lastCtx       context.Context
 }
 
-func (f *fakeLearningService) RecordWikiRead(_ context.Context, kbID, slug string) error {
+func (f *fakeLearningService) RecordWikiRead(_ context.Context, kbID, slug, tier string) error {
 	f.readCalls++
 	f.readKB = kbID
 	f.readSlug = slug

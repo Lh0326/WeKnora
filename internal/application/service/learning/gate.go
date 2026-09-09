@@ -21,7 +21,7 @@ import (
 // provide the fast positive feedback.
 //
 // The gate reads only the quiz attempt log — no new state, no migration:
-// ListCorrectAttempts + CollectDirectFacts derive the facts at read time,
+// ListAttempts + CollectDirectFacts derive the facts at read time,
 // so historical data re-grades the moment the code ships.
 
 // DirectQuizFact is one distinct correctly-answered quiz item: the item id
@@ -29,35 +29,94 @@ import (
 // item never creates a second fact — farming one memorised answer cannot
 // fabricate breadth; only different items count.
 type DirectQuizFact struct {
-	ItemID         string
+	ItemID string
+	// FirstCorrectAt is the first time this item was answered correctly;
+	// LastCorrectAt is the most recent correct answer (equal on a one-shot
+	// item). The mastered gate reads the span earliest-first → latest-last:
+	// a learner who answers the WHOLE item bank correctly on day 1 and
+	// again after the session gap must qualify — firsts-only would lock
+	// them out forever once every item's first correct is used up (the
+	// audit's P1-C dead corner), rewarding "save one item for later"
+	// instead of stable delayed retrieval.
 	FirstCorrectAt time.Time
+	LastCorrectAt  time.Time
 }
 
-// CollectDirectFacts reduces a correct-attempt history to per-slug
-// distinct-item facts, keeping the first correct time per item. Input may
-// be unsorted and may contain repeats; wrong attempts are ignored.
+type itemSpan struct {
+	first time.Time
+	last  time.Time
+}
+
+// IndependentQuizAttempts keeps attempts not exposed to feedback on the
+// same item in the preceding 48 hours. Input includes wrong/unsure answers.
+// Legacy rows without an item ID cannot be deduplicated reliably here.
+func IndependentQuizAttempts(attempts []types.LearningQuizAttempt) []types.LearningQuizAttempt {
+	ordered := append([]types.LearningQuizAttempt(nil), attempts...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if !ordered[i].AnsweredAt.Equal(ordered[j].AnsweredAt) {
+			return ordered[i].AnsweredAt.Before(ordered[j].AnsweredAt)
+		}
+		// At indistinguishable timestamps, a failed/unsure attempt must not
+		// be hidden by a correct retry whose answer may already be disclosed.
+		if ordered[i].IsCorrect != ordered[j].IsCorrect {
+			return !ordered[i].IsCorrect
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+	type attemptKey struct {
+		tenant                  uint64
+		kb, subject, slug, item string
+	}
+	lastAttempt := map[attemptKey]time.Time{}
+	var independent []types.LearningQuizAttempt
+	for _, a := range ordered {
+		key := attemptKey{a.TenantID, a.KnowledgeBaseID, a.SubjectID, a.Slug, a.QuizItemID}
+		previous, seen := lastAttempt[key]
+		lastAttempt[key] = a.AnsweredAt
+		if a.QuizItemID != "" && seen && a.AnsweredAt.Sub(previous) < ReAskWindowHours*time.Hour {
+			continue
+		}
+		independent = append(independent, a)
+	}
+	return independent
+}
+
+// CollectDirectFacts reduces eligible correct attempts to distinct-item
+// coverage and delayed verification. Callers supply the complete history.
 func CollectDirectFacts(attempts []types.LearningQuizAttempt) map[string][]DirectQuizFact {
-	first := map[string]map[string]time.Time{}
-	for _, a := range attempts {
+	spans := map[string]map[string]itemSpan{}
+	for _, a := range IndependentQuizAttempts(attempts) {
 		if !a.IsCorrect {
 			continue
 		}
-		items := first[a.Slug]
+		items := spans[a.Slug]
 		if items == nil {
-			items = map[string]time.Time{}
-			first[a.Slug] = items
+			items = map[string]itemSpan{}
+			spans[a.Slug] = items
 		}
-		if t, ok := items[a.QuizItemID]; !ok || a.AnsweredAt.Before(t) {
-			items[a.QuizItemID] = a.AnsweredAt
+		sp, ok := items[a.QuizItemID]
+		if !ok {
+			items[a.QuizItemID] = itemSpan{first: a.AnsweredAt, last: a.AnsweredAt}
+			continue
 		}
+		if a.AnsweredAt.Before(sp.first) {
+			sp.first = a.AnsweredAt
+		}
+		if a.AnsweredAt.After(sp.last) {
+			sp.last = a.AnsweredAt
+		}
+		items[a.QuizItemID] = sp
 	}
-	out := make(map[string][]DirectQuizFact, len(first))
-	for slug, items := range first {
+	out := make(map[string][]DirectQuizFact, len(spans))
+	for slug, items := range spans {
 		facts := make([]DirectQuizFact, 0, len(items))
-		for id, t := range items {
-			facts = append(facts, DirectQuizFact{ItemID: id, FirstCorrectAt: t})
+		for id, sp := range items {
+			facts = append(facts, DirectQuizFact{ItemID: id, FirstCorrectAt: sp.first, LastCorrectAt: sp.last})
 		}
 		sort.Slice(facts, func(i, j int) bool {
+			if facts[i].FirstCorrectAt.Equal(facts[j].FirstCorrectAt) {
+				return facts[i].ItemID < facts[j].ItemID
+			}
 			return facts[i].FirstCorrectAt.Before(facts[j].FirstCorrectAt)
 		})
 		out[slug] = facts
@@ -70,7 +129,7 @@ func CollectDirectFacts(attempts []types.LearningQuizAttempt) map[string][]Direc
 //
 //	no correct item           → touched (indirect signals stop here)
 //	≥1 distinct correct item  → familiar
-//	≥2 distinct items whose first correct answers straddle
+//	≥2 distinct items whose correct answers (first→last span) straddle
 //	  MasteredSessionGapHours → mastered (cross-session verification: the
 //	  knowledge held across at least two separate sittings, the spacing
 //	  effect as a promotion requirement rather than a bonus)
@@ -78,10 +137,24 @@ func CollectDirectFacts(attempts []types.LearningQuizAttempt) map[string][]Direc
 // `now` is accepted for symmetry with the decay-aware level path; facts
 // never expire, only decay demotes.
 func DirectGateTier(facts []DirectQuizFact, now time.Time) Level {
+	effectiveLast := func(f DirectQuizFact) time.Time {
+		if f.LastCorrectAt.IsZero() || f.LastCorrectAt.Before(f.FirstCorrectAt) {
+			return f.FirstCorrectAt
+		}
+		return f.LastCorrectAt
+	}
 	switch {
 	case len(facts) >= 2:
-		gap := facts[len(facts)-1].FirstCorrectAt.Sub(facts[0].FirstCorrectAt)
-		if gap >= MasteredSessionGap {
+		earliest, latest := facts[0].FirstCorrectAt, effectiveLast(facts[0])
+		for _, f := range facts[1:] {
+			if f.FirstCorrectAt.Before(earliest) {
+				earliest = f.FirstCorrectAt
+			}
+			if l := effectiveLast(f); l.After(latest) {
+				latest = l
+			}
+		}
+		if latest.Sub(earliest) >= MasteredSessionGap {
 			return LevelMastered
 		}
 		return LevelFamiliar

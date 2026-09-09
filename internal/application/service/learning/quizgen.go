@@ -27,6 +27,10 @@ type quizResponse struct {
 	Questions []quizDraft `json:"questions"`
 }
 
+func normalizedQuizQuestion(question string) string {
+	return strings.ToLower(strings.Join(strings.Fields(question), " "))
+}
+
 // validateQuizDraft enforces the grounding contract deterministically:
 // exactly four non-empty options keyed A–D, a correct key among them, a
 // non-empty stem and explanation, and chunk refs that are a non-empty
@@ -42,10 +46,13 @@ func validateQuizDraft(d quizDraft, page *types.WikiPage) *types.LearningQuizIte
 	if len(d.Options) != 4 {
 		return nil
 	}
+	seenOptions := map[string]bool{}
 	for _, key := range []string{"A", "B", "C", "D"} {
-		if strings.TrimSpace(d.Options[key]) == "" {
+		normalized := strings.ToLower(strings.Join(strings.Fields(d.Options[key]), " "))
+		if normalized == "" || seenOptions[normalized] {
 			return nil
 		}
+		seenOptions[normalized] = true
 	}
 	if d.CorrectKey != "A" && d.CorrectKey != "B" && d.CorrectKey != "C" && d.CorrectKey != "D" {
 		return nil

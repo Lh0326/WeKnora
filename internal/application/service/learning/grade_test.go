@@ -29,7 +29,7 @@ func TestGradeQuizRepeatAttemptsDecay(t *testing.T) {
 	cases := []struct {
 		prior  int
 		factor float64
-	}{{0, 1}, {1, QuizRepeatDecay}, {2, QuizRepeatDecay * QuizRepeatDecay}}
+	}{{0, 1}, {1, 0}, {2, 0}}
 	for _, tc := range cases {
 		got, err := GradeQuiz("A", "A", tc.prior)
 		if err != nil {
@@ -39,15 +39,14 @@ func TestGradeQuizRepeatAttemptsDecay(t *testing.T) {
 			t.Errorf("prior=%d weight=%v, want %v", tc.prior, got.Weight, want)
 		}
 	}
-	// The decay exponent caps at QuizRepeatDecayCap: deeper attempt
-	// histories must not starve practice to zero.
+	// Repeated submissions still return a verdict, with no extra evidence.
 	got, _ := GradeQuiz("A", "A", 7)
-	if want := WeightQuizCorrect * QuizRepeatDecay * QuizRepeatDecay; math.Abs(got.Weight-want) > 1e-12 {
+	if want := 0.0; math.Abs(got.Weight-want) > 1e-12 {
 		t.Errorf("prior=7 weight=%v, want floored %v", got.Weight, want)
 	}
 	// The same decay applies to wrong answers.
 	got, _ = GradeQuiz("A", "C", 1)
-	if want := WeightQuizWrong * QuizRepeatDecay; math.Abs(got.Weight-want) > 1e-12 {
+	if want := 0.0; math.Abs(got.Weight-want) > 1e-12 {
 		t.Errorf("wrong-answer repeat weight=%v, want %v", got.Weight, want)
 	}
 }

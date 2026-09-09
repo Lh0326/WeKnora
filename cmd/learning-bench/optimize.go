@@ -55,7 +55,7 @@ type optParam struct {
 	Start float64 // value at optimizer start (the shrinkage anchor θ₀)
 }
 
-// optParamTable fences the twelve calibration-grade constants. Event
+// optParamTable fences the ten calibration-grade constants. Event
 // weights carry the ordering rails; decay/stability parameters carry the
 // FSRS-style curve shape. Thresholds, gates and ε are deliberately absent:
 // they are product semantics, not fitting targets.
@@ -67,8 +67,6 @@ func optParamTable() []optParam {
 		{Name: "WeightTopicSignal", Ptr: &learning.WeightTopicSignal, Lo: 0.1, Hi: 1.0},
 		{Name: "WeightReAsk", Ptr: &learning.WeightReAsk, Lo: -2.0, Hi: -0.1},
 		{Name: "WeightQuizWrong", Ptr: &learning.WeightQuizWrong, Lo: -4.0, Hi: -0.2},
-		{Name: "QuizRepeatDecay", Ptr: &learning.QuizRepeatDecay, Lo: 0.1, Hi: 0.9},
-		{Name: "BackfillDiscount", Ptr: &learning.BackfillDiscount, Lo: 0.1, Hi: 1.0},
 		{Name: "StabilityBaseDays", Ptr: &learning.StabilityBaseDays, Lo: 2.0, Hi: 60.0},
 		{Name: "StabilityGrowth", Ptr: &learning.StabilityGrowth, Lo: 0.05, Hi: 1.5},
 		{Name: "StabilitySaturationExp", Ptr: &learning.StabilitySaturationExp, Lo: 0.1, Hi: 1.0},
@@ -118,6 +116,9 @@ func paramsFeasible(params []optParam) bool {
 type optInput struct {
 	Events   []types.LearningEvent       `json:"events"`
 	Attempts []types.LearningQuizAttempt `json:"quiz_attempts"`
+	// Event-type base weights in force when the input was recorded. Legacy
+	// exports omit this; those use the shipped table and report that assumption.
+	BaseWeights map[string]float64 `json:"base_weights,omitempty"`
 }
 
 func loadOptInput(path string) (optInput, error) {
@@ -147,7 +148,13 @@ func loadOptInput(path string) (optInput, error) {
 
 // ---- objective ----
 
+// optGroupKey carries the FULL scope (tenant + KB + subject + slug): the
+// same person's same-named node in two knowledge bases is two separate
+// trajectories — mixing them trains the calibrator on spurious cross-KB
+// state transitions.
 type optGroupKey struct {
+	Tenant  uint64
+	KB      string
 	Subject string
 	Slug    string
 }
@@ -162,28 +169,77 @@ const optProbClamp = 1e-4
 func quizLogLoss(in optInput) (float64, int) {
 	eventsBy := map[optGroupKey][]types.LearningEvent{}
 	for _, ev := range in.Events {
-		eventsBy[optGroupKey{ev.SubjectID, ev.Slug}] = append(eventsBy[optGroupKey{ev.SubjectID, ev.Slug}], ev)
+		eventsBy[optGroupKey{ev.TenantID, ev.KnowledgeBaseID, ev.SubjectID, ev.Slug}] = append(eventsBy[optGroupKey{ev.TenantID, ev.KnowledgeBaseID, ev.SubjectID, ev.Slug}], ev)
 	}
 	attemptsBy := map[optGroupKey][]types.LearningQuizAttempt{}
-	for _, a := range in.Attempts {
-		attemptsBy[optGroupKey{a.SubjectID, a.Slug}] = append(attemptsBy[optGroupKey{a.SubjectID, a.Slug}], a)
+	for _, a := range learning.IndependentQuizAttempts(in.Attempts) {
+		// unsure（选 E）是未表态的探针，不是判卷失败——不携带能力标签，
+		// 混入校准会把"没答"当"答错"（评审 P1-B 子项）。
+		if a.ChosenKey == "E" {
+			continue
+		}
+		attemptsBy[optGroupKey{a.TenantID, a.KnowledgeBaseID, a.SubjectID, a.Slug}] = append(attemptsBy[optGroupKey{a.TenantID, a.KnowledgeBaseID, a.SubjectID, a.Slug}], a)
 	}
+	keys := make([]optGroupKey, 0, len(attemptsBy))
+	for key := range attemptsBy {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.Tenant != b.Tenant {
+			return a.Tenant < b.Tenant
+		}
+		if a.KB != b.KB {
+			return a.KB < b.KB
+		}
+		if a.Subject != b.Subject {
+			return a.Subject < b.Subject
+		}
+		return a.Slug < b.Slug
+	})
 
 	loss := 0.0
 	n := 0
-	for key, evs := range eventsBy {
+	for _, key := range keys {
+		evs := eventsBy[key]
 		attempts := attemptsBy[key]
 		if len(attempts) == 0 {
 			continue
 		}
-		sort.Slice(evs, func(i, j int) bool { return evs[i].OccurredAt.Before(evs[j].OccurredAt) })
+		sort.Slice(evs, func(i, j int) bool {
+			a, b := evs[i], evs[j]
+			if !a.OccurredAt.Equal(b.OccurredAt) {
+				return a.OccurredAt.Before(b.OccurredAt)
+			}
+			if !a.CreatedAt.Equal(b.CreatedAt) {
+				return a.CreatedAt.Before(b.CreatedAt)
+			}
+			if a.ID != b.ID {
+				return a.ID < b.ID
+			}
+			if a.Type != b.Type {
+				return a.Type < b.Type
+			}
+			return a.Weight < b.Weight
+		})
+		sort.Slice(attempts, func(i, j int) bool {
+			if !attempts[i].AnsweredAt.Equal(attempts[j].AnsweredAt) {
+				return attempts[i].AnsweredAt.Before(attempts[j].AnsweredAt)
+			}
+			return attempts[i].ID < attempts[j].ID
+		})
 		state := learning.FoldState{}
-		quizSeen := map[string]int{}
 		ai := 0
 		for _, ev := range evs {
-			// Fold everything strictly before the next answer; the answer's
-			// own quiz event happens at/after the attempt it belongs to.
-			for ai < len(attempts) && ev.OccurredAt.After(attempts[ai].AnsweredAt) {
+			// Predict-then-update, STRICTLY: an attempt is scored against
+			// the state built only from events strictly earlier than the
+			// answer. The online writer stamps the attempt's own quiz event
+			// with the same `now`, so an equality test here would fold the
+			// answer into the features before scoring it (label leakage —
+			// the audit's P1-B: a first correct answer scored 0.105 instead
+			// of the honest 0.693 prior). Equal-timestamp events therefore
+			// score the attempt FIRST, then fold.
+			for ai < len(attempts) && !ev.OccurredAt.Before(attempts[ai].AnsweredAt) {
 				p := clampProb(learning.EffectiveP(state, attempts[ai].AnsweredAt))
 				y := 0.0
 				if attempts[ai].IsCorrect {
@@ -193,7 +249,14 @@ func quizLogLoss(in optInput) (float64, int) {
 				n++
 				ai++
 			}
-			w := refoldWeight(ev, quizSeen)
+			// 在线真值（评审 P1-B 子项）：被 48h 去重吞掉的信号以 weight=0
+			// 落账且线上不折叠——校准折叠必须同样跳过，否则调参状态模型
+			// ≠ 线上模型（零权重阅读被重新赋权）。生成器写入的事件带真实
+			// 权重，不受影响。
+			if ev.Weight == 0 {
+				continue
+			}
+			w := rescaleEventWeight(ev, in.BaseWeights)
 			state = learning.FoldEvent(state, learning.Event{Type: ev.Type, Weight: w, OccurredAt: ev.OccurredAt})
 		}
 		for ; ai < len(attempts); ai++ {
@@ -206,9 +269,8 @@ func quizLogLoss(in optInput) (float64, int) {
 			n++
 		}
 	}
-	// Attempts on slugs with no events at all still carry information via
-	// the empty-state prior (p=0.5); they are constant w.r.t. θ, so they can
-	// be skipped for optimization purposes.
+	// Empty-history attempts are scored too; excluding them biases reported
+	// sample size and improvement even though their prior is not trainable.
 	return loss, n
 }
 
@@ -248,12 +310,47 @@ type fitResult struct {
 	After           []float64 // fitted values aligned with Params (live vars are restored on return)
 	PlainBefore     float64   // quiz log-loss at shipped values, no shrinkage
 	PlainAfter      float64   // quiz log-loss at fitted values, no shrinkage
+	HoldoutBefore   float64   // chronological holdout loss at shipped values
+	HoldoutAfter    float64   // holdout loss at fitted values
+	HoldoutN        int       // holdout attempts (0 = no-holdout verdict)
 	Objective       float64   // final objective incl. shrinkage
 	ObjectiveBefore float64
 	Evals           int
 	Attempts        int
 	Improvement     float64
 	Recommendation  string
+}
+
+// temporalSplit partitions each (tenant, kb, subject, slug) trajectory's
+// attempts chronologically: the first trainFrac land in the fitting set,
+// the rest in the untouched holdout. Events are duplicated into both —
+// quizLogLoss only scores slugs that carry attempts, so the holdout
+// evaluates exactly its own later answers against the full event history.
+func temporalSplit(in optInput, trainFrac float64) (optInput, optInput) {
+	byGroup := map[optGroupKey][]types.LearningQuizAttempt{}
+	for _, a := range learning.IndependentQuizAttempts(in.Attempts) {
+		if a.ChosenKey == "E" {
+			continue
+		}
+		byGroup[optGroupKey{a.TenantID, a.KnowledgeBaseID, a.SubjectID, a.Slug}] =
+			append(byGroup[optGroupKey{a.TenantID, a.KnowledgeBaseID, a.SubjectID, a.Slug}], a)
+	}
+	train, val := optInput{Events: in.Events, BaseWeights: in.BaseWeights}, optInput{Events: in.Events, BaseWeights: in.BaseWeights}
+	for _, group := range byGroup {
+		sort.Slice(group, func(i, j int) bool { return group[i].AnsweredAt.Before(group[j].AnsweredAt) })
+		cut := int(float64(len(group)) * trainFrac)
+		if cut < 1 && len(group) > 1 {
+			cut = 1
+		}
+		// A timestamp cohort cannot straddle training and validation: the
+		// optimizer would then see labels from the validation sitting.
+		for cut > 0 && cut < len(group) && group[cut-1].AnsweredAt.Equal(group[cut].AnsweredAt) {
+			cut--
+		}
+		train.Attempts = append(train.Attempts, group[:cut]...)
+		val.Attempts = append(val.Attempts, group[cut:]...)
+	}
+	return train, val
 }
 
 // runFit is the calibration core: snapshot the shipped values, search the
@@ -276,8 +373,13 @@ func runFit(in optInput, verbose bool) (fitResult, error) {
 	}
 	defer restore()
 
-	objectiveBefore := objective(in, params)
-	obj, evals := coordinateDescent(in, params, verbose)
+	trainSplit, val := temporalSplit(in, 0.7)
+	_, trainN := quizLogLoss(trainSplit)
+	if trainN == 0 {
+		return fitResult{}, fmt.Errorf("no chronological training samples; collect multiple separated quiz sittings")
+	}
+	objectiveBefore := objective(trainSplit, params)
+	obj, evals := coordinateDescent(trainSplit, params, verbose)
 
 	if !paramsFeasible(params) {
 		return fitResult{}, fmt.Errorf("optimizer produced infeasible parameters (ordering/bounds violated)")
@@ -301,13 +403,26 @@ func runFit(in optInput, verbose bool) (fitResult, error) {
 	apply(fitted)
 	plainAfter, _ := quizLogLoss(in)
 
+	// Temporal holdout（评审 P1-B 子项：同输入优化+报告不能证明泛化）：
+	// 每条轨迹按时间前 70% 作拟合集、后 30% 作验证集——参数只追逐训练
+	// 损失，采纳判定看验证损失是否同向改善。样本不足（验证题 < 1）时
+	// 如实标注 no-holdout，不虚构泛化结论。
+	apply(snapshotCopy)
+	valBefore, _ := quizLogLoss(val)
+	apply(fitted)
+	valAfter, valN := quizLogLoss(val)
 	improvement := 0.0
-	if plainBefore > 0 {
+	if valN == 0 && plainBefore > 0 {
+		// in-sample fallback number, reported alongside the no-holdout caveat
 		improvement = (plainBefore - plainAfter) / plainBefore
+	} else if valBefore > 0 {
+		improvement = (valBefore - valAfter) / valBefore
 	}
 	rec := "keep current values (improvement within noise)"
-	if improvement >= 0.01 {
-		rec = "candidate for adoption — human review required"
+	if valN == 0 {
+		rec = "insufficient holdout samples — fit reported as in-sample only, NOT generalization evidence"
+	} else if improvement >= 0.01 && valAfter < valBefore {
+		rec = "candidate for further validation — held-out loss improved; statistical significance and learning benefit untested"
 	}
 	after := make([]float64, len(params))
 	for i, p := range params {
@@ -315,6 +430,7 @@ func runFit(in optInput, verbose bool) (fitResult, error) {
 	}
 	return fitResult{
 		Params: params, After: after, PlainBefore: plainBefore, PlainAfter: plainAfter,
+		HoldoutBefore: valBefore, HoldoutAfter: valAfter, HoldoutN: valN,
 		ObjectiveBefore: objectiveBefore, Objective: obj,
 		Evals: evals, Attempts: attempts, Improvement: improvement,
 		Recommendation: rec,
@@ -333,8 +449,12 @@ func runOptimize(exportPath, reportPath string, verbose bool) error {
 
 	fmt.Println("== learning-bench optimize (offline weight calibration, FSRS-style log-loss) ==")
 	fmt.Printf("  labelled quiz attempts: %d   events: %d\n", res.Attempts, len(in.Events))
-	fmt.Printf("  quiz log-loss: %.4f -> %.4f (%.1f%% better)   objective incl. shrinkage: %.4f -> %.4f\n",
-		res.PlainBefore, res.PlainAfter, res.Improvement*100, res.ObjectiveBefore, res.Objective)
+	fmt.Printf("  all-sample log-loss sum: %.4f -> %.4f\n", res.PlainBefore, res.PlainAfter)
+	fmt.Printf("  temporal holdout: n=%d, log-loss sum %.4f -> %.4f, relative improvement %.1f%%\n", res.HoldoutN, res.HoldoutBefore, res.HoldoutAfter, res.Improvement*100)
+	fmt.Println("  protocol: within-trajectory temporal validation; not unseen-user or learning-effect evaluation")
+	if len(in.BaseWeights) == 0 {
+		fmt.Println("  legacy input: assumes shipped base weights; frozen repeat/discount factors retained")
+	}
 	fmt.Printf("  evaluations: %d\n", res.Evals)
 	fmt.Println("  parameters (before -> after):")
 	for i, p := range res.Params {
@@ -346,16 +466,22 @@ func runOptimize(exportPath, reportPath string, verbose bool) error {
 
 	if reportPath != "" {
 		rep := map[string]interface{}{
-			"attempts":         res.Attempts,
-			"events":           len(in.Events),
-			"logloss_before":   res.PlainBefore,
-			"logloss_after":    res.PlainAfter,
-			"improvement":      res.Improvement,
-			"objective_before": res.ObjectiveBefore,
-			"objective_after":  res.Objective,
-			"evaluations":      res.Evals,
-			"recommendation":   res.Recommendation,
-			"params":           paramReport(res.Params, res.After),
+			"attempts":                     res.Attempts,
+			"events":                       len(in.Events),
+			"logloss_before":               res.PlainBefore,
+			"logloss_after":                res.PlainAfter,
+			"improvement":                  res.Improvement,
+			"improvement_basis":            "temporal_holdout",
+			"holdout_attempts":             res.HoldoutN,
+			"holdout_logloss_before":       res.HoldoutBefore,
+			"holdout_logloss_after":        res.HoldoutAfter,
+			"protocol":                     "within-trajectory temporal validation; not unseen-user or learning-effect evaluation",
+			"assumes_shipped_base_weights": len(in.BaseWeights) == 0,
+			"objective_before":             res.ObjectiveBefore,
+			"objective_after":              res.Objective,
+			"evaluations":                  res.Evals,
+			"recommendation":               res.Recommendation,
+			"params":                       paramReport(res.Params, res.After),
 		}
 		blob, _ := json.MarshalIndent(rep, "", "  ")
 		if err := os.WriteFile(reportPath, blob, 0o644); err != nil {

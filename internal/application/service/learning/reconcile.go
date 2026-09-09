@@ -53,16 +53,26 @@ func ReconcileSlug(states map[string]FoldState, eventsBySlug map[string][]Event,
 			})
 		default:
 			// Merge by replaying both event lists together in time order.
+			// Zero-weight events (deduped re-reads, unsure answers) join the
+			// EventCount but never the fold — the write path skips them, and
+			// the merge must land on exactly the state a clean sequential
+			// history would have folded.
 			merged := make([]Event, 0, len(fromEvents)+len(toEvents))
 			merged = append(merged, fromEvents...)
 			merged = append(merged, toEvents...)
 			sort.SliceStable(merged, func(i, j int) bool {
 				return merged[i].OccurredAt.Before(merged[j].OccurredAt)
 			})
+			folded := FoldState{}
+			for _, e := range merged {
+				if e.Weight != 0 {
+					folded = FoldEvent(folded, e)
+				}
+			}
 			migrations = append(migrations, SlugMigration{
 				FromSlug:   from,
 				ToSlug:     to,
-				State:      FoldAll(FoldState{}, merged),
+				State:      folded,
 				EventCount: len(merged),
 			})
 		}

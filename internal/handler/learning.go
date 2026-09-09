@@ -120,6 +120,22 @@ func (h *LearningHandler) Recommend(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": recs})
 }
 
+// ZoneMap godoc — the module-partitioned recommendation surface: one
+// wiki folder per knowledge zone with its own next step ("1") and
+// follow-up ("2"), plus the full node set and prerequisite edges for the
+// constellation's relation lines. Deterministic, no LLM on this path.
+func (h *LearningHandler) ZoneMap(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	zm, err := h.learningService.ZoneMap(c.Request.Context(), c.Param("kb_id"))
+	if err != nil {
+		h.fail(c, err, "Failed to build zone map")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": zm})
+}
+
 // TakeQuiz godoc
 func (h *LearningHandler) TakeQuiz(c *gin.Context) {
 	if !h.requireLearningEnabled(c) {
@@ -144,6 +160,9 @@ type learningAnswerRequest struct {
 
 type learningReadRequest struct {
 	Slug string `json:"slug" binding:"required"`
+	// Tier refines the read signal: "" / "normal" = page opened;
+	// "deep" = the reader stayed past the deep-dwell threshold.
+	Tier string `json:"tier" binding:"omitempty,oneof=normal deep"`
 }
 
 type learningSelfAssessRequest struct {
@@ -152,6 +171,12 @@ type learningSelfAssessRequest struct {
 	// Reason is required for "down" (the skills-matrix interview question):
 	// all | doc_gap | doc_updated | quiz_easy.
 	Reason string `json:"reason"`
+}
+
+type learningSkipRequest struct {
+	Slug string `json:"slug" binding:"required"`
+	// Skipped true marks "已掌握，不再推荐"; false revokes the mark.
+	Skipped *bool `json:"skipped" binding:"required"`
 }
 
 // RecordRead godoc — the low-trust "opened this page to read it" touch
@@ -165,7 +190,7 @@ func (h *LearningHandler) RecordRead(c *gin.Context) {
 		c.Error(apperrors.NewValidationError("Invalid request data").WithDetails(err.Error()))
 		return
 	}
-	if err := h.learningService.RecordWikiRead(c.Request.Context(), c.Param("kb_id"), req.Slug); err != nil {
+	if err := h.learningService.RecordWikiRead(c.Request.Context(), c.Param("kb_id"), req.Slug, req.Tier); err != nil {
 		h.fail(c, err, "Failed to record wiki read")
 		return
 	}
@@ -196,6 +221,25 @@ func (h *LearningHandler) SelfAssess(c *gin.Context) {
 	}
 	if err := h.learningService.RecordSelfAssess(c.Request.Context(), c.Param("kb_id"), req.Slug, req.Direction == "up", reason); err != nil {
 		h.fail(c, err, "Failed to record self-assessment")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+// RecordSkip godoc — the standing queue-suppression declaration ("已掌握，
+// 不再推荐") or its revocation. Folds nothing, expires never: the node
+// simply leaves every next-step surface until the user takes it back.
+func (h *LearningHandler) RecordSkip(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req learningSkipRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewValidationError("Invalid request data").WithDetails(err.Error()))
+		return
+	}
+	if err := h.learningService.RecordSkip(c.Request.Context(), c.Param("kb_id"), req.Slug, *req.Skipped); err != nil {
+		h.fail(c, err, "Failed to record skip")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})

@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -69,13 +70,23 @@ func TestRecordAnswerTouchesCollectsAndFolds(t *testing.T) {
 	t.Setenv("LEARNING_ENABLE", "true")
 	ctx := collectorCtx(1, "alice")
 
-	// First answer: cites one chunk of concept/rag and doc d1 (entity/weknora).
+	// First answer cites one chunk of concept/rag；该引用同时携带 doc d1，
+	// 但精确归因（评审 P2-B）下 chunk 身份存在即不触发文档级回退——
+	// doc-only 页 entity/weknora 不应被连带点亮。
 	svc.RecordAnswerTouches(ctx, answerMessage(
 		&types.SearchResult{ID: "c1", KnowledgeID: "d1", KnowledgeBaseID: testKB},
 	))
 	events := repo.snapshotEvents()
-	if len(events) != 2 {
-		t.Fatalf("first answer events = %d, want 2: %+v", len(events), events)
+	if len(events) != 1 || events[0].Slug != "concept/rag" {
+		t.Fatalf("precise citation lights only its chunk's page, got %+v", events)
+	}
+	// 对照：引用没有任何 chunk 身份（纯 doc d1）时，doc-only 页经文档级
+	// 回退正常点亮。
+	svc.RecordAnswerTouches(collectorCtx(1, "carol"), answerMessage(
+		&types.SearchResult{KnowledgeID: "d1", KnowledgeBaseID: testKB},
+	))
+	if carol, _ := repo.GetMastery(ctx, learningScopeFor(1, "web_user:carol"), "entity/weknora"); carol == nil || carol.EvidenceCount != 1 {
+		t.Fatalf("doc-grained citation must still reach the doc-only page: %+v", carol)
 	}
 	for _, e := range events {
 		if e.Type != types.LearningEventAnswerCite {
@@ -98,17 +109,19 @@ func TestRecordAnswerTouchesCollectsAndFolds(t *testing.T) {
 	// Second answer minutes later (inside the re-ask window): same touch is negative.
 	svc.RecordAnswerTouches(ctx, answerMessage(&types.SearchResult{ID: "c1", KnowledgeID: "d1", KnowledgeBaseID: testKB}))
 	events = repo.snapshotEvents()
-	if len(events) != 4 {
-		t.Fatalf("second answer events total = %d, want 4", len(events))
-	}
+	aliceEvents := 0
 	reasks := 0
-	for _, e := range events[2:] {
+	for _, e := range events {
+		if e.SubjectID != "web_user:alice" {
+			continue
+		}
+		aliceEvents++
 		if e.Type == types.LearningEventReAsk {
 			reasks++
 		}
 	}
-	if reasks != 2 {
-		t.Fatalf("in-window repeat classified as re_ask %d times, want 2", reasks)
+	if aliceEvents != 2 || reasks != 1 {
+		t.Fatalf("alice's in-window repeat must classify as one re_ask: events=%d reasks=%d", aliceEvents, reasks)
 	}
 	if row, _ := repo.GetMastery(ctx, learningScopeFor(1, "web_user:alice"), "concept/rag"); row == nil || row.NegativeCount != 1 {
 		t.Fatalf("re_ask not folded as negative: %+v", row)
@@ -206,7 +219,7 @@ func TestRecordWikiReadHappyPath(t *testing.T) {
 	t.Setenv("LEARNING_ENABLE", "true")
 	ctx := collectorCtx(1, "alice")
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag"); err != nil {
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
 		t.Fatal(err)
 	}
 	events := repo.snapshotEvents()
@@ -230,7 +243,7 @@ func TestRecordWikiReadDedupWindow(t *testing.T) {
 
 	// Rapid re-opens inside the shield: one event total.
 	for i := 0; i < 3; i++ {
-		if err := svc.RecordWikiRead(ctx, testKB, "concept/rag"); err != nil {
+		if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -257,7 +270,7 @@ func TestRecordWikiReadReopenTracesButNotScores(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag"); err != nil {
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
 		t.Fatal(err)
 	}
 	events := repo.snapshotEvents()
@@ -284,7 +297,7 @@ func TestRecordWikiReadSkipOptedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag"); err != nil {
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
@@ -299,7 +312,7 @@ func TestRecordWikiReadRejectsNonNode(t *testing.T) {
 	t.Setenv("LEARNING_ENABLE", "true")
 	ctx := collectorCtx(1, "alice")
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/ghost"); err != ErrWikiReadTarget {
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/ghost", ""); err != ErrWikiReadTarget {
 		t.Fatalf("err = %v, want ErrWikiReadTarget", err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
@@ -312,10 +325,74 @@ func TestRecordWikiReadNoOpWhenGateClosed(t *testing.T) {
 	svc, repo, _ := wikiReadFixture(t)
 	t.Setenv("LEARNING_ENABLE", "")
 
-	if err := svc.RecordWikiRead(collectorCtx(1, "alice"), testKB, "concept/rag"); err != nil {
+	if err := svc.RecordWikiRead(collectorCtx(1, "alice"), testKB, "concept/rag", ""); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
 		t.Fatalf("events = %d, want 0 with gate closed", n)
+	}
+}
+
+// TestRecordWikiReadDeepTier: the "deep" tier lands its own event type with
+// the tier weight on top of a normal read, and repeats inside the re-ask
+// window are silent no-ops — one deep credit per node per window.
+func TestRecordWikiReadDeepTier(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Doc"}))
+	svc := testService(repo, wiki)
+	t.Setenv("LEARNING_ENABLE", "true")
+	ctx := collectorCtx(1, "alice")
+
+	// Normal glance first (the delayed 5s fire), then the deep leave signal.
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	events := repo.snapshotEvents()
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want 2 (glance + deep)", len(events))
+	}
+	if events[0].Type != types.LearningEventWikiToolRead || events[0].Weight != WeightTopicSignal {
+		t.Fatalf("glance event = %+v", events[0])
+	}
+	if events[1].Type != types.LearningEventWikiDeepRead || events[1].Weight != WeightWikiDeepRead {
+		t.Fatalf("deep event = %+v, want wiki_deep_read w/ %.1f", events[1], WeightWikiDeepRead)
+	}
+	row, err := repo.GetMastery(ctx, newReadScope(1, "web_user:alice"), "concept/rag")
+	if err != nil || row == nil {
+		t.Fatalf("mastery row missing: %v %v", row, err)
+	}
+	wantLogit := WeightTopicSignal + WeightWikiDeepRead
+	if math.Abs(row.Logit-wantLogit) > 1e-9 {
+		t.Fatalf("folded logit = %v, want %v (glance + deep)", row.Logit, wantLogit)
+	}
+
+	// Second deep inside the window: no-op.
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(repo.snapshotEvents()); n != 2 {
+		t.Fatalf("repeat deep appended %d events, want 0 (window cap)", n-2)
+	}
+}
+
+// TestRecordWikiReadDeepTierRespectsOptOut: opted-out subjects get nothing
+// stored, deep or not.
+func TestRecordWikiReadDeepTierRespectsOptOut(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Doc"}))
+	svc := testService(repo, wiki)
+	repo.prefs["web_user:alice"] = &types.LearningSubjectPrefs{CollectDisabled: true}
+	ctx := collectorCtx(1, "alice")
+
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(repo.snapshotEvents()); n != 0 {
+		t.Fatalf("opted-out deep read stored %d events, want 0", n)
 	}
 }

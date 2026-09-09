@@ -26,18 +26,10 @@ type GradeResult struct {
 	Weight    float64
 }
 
-// GradeQuiz grades chosenKey against the item's correct key and resolves the
-// event to append: ±(quiz weight)·QuizRepeatDecay^priorAttempts, so rapid
-// re-answers on the same item earn diminishing weight (farming a memorised
-// answer converges toward, but never reaches, zero — see the cap below).
-// priorAttempts is the caller's count of earlier attempts on this item inside
-// the re-ask window (spaced practice counts as fresh, per the spacing
-// effect). The decay exponent is capped so practice always moves the needle:
-// anti-farming needs diminishing returns, not zero returns, and the logit
-// clamp bounds the absolute total anyway. Keys outside A–D are rejected with
-// an error rather than graded — except the unsure declaration, which is not
-// a graded answer at all: it lands as a zero-weight quiz_unsure event so an
-// honest "I don't know" is never punished and never rewards guessing.
+// GradeQuiz always returns feedback, but only an independent attempt earns
+// evidence. priorAttempts counts all earlier answers (including unsure) to
+// this item within 48 hours. Repeats have zero weight because feedback has
+// disclosed the answer; a later sitting outside that window is eligible.
 func GradeQuiz(correctKey, chosenKey string, priorAttempts int) (GradeResult, error) {
 	if !validQuizKeys[correctKey] {
 		return GradeResult{}, fmt.Errorf("learning: invalid correct key %q", correctKey)
@@ -47,9 +39,6 @@ func GradeQuiz(correctKey, chosenKey string, priorAttempts int) (GradeResult, er
 	}
 	if !validQuizKeys[chosenKey] {
 		return GradeResult{}, fmt.Errorf("learning: invalid chosen key %q", chosenKey)
-	}
-	if priorAttempts > QuizRepeatDecayCap {
-		priorAttempts = QuizRepeatDecayCap
 	}
 
 	correct := chosenKey == correctKey
@@ -61,8 +50,10 @@ func GradeQuiz(correctKey, chosenKey string, priorAttempts int) (GradeResult, er
 		res.EventType = types.LearningEventQuizWrong
 		res.Weight = WeightQuizWrong
 	}
-	for i := 0; i < priorAttempts; i++ {
-		res.Weight *= QuizRepeatDecay
+	// Every submission reveals the answer. Repeating it inside the same
+	// 48-hour window is practice feedback, not independent ability evidence.
+	if priorAttempts > 0 {
+		res.Weight = 0
 	}
 	return res, nil
 }

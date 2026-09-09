@@ -28,6 +28,8 @@ func setupLearningTestDB(t *testing.T) *gorm.DB {
 		&types.LearningQuizItem{},
 		&types.LearningQuizAttempt{},
 		&types.LearningSubjectPrefs{},
+		&types.LearningBackfillMark{},
+		&types.LearningSkip{},
 	))
 	return db
 }
@@ -113,7 +115,7 @@ func TestLearningRepositoryPrefsUpsert(t *testing.T) {
 	repo := NewLearningRepository(db)
 	ctx := context.Background()
 
-	prefs, err := repo.GetSubjectPrefs(ctx, 10000, "web_user:test-subject")
+	prefs, err := repo.GetSubjectPrefs(ctx, "web_user:test-subject")
 	require.NoError(t, err)
 	assert.Nil(t, prefs, "unset prefs must read as (nil, nil)")
 
@@ -123,7 +125,7 @@ func TestLearningRepositoryPrefsUpsert(t *testing.T) {
 	require.NoError(t, repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
 		TenantID: 10000, SubjectID: "web_user:test-subject", CollectDisabled: false,
 	}))
-	prefs, err = repo.GetSubjectPrefs(ctx, 10000, "web_user:test-subject")
+	prefs, err = repo.GetSubjectPrefs(ctx, "web_user:test-subject")
 	require.NoError(t, err)
 	require.NotNil(t, prefs)
 	assert.False(t, prefs.CollectDisabled, "second upsert must overwrite the first")
@@ -253,4 +255,158 @@ func TestLearningRepositoryListMaintenanceMarks(t *testing.T) {
 	// Newest first.
 	assert.Equal(t, types.LearningEventSelfAssessDownDocGap, marks[0].Type)
 	assert.Equal(t, types.LearningEventSelfAssessUp, marks[1].Type)
+}
+
+func TestLearningRepositoryBackfillMarks(t *testing.T) {
+	db := setupLearningTestDB(t)
+	repo := NewLearningRepository(db)
+	ctx := context.Background()
+	scope := learningTestScope()
+
+	done, err := repo.BackfillDone(ctx, scope)
+	require.NoError(t, err)
+	assert.False(t, done, "unmarked scope must report not-done")
+
+	require.NoError(t, repo.MarkBackfillDone(ctx, scope))
+	// Idempotent upsert: a second mark must not conflict.
+	require.NoError(t, repo.MarkBackfillDone(ctx, scope))
+
+	done, err = repo.BackfillDone(ctx, scope)
+	require.NoError(t, err)
+	assert.True(t, done)
+
+	// Subject-level profile delete keeps the mark (resurrection guard)…
+	require.NoError(t, repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
+		Slug: "concept/rag", Type: types.LearningEventBackfillCite, OccurredAt: time.Now(),
+	}))
+	require.NoError(t, repo.DeleteLearningDataBySubject(ctx, scope.SubjectID))
+	events, err := repo.ListEventsBySubject(ctx, scope.SubjectID)
+	require.NoError(t, err)
+	assert.Empty(t, events, "profile delete removes events")
+	done, err = repo.BackfillDone(ctx, scope)
+	require.NoError(t, err)
+	assert.True(t, done, "profile delete must keep the backfill mark")
+
+	// …the KB orphan sweep removes it with the rest of the KB's data.
+	require.NoError(t, repo.DeleteLearningDataByKB(ctx, scope.TenantID, scope.KnowledgeBaseID))
+	done, err = repo.BackfillDone(ctx, scope)
+	require.NoError(t, err)
+	assert.False(t, done, "KB sweep clears the backfill mark")
+}
+
+// TestLearningRepositorySubjectScopedExportAndDelete: shared-KB learning
+// rows land under the KB owner's effective tenant; the export members and
+// the profile delete are subject-scoped so they cover those rows, while
+// other subjects in the same tenant stay untouched.
+func TestLearningRepositorySubjectScopedExportAndDelete(t *testing.T) {
+	db := setupLearningTestDB(t)
+	repo := NewLearningRepository(db)
+	ctx := context.Background()
+	scope := learningTestScope() // tenant 10000, web_user:test-subject
+
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	seed := func(tenantID uint64, subjectID, slug string) {
+		require.NoError(t, repo.AppendEvent(ctx, &types.LearningEvent{
+			TenantID: tenantID, SubjectID: subjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
+			Slug: slug, Type: types.LearningEventAnswerCite, OccurredAt: at,
+		}))
+		require.NoError(t, repo.UpsertMastery(ctx, &types.MasteryState{
+			TenantID: tenantID, SubjectID: subjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
+			Slug: slug, Logit: 1, EvidenceCount: 1, PositiveCount: 1,
+		}))
+	}
+	seed(10000, scope.SubjectID, "concept/home")
+	seed(20000, scope.SubjectID, "concept/shared") // effective tenant of a shared KB
+	seed(10000, "web_user:other", "concept/other") // same tenant, other subject
+
+	events, err := repo.ListEventsBySubject(ctx, scope.SubjectID)
+	require.NoError(t, err)
+	assert.Len(t, events, 2, "both tenants' rows belong to the subject")
+	mastery, err := repo.ListMasteryBySubject(ctx, scope.SubjectID)
+	require.NoError(t, err)
+	assert.Len(t, mastery, 2)
+
+	// Prefs are subject-scoped: a disabled row in ANY tenant wins over a
+	// enabled row elsewhere.
+	require.NoError(t, repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
+		TenantID: 10000, SubjectID: scope.SubjectID, CollectDisabled: false,
+	}))
+	require.NoError(t, repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
+		TenantID: 20000, SubjectID: scope.SubjectID, CollectDisabled: true,
+	}))
+	prefs, err := repo.GetSubjectPrefs(ctx, scope.SubjectID)
+	require.NoError(t, err)
+	require.NotNil(t, prefs)
+	assert.True(t, prefs.CollectDisabled, "a disabled row in any tenant must win")
+
+	require.NoError(t, repo.DeleteLearningDataBySubject(ctx, scope.SubjectID))
+	events, err = repo.ListEventsBySubject(ctx, scope.SubjectID)
+	require.NoError(t, err)
+	assert.Empty(t, events, "delete covers the shared-tenant rows too")
+	other, err := repo.ListEventsBySubject(ctx, "web_user:other")
+	require.NoError(t, err)
+	assert.Len(t, other, 1, "other subjects in the same tenant survive")
+}
+
+
+// TestLearningRepositorySkips locks the skip-list DB contracts: declare is
+// idempotent and preserves the original date, an alias move honors the
+// explicit createdAt, revoke is a no-op on absent rows, and the reads come
+// back deterministically ordered.
+func TestLearningRepositorySkips(t *testing.T) {
+	db := setupLearningTestDB(t)
+	repo := &learningRepository{db: db}
+	ctx := context.Background()
+	scope := learningTestScope()
+	declared := time.Now().Add(-48 * time.Hour).UTC().Truncate(time.Second)
+
+	if err := repo.AddSkip(ctx, scope, "concept/rag", declared); err != nil {
+		t.Fatal(err)
+	}
+	// Re-declare with a later date: DoNothing must keep the original.
+	if err := repo.AddSkip(ctx, scope, "concept/rag", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	skips, err := repo.ListSkips(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skips) != 1 || !skips["concept/rag"].Equal(declared) {
+		t.Fatalf("re-declare must keep the original date, got %v", skips)
+	}
+
+	// Alias move path: explicit createdAt travels to the new slug.
+	if err := repo.AddSkip(ctx, scope, "concept/retrieval", declared); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.RemoveSkip(ctx, scope, "concept/rag"); err != nil {
+		t.Fatal(err)
+	}
+	skips, err = repo.ListSkips(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skips) != 1 || !skips["concept/retrieval"].Equal(declared) {
+		t.Fatalf("alias move must keep the declared-at, got %v", skips)
+	}
+
+	// Revoking an absent row is a no-op, not an error.
+	if err := repo.RemoveSkip(ctx, scope, "concept/never-was"); err != nil {
+		t.Fatalf("remove absent skip must be a no-op, got %v", err)
+	}
+
+	// Subject-scoped export read (cross-tenant rows included).
+	other := scope
+	other.TenantID = scope.TenantID + 1
+	if err := repo.AddSkip(ctx, other, "concept/other-kb", declared); err != nil {
+		t.Fatal(err)
+	}
+	all, err := repo.ListSkipsBySubject(ctx, scope.SubjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("subject read must span tenants, got %v", all)
+	}
 }

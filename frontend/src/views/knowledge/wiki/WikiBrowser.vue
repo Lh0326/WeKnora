@@ -841,6 +841,10 @@
         </div>
       </div>
     </teleport>
+    <!-- Knowledge assistant moved to the KnowledgeBase root: the ball now
+         stays bottom-right on EVERY tab (wiki / graph / learning / 文档).
+         WikiBrowser only publishes the wiki-page context (see
+         assistantHost store) for the assistant to answer from. -->
   </div>
 </template>
 
@@ -850,6 +854,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useMenuStore } from '@/stores/menu'
 import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from 'vue-i18n'
+import { setAssistantHost } from '../assistantHost'
 import { marked } from 'marked'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { RecycleScroller } from 'vue-virtual-scroller'
@@ -891,6 +896,7 @@ import {
   type WikiIndexEntryDTO,
 } from '@/api/wiki'
 import { recordWikiRead, getLearningMastery, getLearningQuiz } from '@/api/learning'
+import { createWikiReadTracker } from './readTracker'
 import { masteryRing, nodeFill, newlyLitSlugs, tierColor, type MasteryLevel } from './graphMasteryColors'
 
 const router = useRouter()
@@ -1194,6 +1200,42 @@ function fitGraphToView() {
 
 const graphDrawerVisible = ref(false)
 const graphDrawerPage = ref<WikiPage | null>(null)
+
+// The wiki page the user is "currently reading": the graph drawer's page
+// while it is open, otherwise the browser selection. Drives (a) the
+// assistant widget's host context and (b) the tiered read tracker below.
+const activeContextPage = computed<WikiPage | null>(() =>
+  graphDrawerVisible.value ? graphDrawerPage.value : selectedPage.value,
+)
+
+const assistantHostContext = computed<Record<string, string> | null>(() => {
+  const page = activeContextPage.value
+  if (!page?.slug) return null
+  return {
+    current_page_title: page.title || page.slug,
+    current_page_slug: page.slug,
+    current_page_type: page.page_type || '',
+  }
+})
+
+// Publish into the KB-wide assistant host store (the widget lives at the
+// KnowledgeBase root now): with a page open → wiki-page scene carrying the
+// page identity; otherwise the generic wiki/graph scene.
+watch(assistantHostContext, (ctx) => {
+  setAssistantHost(ctx ? { scene: 'wiki-page', ...ctx } : { scene: props.view === 'graph' ? 'graph' : 'wiki' })
+}, { immediate: true })
+
+// Tiered read signal: normal fires 5s after a page becomes active (quick
+// flips record nothing), deep fires on leave when dwell ≥ 60s. Replaces
+// the old fire-on-open recordWikiRead calls.
+const readTracker = createWikiReadTracker((slug, tier) => {
+  recordWikiRead(props.knowledgeBaseId, slug, tier).catch(() => {})
+})
+watch(
+  () => activeContextPage.value?.slug || '',
+  (slug) => readTracker.enter(slug),
+  { immediate: true },
+)
 const navHistory = ref<WikiPage[]>([])
 // navFromSystemView remembers that the user was viewing the Index when they
 // clicked into a slug, so goBack can restore it
@@ -1706,7 +1748,6 @@ async function openGraphDrawer(slug: string) {
     graphDrawerVisible.value = true
     // 图谱抽屉里的阅读与浏览器视图同权：同样是刻意打开一个知识节点
     // 阅读，必须走同一条读信号（后端按 slug×48h 去重防刷新刷分）。
-    recordWikiRead(props.knowledgeBaseId, slug).catch(() => {})
   } catch (e) {
     console.error(`Failed to load page ${slug}:`, e)
   }
@@ -3729,7 +3770,6 @@ async function selectPage(page: WikiPage) {
     await loadPageIssues(page.slug)
     // 侧边栏点击与图谱抽屉/双链跳转同权记读——三条打开路径的信号采集必须
     // 一致，否则"哪种点法算学习"变成隐藏规则（60 秒护盾与 48h 计分窗在后端）。
-    recordWikiRead(props.knowledgeBaseId, page.slug).catch(() => {})
   } catch (e) {
     console.error('Failed to load wiki page:', e)
   }
@@ -3749,10 +3789,8 @@ async function navigateToSlug(slug: string) {
     const res = await getWikiPage(props.knowledgeBaseId, slug)
     selectedPage.value = (res as any).data || res as any
     await loadPageIssues(slug)
-    // Learning touch (topic 4 §3.3.6): opening a page to read it is a
-    // deliberate low-trust touch. Fire-and-forget — backend dedupes per
-    // slug per 48h window, and any failure stays invisible here.
-    recordWikiRead(props.knowledgeBaseId, slug).catch(() => {})
+    // Learning touch (topic 4 §3.3.6) now flows through the tiered read
+    // tracker watching activeContextPage — see readTracker above.
   } catch (e) {
     console.error(`Failed to navigate to ${slug}:`, e)
   }
@@ -5113,9 +5151,11 @@ onMounted(() => {
   loadPages()
   loadStats()
   if (props.view === 'graph') loadGraph()
+  readTracker.start()
 })
 
 onUnmounted(() => {
+  readTracker.stop()
   if (statsTimer) {
     clearInterval(statsTimer)
   }
@@ -5143,6 +5183,7 @@ onUnmounted(() => {
   display: flex;
   height: 100%;
   min-height: 0;
+  position: relative;
   background: var(--td-bg-color-container);
   // Align list rows with the session sidebar grid (menu.vue).
   --wiki-list-inset-x: 10px;

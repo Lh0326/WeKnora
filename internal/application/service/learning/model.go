@@ -76,9 +76,8 @@ type Event struct {
 }
 
 // FoldAll folds events in the given order. Callers holding unsorted history
-// must sort by OccurredAt first; folding is commutative over logit and
-// counts, but first/last-seen bookkeeping is order-sensitive for the
-// timestamp bookkeeping only.
+// must sort by OccurredAt and a stable tie breaker first. Clamp and temporal
+// updates make event order significant; this function preserves that order.
 func FoldAll(state FoldState, events []Event) FoldState {
 	for _, e := range events {
 		state = FoldEvent(state, e)

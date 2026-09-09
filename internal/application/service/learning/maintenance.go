@@ -89,6 +89,9 @@ func (s *Service) runTopicMapping(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if s.prefs.collectionDisabled(ctx, s.repo, key.subject) {
+			continue
+		}
 		for kbID := range kbsByScope[key] {
 			kb, err := s.kbRepo.GetKnowledgeBaseByID(ctx, kbID)
 			if err != nil || kb == nil {
@@ -136,6 +139,9 @@ func (s *Service) mapTopicsForScope(
 	ctx context.Context, tenant uint64, subject, kbID, modelID string,
 	stats []*types.MemoryTopicStat, pages []*types.WikiPage, pagesBySlug map[string]*types.WikiPage,
 ) {
+	if s.topicCollectionDisabled(ctx, subject) {
+		return
+	}
 	scope := interfaces.LearningScope{TenantID: tenant, SubjectID: subject, KnowledgeBaseID: kbID}
 	now := time.Now()
 	// Debounce watermark: topics that already carry a decided mapping onto
@@ -181,6 +187,9 @@ func (s *Service) mapTopicsForScope(
 	}
 
 	for start := 0; start < len(withCandidates); start += topicBatchSize {
+		if s.topicCollectionDisabled(ctx, subject) {
+			return
+		}
 		end := start + topicBatchSize
 		if end > len(withCandidates) {
 			end = len(withCandidates)
@@ -193,6 +202,11 @@ func (s *Service) mapTopicsForScope(
 			continue // warned inside; the next daily pass retries
 		}
 		for topicKey, verdict := range acceptedTopicMaps(resp, candidatesByTopic) {
+			// The model call may outlive an opt-out, including one made on
+			// another server. Never trust the pre-call preference cache here.
+			if s.topicCollectionDisabled(ctx, subject) {
+				return
+			}
 			var label string
 			for _, st := range batch {
 				if st.NormalizedKey == topicKey {
@@ -227,6 +241,16 @@ func (s *Service) mapTopicsForScope(
 			}
 		}
 	}
+}
+
+// Background model work checks durable consent at each write boundary.
+// A database write fence is still required to serialize concurrent deletion.
+func (s *Service) topicCollectionDisabled(ctx context.Context, subject string) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	prefs, err := s.repo.GetSubjectPrefs(ctx, subject)
+	return err != nil || (prefs != nil && prefs.CollectDisabled)
 }
 
 // runEdgeAndQuizPass iterates the KBs that carry wiki activity and runs
@@ -284,30 +308,94 @@ func (s *Service) runEdgePass(ctx context.Context, kb *types.KnowledgeBase, mode
 	if err != nil {
 		return err
 	}
-	pairs := pairsInvolvingNewPages(edgeCandidatePairs(pages), pagesBySlug, edgeWatermark(existing))
+	// Document order (从浅入深) orients the candidate groups and rides into
+	// the adjudication prompt as each page's position attribute.
+	docRank := docRankMap(s.nodeMaterials(ctx, kb.TenantID, kb.ID, pages))
+	pairs := pairsInvolvingNewPages(edgeCandidatePairs(pages, docRank), pagesBySlug, edgeWatermark(existing))
 	if len(pairs) == 0 {
 		return nil
 	}
 
-	user := edgeUserPrompt(pagesBySlug, pairs)
-	var resp edgeResponse
-	if err := s.callLearningJSON(ctx, modelID, agent.LearningPrereqEdgePrompt, user,
-		edgeSchema, learningAdjudicateBudget, learningAdjudicateRetry, &resp); err != nil {
-		return err
-	}
-	for _, v := range acceptedEdges(resp, pairs) {
-		edge := &types.LearningEdge{
-			TenantID: kb.TenantID, KnowledgeBaseID: kb.ID,
-			FromSlug:   v.From,
-			ToSlug:     v.To,
-			Relation:   types.LearningEdgePrerequisite,
-			Confidence: v.Confidence, Source: types.LearningEdgeSourceHeuristicLLM,
+	for start := 0; start < len(pairs); start += edgeBatchSize {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if err := s.repo.UpsertEdge(ctx, edge); err != nil {
-			logger.Warnf(ctx, "learning: edge upsert failed (%s→%s): %v", v.From, v.To, err)
+		end := start + edgeBatchSize
+		if end > len(pairs) {
+			end = len(pairs)
+		}
+		batch := pairs[start:end]
+		user := edgeUserPrompt(pagesBySlug, batch, docRank)
+		var resp edgeResponse
+		if err := s.callLearningJSON(ctx, modelID, agent.LearningPrereqEdgePrompt, user,
+			edgeSchema, learningAdjudicateBudget, learningAdjudicateRetry, &resp); err != nil {
+			return err
+		}
+		verdicts := acceptedEdges(resp, batch)
+		sort.SliceStable(verdicts, func(i, j int) bool {
+			if verdicts[i].Confidence != verdicts[j].Confidence {
+				return verdicts[i].Confidence > verdicts[j].Confidence
+			}
+			if verdicts[i].From != verdicts[j].From {
+				return verdicts[i].From < verdicts[j].From
+			}
+			return verdicts[i].To < verdicts[j].To
+		})
+		for _, v := range verdicts {
+			// Cycle guard: storing from→to when `to` already (transitively)
+			// prepares `from` would mint an unsatisfiable prerequisite cycle —
+			// every member would gate every other forever. The reader degrades
+			// stored cycles to ready, but the writer should never create one.
+			if edgeClosesCycle(existing, v.From, v.To) {
+				logger.Warnf(ctx, "learning: edge %s -> %s rejected (would close a prerequisite cycle)", v.From, v.To)
+				continue
+			}
+			edge := &types.LearningEdge{
+				TenantID: kb.TenantID, KnowledgeBaseID: kb.ID,
+				FromSlug:   v.From,
+				ToSlug:     v.To,
+				Relation:   types.LearningEdgePrerequisite,
+				Confidence: v.Confidence, Source: types.LearningEdgeSourceHeuristicLLM,
+			}
+			if err := s.repo.UpsertEdge(ctx, edge); err != nil {
+				logger.Warnf(ctx, "learning: edge upsert failed (%s→%s): %v", v.From, v.To, err)
+				continue
+			}
+			existing = append(existing, *edge)
 		}
 	}
 	return nil
+}
+
+// edgeClosesCycle reports whether adding from→to to the stored edge set
+// would let `to` reach `from` along prerequisite direction (from prepares
+// to), i.e. close a cycle. Pure DFS over the small stored set; a self-edge
+// is a one-node cycle.
+func edgeClosesCycle(existing []types.LearningEdge, from, to string) bool {
+	if from == to {
+		return true
+	}
+	adj := map[string][]string{}
+	for _, e := range existing {
+		if e.Relation == types.LearningEdgePrerequisite && e.FromSlug != e.ToSlug {
+			adj[e.FromSlug] = append(adj[e.FromSlug], e.ToSlug)
+		}
+	}
+	seen := map[string]bool{}
+	stack := []string{to}
+	for len(stack) > 0 {
+		cur := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if cur == from {
+			return true
+		}
+		if seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		stack = append(stack, adj[cur]...)
+	}
+	return false
 }
 
 // runQuizPass tops up the grounded question bank for one KB's pages.
@@ -316,6 +404,26 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 	if err != nil {
 		return err
 	}
+	// One KB-wide inventory fetch instead of a ListQuizItems round-trip per
+	// page: the pass only needs each slug's active count for the deficit.
+	// A read failure aborts this KB's pass (retried next round via the
+	// deficit watermark) rather than generating against a blind baseline.
+	itemsBySlug := map[string]int{}
+	questionsBySlug := map[string]map[string]bool{}
+	allItems, err := s.repo.ListQuizItemsByKB(ctx, kb.TenantID, kb.ID)
+	if err != nil {
+		logger.Warnf(ctx, "learning: quiz inventory read failed (kb %s): %v", kb.ID, err)
+		return err
+	}
+	for _, it := range allItems {
+		if it.Status == types.LearningQuizStatusActive {
+			itemsBySlug[it.Slug]++
+			if questionsBySlug[it.Slug] == nil {
+				questionsBySlug[it.Slug] = map[string]bool{}
+			}
+			questionsBySlug[it.Slug][normalizedQuizQuestion(it.Question)] = true
+		}
+	}
 	for _, page := range pages {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -323,16 +431,7 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 		if page == nil || page.Slug == "" {
 			continue
 		}
-		items, err := s.repo.ListQuizItems(ctx, kb.TenantID, kb.ID, page.Slug)
-		if err != nil {
-			continue
-		}
-		active := 0
-		for _, it := range items {
-			if it.Status == types.LearningQuizStatusActive {
-				active++
-			}
-		}
+		active := itemsBySlug[page.Slug]
 		need := quizDeficit(page, active)
 		if need == 0 || len(page.ChunkRefs) == 0 {
 			continue
@@ -364,11 +463,25 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 			continue
 		}
 		stored := 0
+		if questionsBySlug[page.Slug] == nil {
+			questionsBySlug[page.Slug] = map[string]bool{}
+		}
+		// Validate against the actual evidence supplied, which can be a
+		// strict subset of page.ChunkRefs after caps or missing chunks.
+		evidencePage := *page
+		evidencePage.ChunkRefs = nil
+		for id := range excerpts {
+			evidencePage.ChunkRefs = append(evidencePage.ChunkRefs, id)
+		}
 		for _, draft := range resp.Questions {
 			if stored >= need {
 				break
 			}
-			item := validateQuizDraft(draft, page)
+			questionKey := normalizedQuizQuestion(draft.Question)
+			if questionsBySlug[page.Slug][questionKey] {
+				continue
+			}
+			item := validateQuizDraft(draft, &evidencePage)
 			if item == nil {
 				continue // ungrounded or malformed: dropped whole, never rescued
 			}
@@ -378,6 +491,7 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 				continue
 			}
 			stored++
+			questionsBySlug[page.Slug][questionKey] = true
 		}
 	}
 	return nil
@@ -385,7 +499,12 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 
 // distinctKnownKBs rolls up the KB ids the learning layer has activity in.
 func (s *Service) distinctKnownKBs(ctx context.Context) []string {
-	// Primary: mastery activity; secondary: doc affinity (backfill universe).
+	// Primary: mastery activity; secondary: doc affinity (backfill
+	// universe); tertiary: every KB via the repository. The third source
+	// closes a cold-boot deadlock: a fresh wiki KB has pages but no
+	// learning rows, so the first two see nothing — and without the quiz
+	// bank this pass generates, no subject can ever EARN the first
+	// direct-evidence rows that would have made the KB visible.
 	rows, err := s.repo.ListAllMastery(ctx)
 	if err != nil {
 		rows = nil
@@ -398,6 +517,15 @@ func (s *Service) distinctKnownKBs(ctx context.Context) []string {
 		for _, a := range affinities {
 			if a.KnowledgeBaseID != "" {
 				seen[a.KnowledgeBaseID] = true
+			}
+		}
+	}
+	if s.kbRepo != nil {
+		if kbs, err := s.kbRepo.ListKnowledgeBases(ctx); err == nil {
+			for _, kb := range kbs {
+				if kb != nil && kb.ID != "" {
+					seen[kb.ID] = true
+				}
 			}
 		}
 	}

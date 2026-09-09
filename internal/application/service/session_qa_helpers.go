@@ -105,11 +105,20 @@ func (s *sessionService) resolveChatModelID(
 	if customAgent != nil {
 		configuredModelID := strings.TrimSpace(customAgent.Config.ModelID)
 		if configuredModelID == "" {
-			return "", fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
-		}
-		model, err := s.modelService.GetModelByID(ctx, configuredModelID)
-		if err != nil || model == nil || model.Type != types.ModelTypeKnowledgeQA {
-			return "", fmt.Errorf("configured chat model %s is unavailable for agent %s", configuredModelID, customAgent.ID)
+			// Built-in agents may ship without a pinned model: model ids are
+			// tenant-scoped database rows, unreferenceable from the static
+			// builtin_agents.yaml. They fall through to the KB/session/
+			// system default chain below — the same resolution a no-agent
+			// request gets. User-created agents stay strict: an unconfigured
+			// custom agent must not silently borrow a model.
+			if !customAgent.IsBuiltin {
+				return "", fmt.Errorf("chat model is not configured: please set model_id on agent %s", customAgent.ID)
+			}
+		} else {
+			model, err := s.modelService.GetModelByID(ctx, configuredModelID)
+			if err != nil || model == nil || model.Type != types.ModelTypeKnowledgeQA {
+				return "", fmt.Errorf("configured chat model %s is unavailable for agent %s", configuredModelID, customAgent.ID)
+			}
 		}
 	}
 

@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -16,7 +17,12 @@ import (
 const pageIndexTTL = 5 * time.Minute
 
 type pageIndexEntry struct {
-	index     *pageRefIndex
+	index *pageRefIndex
+	// pages is the same entity/concept fetch the index is built from,
+	// retained so read paths can share it instead of re-reading the wiki
+	// tables on every request. Sorted by slug; callers treat as read-only —
+	// the cache hands out shared pointers.
+	pages     []*types.WikiPage
 	expiresAt time.Time
 }
 
@@ -30,14 +36,12 @@ type pageIndexCache struct {
 	m sync.Map // kbID -> pageIndexEntry
 }
 
-func (c *pageIndexCache) index(
-	ctx context.Context, wikiRepo pageReader, kbID string,
-) (*pageRefIndex, error) {
+func (c *pageIndexCache) load(ctx context.Context, wikiRepo pageReader, kbID string) (*pageIndexEntry, error) {
 	now := time.Now()
 	if v, ok := c.m.Load(kbID); ok {
 		entry := v.(pageIndexEntry)
 		if now.Before(entry.expiresAt) {
-			return entry.index, nil
+			return &entry, nil
 		}
 		c.m.Delete(kbID)
 	}
@@ -53,10 +57,42 @@ func (c *pageIndexCache) index(
 	pages := make([]*types.WikiPage, 0, len(entities)+len(concepts))
 	pages = append(pages, entities...)
 	pages = append(pages, concepts...)
+	kept := pages[:0]
+	for _, p := range pages {
+		if p != nil && p.Slug != "" {
+			kept = append(kept, p)
+		}
+	}
+	pages = kept
+	sort.Slice(pages, func(i, j int) bool { return pages[i].Slug < pages[j].Slug })
 
 	index := buildPageRefIndex(pages)
-	c.m.Store(kbID, pageIndexEntry{index: index, expiresAt: now.Add(pageIndexTTL)})
-	return index, nil
+	entry := pageIndexEntry{index: index, pages: pages, expiresAt: now.Add(pageIndexTTL)}
+	c.m.Store(kbID, entry)
+	return &entry, nil
+}
+
+func (c *pageIndexCache) index(
+	ctx context.Context, wikiRepo pageReader, kbID string,
+) (*pageRefIndex, error) {
+	entry, err := c.load(ctx, wikiRepo, kbID)
+	if err != nil {
+		return nil, err
+	}
+	return entry.index, nil
+}
+
+// nodes returns the KB's node universe (entity/concept pages, slug-sorted)
+// from the same cached fetch the reference index is built from — the read
+// paths' every-request ListAll re-read is what this removes.
+func (c *pageIndexCache) nodes(
+	ctx context.Context, wikiRepo pageReader, kbID string,
+) ([]*types.WikiPage, error) {
+	entry, err := c.load(ctx, wikiRepo, kbID)
+	if err != nil {
+		return nil, err
+	}
+	return entry.pages, nil
 }
 
 // pageReader is the slice of WikiPageRepository the learning layer needs.

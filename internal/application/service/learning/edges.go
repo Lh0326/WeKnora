@@ -1,7 +1,9 @@
 package learning
 
 import (
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +20,13 @@ const (
 )
 
 // edgeCandidatePairs generates the structural-heuristic candidate pairs
-// for one KB's pages: (a) wiki-link direct pairs, (b) same-folder title
-// neighbours, (c) pages sharing a source document. Direction is left to
-// the adjudicator: pairs are submitted in source order and the LLM judges
-// whether `from` prepares `to`.
-func edgeCandidatePairs(pages []*types.WikiPage) [][2]string {
+// for one KB's pages: (a) wiki-link direct pairs, (b) same-folder
+// neighbours, (c) pages sharing a source document. docRank carries each
+// node's position in the source material (the 从浅入深 channel): it orders
+// the same-folder and same-document groups so the pairs submitted to the
+// adjudicator run shallow→deep, and a nil map falls back to (title, slug)
+// order — the pre-document-order behaviour.
+func edgeCandidatePairs(pages []*types.WikiPage, docRank map[string]int) [][2]string {
 	bySlug := map[string]*types.WikiPage{}
 	sorted := append([]*types.WikiPage{}, pages...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Slug < sorted[j].Slug })
@@ -57,7 +61,15 @@ func edgeCandidatePairs(pages []*types.WikiPage) [][2]string {
 		}
 	}
 
-	// (b) same-folder neighbours: pages adjacent in (title, slug) order.
+	// (b) same-folder neighbours: pages adjacent in (document order, title,
+	// slug) order — reading order inside a folder, alphabetical only as the
+	// fallback.
+	rankOf := func(slug string) int {
+		if r, ok := docRank[slug]; ok {
+			return r
+		}
+		return math.MaxInt32
+	}
 	folders := map[string][]*types.WikiPage{}
 	for _, p := range sorted {
 		folders[p.FolderID] = append(folders[p.FolderID], p)
@@ -70,6 +82,9 @@ func edgeCandidatePairs(pages []*types.WikiPage) [][2]string {
 	for _, fk := range folderKeys {
 		group := folders[fk]
 		sort.Slice(group, func(i, j int) bool {
+			if ri, rj := rankOf(group[i].Slug), rankOf(group[j].Slug); ri != rj {
+				return ri < rj
+			}
 			if group[i].Title != group[j].Title {
 				return group[i].Title < group[j].Title
 			}
@@ -80,7 +95,11 @@ func edgeCandidatePairs(pages []*types.WikiPage) [][2]string {
 		}
 	}
 
-	// (c) source-document co-occurrence, capped per document group.
+	// (c) source-document co-occurrence, capped per document group. The
+	// group is ordered by document position and the cap keeps the EARLIEST
+	// nodes — the foundations a sweeping chapter-20 listing would otherwise
+	// evict — and every pair runs earlier→later, the direction the source
+	// material itself reads.
 	byDoc := map[string][]string{}
 	for _, p := range sorted {
 		for _, ref := range p.SourceRefs {
@@ -96,6 +115,12 @@ func edgeCandidatePairs(pages []*types.WikiPage) [][2]string {
 	sort.Strings(docKeys)
 	for _, dk := range docKeys {
 		group := byDoc[dk]
+		sort.Slice(group, func(i, j int) bool {
+			if ri, rj := rankOf(group[i]), rankOf(group[j]); ri != rj {
+				return ri < rj
+			}
+			return group[i] < group[j]
+		})
 		if len(group) > edgeMaxPerDocGroup {
 			group = group[:edgeMaxPerDocGroup]
 		}
@@ -157,12 +182,14 @@ func acceptedEdges(resp edgeResponse, submitted [][2]string) []edgeVerdict {
 	return out
 }
 
-// edgeUserPrompt renders the pair list with titles and first-paragraph
-// summaries, the wiki-dedup nested style adapted to pairs. Only pages the
-// submitted pairs actually involve are described — the adjudicator judges
-// pairs, and an unrelated page in the answer space is prompt bloat, so the
-// input stays proportional to the candidate set rather than the KB size.
-func edgeUserPrompt(pagesBySlug map[string]*types.WikiPage, pairs [][2]string) string {
+// edgeUserPrompt renders the pair list with titles, first-paragraph
+// summaries, and each page's position in the source material (the 从浅入深
+// channel: smaller pos = introduced earlier), the wiki-dedup nested style
+// adapted to pairs. Only pages the submitted pairs actually involve are
+// described — the adjudicator judges pairs, and an unrelated page in the
+// answer space is prompt bloat, so the input stays proportional to the
+// candidate set rather than the KB size.
+func edgeUserPrompt(pagesBySlug map[string]*types.WikiPage, pairs [][2]string, docRank map[string]int) string {
 	involved := map[string]bool{}
 	for _, p := range pairs {
 		if _, ok := pagesBySlug[p[0]]; ok {
@@ -184,7 +211,11 @@ func edgeUserPrompt(pagesBySlug map[string]*types.WikiPage, pairs [][2]string) s
 		if p == nil {
 			return
 		}
-		b.WriteString("  <page slug=\"" + slug + "\" type=\"" + p.PageType + "\" title=\"" + p.Title + "\">\n")
+		b.WriteString("  <page slug=\"" + slug + "\" type=\"" + p.PageType + "\" title=\"" + p.Title + "\"")
+		if r, ok := docRank[slug]; ok {
+			b.WriteString(" pos=\"" + strconv.Itoa(r) + "\"")
+		}
+		b.WriteString(">\n")
 		if p.Summary != "" {
 			b.WriteString("    <summary>" + firstSentences(p.Summary, 2) + "</summary>\n")
 		}
@@ -214,15 +245,19 @@ var edgeSchema = jsonRaw(`{
 // firstSentences returns up to n sentences of s as a compact summary.
 func firstSentences(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if s == "" {
+	if s == "" || n <= 0 {
 		return ""
 	}
-	parts := strings.SplitAfterN(s, ".", n)
-	if len(parts) > n {
-		parts = parts[:n]
+	count := 0
+	for i, r := range s {
+		if strings.ContainsRune(".!?。！？", r) {
+			count++
+			if count == n {
+				return strings.TrimSpace(s[:i+len(string(r))])
+			}
+		}
 	}
-	out := strings.Join(parts, "")
-	return strings.TrimSpace(out)
+	return s
 }
 
 // edgeWatermark returns the newest edge creation time for a KB — pages

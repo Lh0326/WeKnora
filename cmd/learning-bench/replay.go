@@ -500,42 +500,40 @@ var weightOverrides string
 // package vars instead of the frozen per-row values (bound to -refold).
 var refold bool
 
-// refoldWeight rebuilds one event's weight from the CURRENT package weights
-// so the sweep can ask "what if these values had been in force". Quiz
-// repeats decay by QuizRepeatDecay^(n-1) capped at QuizRepeatDecayCap,
-// mirroring the live grader (diminishing, never zero); backfill keeps its
-// frozen value (its discount is part of the historical fact, not a tunable).
-func refoldWeight(ev types.LearningEvent, quizSeen map[string]int) float64 {
-	quizPrior := func(slug string) int {
-		n := quizSeen[slug]
-		quizSeen[slug]++
-		if n > learning.QuizRepeatDecayCap {
-			n = learning.QuizRepeatDecayCap
-		}
-		return n
+// Capture the shipped table before CLI overrides or fitting mutate it.
+var shippedEventWeights = currentEventWeights()
+
+func currentEventWeights() map[string]float64 {
+	return map[string]float64{
+		types.LearningEventAnswerCite:   learning.WeightAnswerCite,
+		types.LearningEventCrossRef:     learning.WeightCrossRef,
+		types.LearningEventReAsk:        learning.WeightReAsk,
+		types.LearningEventTopicSignal:  learning.WeightTopicSignal,
+		types.LearningEventWikiToolRead: learning.WeightTopicSignal,
+		types.LearningEventWikiDeepRead: learning.WeightWikiDeepRead,
+		types.LearningEventQuizCorrect:  learning.WeightQuizCorrect,
+		types.LearningEventQuizWrong:    learning.WeightQuizWrong,
 	}
-	switch ev.Type {
-	case types.LearningEventAnswerCite:
-		return learning.WeightAnswerCite
-	case types.LearningEventCrossRef:
-		return learning.WeightCrossRef
-	case types.LearningEventReAsk:
-		return learning.WeightReAsk
-	case types.LearningEventTopicSignal, types.LearningEventWikiToolRead:
-		return learning.WeightTopicSignal
-	case types.LearningEventQuizCorrect:
-		w := learning.WeightQuizCorrect
-		for i := 0; i < quizPrior(ev.Slug); i++ {
-			w *= learning.QuizRepeatDecay
-		}
-		return w
-	case types.LearningEventQuizWrong:
-		w := learning.WeightQuizWrong
-		for i := 0; i < quizPrior(ev.Slug); i++ {
-			w *= learning.QuizRepeatDecay
-		}
-		return w
-	default:
+}
+
+// Preserve the recorded eligibility/repeat discount and scale only the
+// base event weight. A legacy event has no item ID: a per-slug lifetime
+// count cannot reconstruct the online same-item, 48-hour rule.
+func rescaleEventWeight(ev types.LearningEvent, baseline map[string]float64) float64 {
+	if ev.Weight == 0 {
+		return 0
+	}
+	if len(baseline) == 0 {
+		baseline = shippedEventWeights
+	}
+	old, known := baseline[ev.Type]
+	current, tunable := currentEventWeights()[ev.Type]
+	if !known || !tunable || old == 0 {
 		return ev.Weight
 	}
+	return ev.Weight * current / old
+}
+
+func refoldWeight(ev types.LearningEvent, _ map[string]int) float64 {
+	return rescaleEventWeight(ev, nil)
 }

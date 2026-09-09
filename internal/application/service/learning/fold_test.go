@@ -52,8 +52,11 @@ func TestFoldEventMonotonicRise(t *testing.T) {
 
 func TestFoldEventNegativeDrops(t *testing.T) {
 	state := FoldEvent(FoldEvent(FoldState{}, cite(foldRef)), reAsk(foldRef.Add(time.Minute)))
-	if math.Abs(state.Logit-(WeightAnswerCite+WeightReAsk)) > 1e-9 {
-		t.Fatalf("logit = %v, want %v", state.Logit, WeightAnswerCite+WeightReAsk)
+	// The minute of idle before the re-ask absorbs a hair of decay into the
+	// logit first (time-aware negative updates), so the exact sum is no
+	// longer bit-equal — only near-gap events converge to it.
+	if math.Abs(state.Logit-(WeightAnswerCite+WeightReAsk)) > 1e-3 {
+		t.Fatalf("logit = %v, want ≈ %v", state.Logit, WeightAnswerCite+WeightReAsk)
 	}
 	if state.PositiveCount != 1 || state.NegativeCount != 1 || state.EvidenceCount != 2 {
 		t.Fatalf("counts = +%d/-%d/%d, want +1/-1/2", state.PositiveCount, state.NegativeCount, state.EvidenceCount)
@@ -103,30 +106,52 @@ func TestFoldEventClampsAtCapAndFloor(t *testing.T) {
 	}
 }
 
-func TestFoldEventOrderIndependentForReverseChronologicalInput(t *testing.T) {
+// TestFoldOrderedReplayIsDeterministic：折叠的保证是"相同有序事件流
+// 必然重放出相同状态"（后台重放与在线路径的一致性基础），而不再是任意
+// 顺序无关——钳位截断本就破坏了交换律（评审 P2-A），且负事件现在显式
+// 时间感知（P1-D）：先遗忘后扣分的语义只对按时间排序的流成立。
+func TestFoldOrderedReplayIsDeterministic(t *testing.T) {
 	events := []Event{
 		cite(foldRef),
 		cite(foldRef.Add(1 * time.Hour)),
 		reAsk(foldRef.Add(2 * time.Hour)),
 		quizCorrect(foldRef.Add(3 * time.Hour)),
 	}
-	forward := FoldAll(FoldState{}, events)
-
-	reversed := make([]Event, len(events))
-	for i := range events {
-		reversed[i] = events[len(events)-1-i]
+	first := FoldAll(FoldState{}, events)
+	second := FoldAll(FoldState{}, append([]Event(nil), events...))
+	if first != second {
+		t.Fatalf("same ordered stream must replay identically: %+v vs %+v", first, second)
 	}
-	backward := FoldAll(FoldState{}, reversed)
-
-	if forward.Logit != backward.Logit ||
-		forward.EvidenceCount != backward.EvidenceCount ||
-		forward.PositiveCount != backward.PositiveCount ||
-		forward.NegativeCount != backward.NegativeCount ||
-		forward.Stability != backward.Stability {
-		t.Fatalf("fold is not order-independent: forward %+v, reversed %+v", forward, backward)
+	// 正事件流（无负证据）仍保持交换不变；负事件按到达序吸收遗忘。
+	posOnly := []Event{cite(foldRef), quizCorrect(foldRef.Add(time.Hour))}
+	a := FoldAll(FoldState{}, posOnly)
+	b := FoldAll(FoldState{}, []Event{posOnly[1], posOnly[0]})
+	if a.Logit != b.Logit || a.PositiveCount != b.PositiveCount {
+		t.Fatalf("positive-only stream stays commutative: %+v vs %+v", a, b)
 	}
-	if !forward.FirstSeenAt.Equal(backward.FirstSeenAt) || !forward.LastEvidenceAt.Equal(backward.LastEvidenceAt) {
-		t.Fatalf("seen bounds differ: forward %v..%v, reversed %v..%v",
-			forward.FirstSeenAt, forward.LastEvidenceAt, backward.FirstSeenAt, backward.LastEvidenceAt)
+}
+
+// TestFoldNegativeEventAfterLongIdleDropsProbability（评审 P1-D 回归）：
+// 三次答对后搁置 180 天再答错——掌握度必须下降，而不是因"旧峰值保留 +
+// 时间锚重置"反弹上升（旧实现 p_eff 0.557 → 0.924）。
+func TestFoldNegativeEventAfterLongIdleDropsProbability(t *testing.T) {
+	now := time.Now()
+	state := FoldState{}
+	for i := 0; i < 3; i++ {
+		state = FoldEvent(state, Event{Type: "quiz_correct", Weight: WeightQuizCorrect, OccurredAt: now.Add(-181 * 24 * time.Hour)})
+	}
+	before := EffectiveP(state, now) // Compare both states at the same observation time.
+	state = FoldEvent(state, Event{Type: "quiz_wrong", Weight: WeightQuizWrong, OccurredAt: now})
+	after := EffectiveP(state, now)
+	if after >= before {
+		t.Fatalf("a wrong answer after 180 idle days must lower p_eff: before=%.4f after=%.4f", before, after)
+	}
+	if after > 0.5 {
+		t.Fatalf("post-lapse probability must sit well below the familiar band, got %.4f", after)
+	}
+	// 对照：紧接着的第二次答错继续下降（同日负事件按扣分走，无额外吸收）。
+	second := FoldEvent(state, Event{Type: "quiz_wrong", Weight: WeightQuizWrong, OccurredAt: now})
+	if p2 := EffectiveP(second, now); p2 >= after {
+		t.Fatalf("repeated wrong answers keep descending: %.4f -> %.4f", after, p2)
 	}
 }

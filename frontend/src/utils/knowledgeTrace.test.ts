@@ -157,3 +157,46 @@ test('returns an empty postprocess summary when no trace is available', () => {
     total: 0,
   })
 })
+
+// Salvage recovery: a failed wiki page span whose same-named sibling later
+// completed (the in-batch salvage retry) must count as completed, not failed
+// — the UI counter reflects the final outcome while the tree keeps the
+// honest first-attempt failure record.
+test('summarizePostprocessTasks counts salvage-recovered failures as completed', () => {
+  const trace = {
+    name: 'knowledge_processing',
+    kind: 'root',
+    status: 'done',
+    children: [
+      {
+        name: 'postprocess',
+        kind: 'stage',
+        status: 'done',
+        children: [
+          {
+            name: 'postprocess.wiki',
+            kind: 'subspan',
+            status: 'done',
+            children: [
+              // First-round failure, later recovered by the salvage retry.
+              { name: 'postprocess.wiki.page[concept/prompt]', kind: 'subspan', status: 'failed' },
+              { name: 'postprocess.wiki.page[concept/prompt]', kind: 'subspan', status: 'completed' },
+              // A genuinely failed page with no successful sibling.
+              { name: 'postprocess.wiki.page[entity/ghost]', kind: 'subspan', status: 'failed' },
+              // A page that only ever succeeded.
+              { name: 'postprocess.wiki.page[entity/langchain]', kind: 'subspan', status: 'completed' },
+            ],
+          },
+        ],
+      },
+    ],
+  }
+
+  assert.deepEqual(summarizePostprocessTasks(trace), {
+    running: 0,
+    failed: 1,
+    completed: 3,
+    other: 0,
+    total: 4,
+  })
+})

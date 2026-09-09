@@ -73,9 +73,10 @@ func BenchAcceptedTopicMapsRaw(rawJSON string, candidatesByTopic map[string][]st
 }
 
 // BenchEdgeCandidatePairs lifts the structural heuristic edge-candidate
-// generator (wiki-link / same-folder / shared-document pairs).
+// generator (wiki-link / same-folder / shared-document pairs, ordered by
+// document position when the rank map is non-nil).
 func BenchEdgeCandidatePairs(pages []*types.WikiPage) [][2]string {
-	return edgeCandidatePairs(pages)
+	return edgeCandidatePairs(pages, nil)
 }
 
 // BenchEdgeVerdict lifts the private edge verdict for bench consumers.

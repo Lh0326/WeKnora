@@ -160,3 +160,27 @@ func TestWeightForTypeCoversAllSignalTypes(t *testing.T) {
 		t.Errorf("unknown type must weigh zero, got %v", got)
 	}
 }
+
+// TestCitationsPreciseChunkDoesNotLightDocSiblings（评审 P2-B 回归）：
+// A 只引用 c1、B 只引用 c2、两者同源文档；答案精确引用 c1 时，被点亮
+// 的必须只有 A——B 不得经"同文档回退"获得证据。文档级匹配仅服务于
+// 没有任何 chunk 身份的引用。
+func TestCitationsPreciseChunkDoesNotLightDocSiblings(t *testing.T) {
+	refs := types.References{
+		{KnowledgeBaseID: "kb", ID: "c1", KnowledgeID: "doc-1"},
+	}
+	idx := buildPageRefIndex([]*types.WikiPage{
+		{Slug: "concept/a", ChunkRefs: []string{"c1"}, SourceRefs: []string{"doc-1|A书"}},
+		{Slug: "concept/b", ChunkRefs: []string{"c2"}, SourceRefs: []string{"doc-1|A书"}},
+	})
+	touched := idx.touchedSlugs(citationsByKB(refs)["kb"])
+	if len(touched) != 1 || touched[0] != "concept/a" {
+		t.Fatalf("precise citation must light only the chunk's page, got %v", touched)
+	}
+	// 对照：仅文档级引用（无 chunk 身份）仍回退点亮 A 与 B。
+	docOnly := types.References{{KnowledgeBaseID: "kb", KnowledgeID: "doc-1"}}
+	touched = idx.touchedSlugs(citationsByKB(docOnly)["kb"])
+	if len(touched) != 2 {
+		t.Fatalf("doc-grained citation keeps the coarse fallback for both siblings, got %v", touched)
+	}
+}

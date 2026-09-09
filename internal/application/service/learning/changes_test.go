@@ -64,7 +64,7 @@ func TestDerivePassiveChangesDemoted(t *testing.T) {
 	summary := derivePassiveChanges(pages, states, map[string][]DirectQuizFact{
 		"concept/gone": masteredFacts(now, 200*24*time.Hour),
 		"concept/fresh": masteredFacts(now, time.Hour),
-	}, now, 20)
+	}, nil, now, 20)
 
 	if summary.DemotedCount != 1 || summary.DueSoonCount != 0 {
 		t.Fatalf("counts = %d/%d, want 1/0", summary.DemotedCount, summary.DueSoonCount)
@@ -103,7 +103,7 @@ func TestDerivePassiveChangesDueSoon(t *testing.T) {
 	}
 	summary := derivePassiveChanges(pages, map[string]FoldState{
 		"concept/holding": holdingState(now),
-	}, map[string][]DirectQuizFact{"concept/holding": familiarFacts(now, 24*time.Hour)}, now, 20)
+	}, map[string][]DirectQuizFact{"concept/holding": familiarFacts(now, 24*time.Hour)}, nil, now, 20)
 	if summary.DemotedCount != 0 || summary.DueSoonCount != 1 {
 		t.Fatalf("counts = %d/%d, want 0/1", summary.DemotedCount, summary.DueSoonCount)
 	}
@@ -119,7 +119,7 @@ func TestDerivePassiveChangesDueSoon(t *testing.T) {
 	PassiveDueSoonDays = 7
 	summary = derivePassiveChanges(pages, map[string]FoldState{
 		"concept/holding": holdingState(now),
-	}, nil, now, 20)
+	}, nil, nil, now, 20)
 	if summary.DemotedCount != 0 || summary.DueSoonCount != 0 || len(summary.Items) != 0 {
 		t.Fatalf("short horizon must surface nothing, got %+v", summary)
 	}
@@ -149,7 +149,7 @@ func TestDerivePassiveChangesOrderAndLimit(t *testing.T) {
 		"concept/a": masteredFacts(now, 200*24*time.Hour),
 		"concept/b": masteredFacts(now, 200*24*time.Hour),
 		"concept/c": masteredFacts(now, 400*24*time.Hour),
-	}, now, 2)
+	}, nil, now, 2)
 
 	if summary.DemotedCount != 3 {
 		t.Fatalf("demoted_count = %d, want 3 (counts ignore the limit)", summary.DemotedCount)

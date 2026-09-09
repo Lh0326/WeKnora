@@ -55,6 +55,8 @@ import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import WikiBrowser from './wiki/WikiBrowser.vue';
 import LearningTab from './learning/LearningTab.vue';
+import WikiAssistantWidget from './wiki/WikiAssistantWidget.vue';
+import { assistantHostContext, setAssistantHost } from './assistantHost';
 import { getWikiStats } from '@/api/wiki';
 import {
   isKnowledgeParseInFlight,
@@ -78,6 +80,13 @@ import { useMarqueeSelect } from '@/hooks/useMarqueeSelect';
 import type { ParserEngineInfo } from '@/api/system';
 const route = useRoute();
 const { t } = useI18n();
+// 站内返回按钮：应用内跳转（学习页签→Wiki 页抽屉→源文档等）都会在 Vue
+// Router 历史里留下回退目标；有目标时在面包屑行首显示返回按钮，用户不
+// 必伸手去够浏览器的后退。直接打开（无站内来路）时不渲染。
+const canGoBackInApp = ref(false);
+watch(() => route.fullPath, () => {
+  canGoBackInApp.value = typeof window.history.state?.back === 'string' && window.history.state.back !== '';
+}, { immediate: true });
 const kbId = computed(() => (route.params as any).kbId as string || '');
 const kbInfo = ref<any>(null);
 const uploadSourceRef = ref<InstanceType<typeof KbUploadSourceDropdown> | null>(null);
@@ -1084,6 +1093,12 @@ const loadKnowledgeList = async () => {
 
 // 监听路由参数变化，重新获取知识库内容
 // Sync activeKbTab to URL query so it survives page refresh
+// KB-wide assistant host context: non-wiki tabs publish their scene here;
+// the wiki/graph tabs are owned by WikiBrowser's richer page-level publish.
+watch(activeKbTab, (tab) => {
+  if (tab !== 'wiki' && tab !== 'graph') setAssistantHost({ scene: tab })
+}, { immediate: true })
+
 watch(activeKbTab, (tab) => {
   const query = { ...route.query }
   if (tab === 'documents') {
@@ -2305,6 +2320,12 @@ async function createNewSession(value: string): Promise<void> {
         <div class="document-header-title">
           <div class="document-title-row">
             <h2 class="document-breadcrumb">
+              <t-tooltip v-if="canGoBackInApp" :content="t('common.back')" placement="top">
+                <button type="button" class="kb-settings-button kb-back-button"
+                  :title="t('common.back')" @click="router.back()">
+                  <t-icon name="chevron-left" size="16px" />
+                </button>
+              </t-tooltip>
               <button type="button" class="breadcrumb-link" @click="handleNavigateToKbList">
                 {{ $t('menu.knowledgeBase') }}
               </button>
@@ -2385,10 +2406,14 @@ async function createNewSession(value: string): Promise<void> {
         </div>
       </div>
 
-      <!-- Wiki Browser / Graph (shown when wiki or graph tab is active) -->
-      <div v-if="isWiki && activeKbTab === 'learning'" class="learning-main-area">
-        <LearningTab v-if="kbId" :key="kbId" :knowledge-base-id="kbId" :can-manage="canManage"
-          @open-source-doc="openSourceDoc" />
+      <!-- 学习页签：KeepAlive 缓存实例 + v-show 容器——切到 Wiki/图谱（如点
+           推荐"查看"）再回来时，答题进度与滚动位置不丢、无整屏白闪重载；
+           失活实例的 DOM 被摘除，星图常驻动画（呼吸/闪烁）不占渲染预算 -->
+      <div v-if="isWiki" v-show="activeKbTab === 'learning'" class="learning-main-area">
+        <KeepAlive :max="2">
+          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="kbId" :knowledge-base-id="kbId" :can-manage="canManage"
+            @open-source-doc="openSourceDoc" />
+        </KeepAlive>
       </div>
       <div v-if="isWiki && (activeKbTab === 'wiki' || activeKbTab === 'graph')" class="wiki-main-area">
         <WikiBrowser v-if="kbId" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
@@ -2743,6 +2768,9 @@ async function createNewSession(value: string): Promise<void> {
     :is-faq="isFAQ"
     @changed="onTagManageChanged"
   />
+
+  <!-- 知识助手：全页签常驻右下角（fixed 定位），宿主上下文由当前页签发布 -->
+  <WikiAssistantWidget v-if="kbId && !isFAQ" :kb-id="kbId" :host-context="assistantHostContext" />
 </template>
 <style>
 /* 下拉菜单容器样式已统一至 @/assets/dropdown-menu.less */
@@ -3658,6 +3686,8 @@ async function createNewSession(value: string): Promise<void> {
   display: none;
 }
 
+// 站内返回按钮：与设置按钮同一圆形语言，锚在面包屑行首。
+.kb-back-button { flex-shrink: 0; margin-right: 4px; width: 26px; height: 26px; }
 .kb-settings-button {
   width: 30px;
   height: 30px;

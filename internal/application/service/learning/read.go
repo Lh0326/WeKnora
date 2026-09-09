@@ -134,21 +134,26 @@ func (s *Service) todaySummary(
 ) *TodaySummary {
 	today := &TodaySummary{}
 	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	// Bug fix: an unbounded ListEvents silently caps at 500 rows (repo
-	// default), truncating streak and quizStruggled for heavy users. Bound
-	// the lookback to a year — no streak or struggle signal survives longer.
+	// Today's counts come from today's rows alone (bounded by one day of
+	// activity); the streak comes from the distinct-day query so a heavy
+	// history cannot truncate it through the paged event read — the bug the
+	// old "pull a year of events" version carried for >500-event users.
 	streakLookback := 365 * 24 * time.Hour
-	events, err := s.repo.ListEvents(ctx, scope, now.Add(-streakLookback), 0)
+	dayKeys, err := s.repo.ListActiveDays(ctx, scope, now.Add(-streakLookback))
+	if err != nil {
+		logger.Warnf(ctx, "learning: active-days read failed (kb %s): %v", scope.KnowledgeBaseID, err)
+		dayKeys = nil
+	}
+	events, err := s.repo.ListEvents(ctx, scope, start, 0)
 	if err != nil {
 		logger.Warnf(ctx, "learning: today summary read failed (kb %s): %v", scope.KnowledgeBaseID, err)
 		return today
 	}
-	daySeen := map[string]bool{}
+	daySeen := make(map[string]bool, len(dayKeys))
+	for _, d := range dayKeys {
+		daySeen[d] = true
+	}
 	for _, ev := range events {
-		d := ev.OccurredAt.Format("2006-01-02")
-		if !daySeen[d] {
-			daySeen[d] = true
-		}
 		if !ev.OccurredAt.Before(start) {
 			switch ev.Type {
 			case types.LearningEventQuizCorrect, types.LearningEventQuizWrong, types.LearningEventQuizUnsure:
@@ -220,6 +225,12 @@ func (s *Service) ListMasteryView(ctx context.Context, kbID string) ([]MasteryVi
 	} else {
 		selfAssess = m
 	}
+	skips := map[string]time.Time{}
+	if m, err := s.repo.ListSkips(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: skip read failed (kb %s): %v", kbID, err)
+	} else {
+		skips = m
+	}
 	out := make([]MasteryView, 0, len(pages))
 	for _, p := range pages {
 		if p == nil || p.Slug == "" {
@@ -243,13 +254,18 @@ func (s *Service) ListMasteryView(ctx context.Context, kbID string) ([]MasteryVi
 		if state.EvidenceCount == 0 && state.LastEvidenceAt.IsZero() {
 			pEff = 0
 		}
+		var skippedAt *time.Time
+		if at, ok := skips[p.Slug]; ok {
+			skippedAt = &at
+		}
 		out = append(out, MasteryView{
 			Slug: p.Slug, Level: string(lv.Level), Title: p.Title,
 			PEff: pEff, EvidenceCount: state.EvidenceCount,
 			LowConfidence: lv.LowConfidence, LastEvidenceAt: state.LastEvidenceAt,
 			LastActivityAt: lastActivity, SelfAssess: mark,
-			TierProgress:   TierProgress(lv.Level, pEff),
-			NextTierHint:   NextTierHint(lv.Level, direct[p.Slug], now),
+			Skipped: skippedAt != nil, SkippedAt: skippedAt,
+			TierProgress: TierProgress(lv.Level, pEff),
+			NextTierHint: NextTierHint(lv.Level, direct[p.Slug], now),
 		})
 	}
 	// Deterministic order: lit tiers first (mastered → touched), unseen
@@ -283,8 +299,25 @@ func tierSortRank(level string) int {
 	}
 }
 
-// Recommend produces the "look" cards for the caller.
-func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Recommendation, error) {
+// recommendAssembly is everything the read paths need to run the pure
+// recommender: the assembled input plus the display-side extras. Recommend
+// and ZoneMap share it so the linear and the module-partitioned views rank
+// from exactly the same evidence.
+type recommendAssembly struct {
+	scope      interfaces.LearningScope
+	pages      []*types.WikiPage
+	edges      []types.LearningEdge
+	in         recommendInput
+	materials  map[string]NodeMaterial
+	quizCount  map[string]int
+	folderName map[string]string // folderID → name
+	now        time.Time
+}
+
+// assembleRecommend loads one KB's full evidence set and derives the pure
+// recommender input. Soft reads degrade exactly like Recommend always has
+// (logged, empty fallback); hard scope/page errors abort.
+func (s *Service) assembleRecommend(ctx context.Context, kbID string) (*recommendAssembly, error) {
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return nil, err
@@ -331,7 +364,7 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 	quizCount := map[string]int{}
 	allItems, itemsErr := s.repo.ListQuizItemsByKB(ctx, scope.TenantID, kbID)
 	if itemsErr != nil {
-		logger.Warnf(ctx, "learning: recommend quiz read failed (kb %s): %v", kbID, err)
+		logger.Warnf(ctx, "learning: recommend quiz read failed (kb %s): %v", kbID, itemsErr)
 		allItems = nil
 	}
 	for _, it := range allItems {
@@ -346,18 +379,29 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 
 	// Direct-evidence struggle: slugs this subject answered wrong at least
 	// once — the strongest remedial signal, one indexed event scan.
-	quizStruggled := map[string]bool{}
 	// Bug fix: bound the lookback — unbounded ListEvents silently caps at
 	// 500 rows, hiding older wrong-answer slugs from the struggle signal.
-	if history, err := s.repo.ListEvents(ctx, scope, time.Now().Add(-touchLookback), 0); err != nil {
+	quizStruggled := map[string]bool{}
+	var history []types.LearningEvent
+	if rows, err := s.repo.ListEvents(ctx, scope, time.Now().Add(-touchLookback), 0); err != nil {
 		logger.Warnf(ctx, "learning: recommend history read failed (kb %s): %v", kbID, err)
 	} else {
+		history = rows
 		for _, ev := range history {
 			if ev.Type == types.LearningEventQuizWrong {
 				quizStruggled[ev.Slug] = true
 			}
 		}
 	}
+
+	// The 承上启下 anchors: recent STRONG-behaviour nodes only — quiz
+	// answers, deliberate page reads, answer citations. Passive mappings
+	// (topic signals, backfilled affinity) and re-ask churn are excluded:
+	// a mis-click or a background projection must not steer the mainline.
+	// Newest first, deduped per slug, bounded to the continuity window and
+	// three anchors.
+	now := time.Now()
+	recent := recentAnchors(history, now)
 
 	// Self-assessment marks (latest per slug, visible-window bounded by the
 	// repo): the freshest explicit user claim must shape reason attribution —
@@ -371,16 +415,19 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 	}
 
 	direct := s.directFacts(ctx, scope)
-	recs := recommendNodes(recommendInput{
-		Pages: pages, Edges: edges, States: states, Affinity: affinity, HasQuiz: hasQuiz,
-		QuizStruggled: quizStruggled, DirectFacts: direct, SelfAssess: selfAssess,
-	}, time.Now(), rand.New(rand.NewSource(time.Now().UnixNano())), limit)
-
-	// Display extras, derived here so the pure recommender stays a pure
-	// policy: the node's folder, its active quiz count, its current tier.
-	folderBySlug := map[string]string{}
-	for _, p := range pages {
-		folderBySlug[p.Slug] = p.FolderID
+	// Document order (从浅入深): the material map degrades to empty on any
+	// read failure inside, falling back to the title ordering; the rank-only
+	// view feeds the pure recommender, the full material feeds the narrative.
+	materials := s.nodeMaterials(ctx, scope.TenantID, kbID, pages)
+	// Standing user declarations ("已掌握，不再推荐"): soft read, an empty
+	// set on failure — the queue then simply shows everything again.
+	skips := map[string]bool{}
+	if rows, err := s.repo.ListSkips(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: recommend skip read failed (kb %s): %v", kbID, err)
+	} else {
+		for slug := range rows {
+			skips[slug] = true
+		}
 	}
 	folderNames := map[string]string{}
 	if folders, err := s.wikiRepo.ListAllFolders(ctx, kbID); err == nil {
@@ -390,15 +437,96 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 			}
 		}
 	} else {
-		logger.Warnf(ctx, "learning: recommend folder read failed (kb %s): %v", kbID, err)
+		logger.Warnf(ctx, "learning: folder read failed (kb %s): %v", kbID, err)
 	}
-	now := time.Now()
+	// 首访让位 signal: per slug the newest real USER visit (deliberate
+	// ≥5s read, deep read, Q&A touch, re-ask) from the same lookback scan
+	// the struggle signal uses. Passive projections (topic signals,
+	// backfills) are excluded — only behaviour that required the user to
+	// face the node releases a pressure pin; quick flips record nothing.
+	lastVisit := map[string]time.Time{}
+	for _, ev := range history {
+		switch ev.Type {
+		case types.LearningEventWikiToolRead, types.LearningEventWikiDeepRead,
+			types.LearningEventAnswerCite, types.LearningEventCrossRef,
+			types.LearningEventReAsk,
+			types.LearningEventQuizCorrect, types.LearningEventQuizWrong,
+			types.LearningEventQuizUnsure:
+		default:
+			continue
+		}
+		if ev.OccurredAt.After(now) {
+			continue
+		}
+		if cur, ok := lastVisit[ev.Slug]; !ok || ev.OccurredAt.After(cur) {
+			lastVisit[ev.Slug] = ev.OccurredAt
+		}
+	}
+	asm := &recommendAssembly{
+		scope: scope, pages: pages, edges: edges,
+		materials: materials, quizCount: quizCount, folderName: folderNames, now: now,
+		in: recommendInput{
+			Pages: pages, Edges: edges, States: states, Affinity: affinity, HasQuiz: hasQuiz,
+			QuizStruggled: quizStruggled, DirectFacts: direct, SelfAssess: selfAssess,
+			DocOrder: docRankMap(materials), Skips: skips,
+			Recent: recent, Material: materials, LastVisit: lastVisit,
+		},
+	}
+	return asm, nil
+}
+
+// Recommend produces the "look" cards for the caller.
+func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Recommendation, error) {
+	asm, err := s.assembleRecommend(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	recs := recommendNodes(asm.in, asm.now, rand.New(rand.NewSource(asm.now.UnixNano())), limit)
+	decorateRecommendations(asm, recs)
+	return recs, nil
+}
+
+// decorateRecommendations fills the display extras in place — folder,
+// quiz count, current tier, material context and the translated narrative —
+// so the pure recommender stays a pure policy and every read path (linear
+// list, zone cards) shows identical fields per card.
+func decorateRecommendations(asm *recommendAssembly, recs []Recommendation) {
+	now := asm.now
+	titleBySlug := map[string]string{}
+	folderBySlug := map[string]string{}
+	for _, p := range asm.pages {
+		if p != nil {
+			titleBySlug[p.Slug] = p.Title
+			folderBySlug[p.Slug] = p.FolderID
+		}
+	}
 	for i := range recs {
 		slug := recs[i].Slug
-		recs[i].FolderName = folderNames[folderBySlug[slug]]
-		recs[i].QuizCount = quizCount[slug]
-		if state, ok := states[slug]; ok {
-			lv := gatedAnchoredLevel(state, direct[slug], now)
+		if r, ok := asm.in.DocOrder[slug]; ok {
+			recs[i].DocRank = r + 1 // 1-based material position; 0 stays hidden
+		}
+		if m, ok := asm.materials[slug]; ok {
+			recs[i].Section = m.Section
+			recs[i].DocTitle = m.DocTitle
+		}
+		buildWhy(&recs[i], asm.materials[slug])
+		if recs[i].WhyRef != "" {
+			// Slug-referencing narratives must never ship the raw slug
+			// (deleted page, empty title): drop the line instead. Label
+			// references (chapter_of / in_doc) pass through untouched.
+			switch recs[i].Why {
+			case "continues_prereq", "same_section", "continues_prev":
+				if t := titleBySlug[recs[i].WhyRef]; t != "" {
+					recs[i].WhyRef = t
+				} else {
+					recs[i].Why, recs[i].WhyRef = "", ""
+				}
+			}
+		}
+		recs[i].FolderName = asm.folderName[folderBySlug[slug]]
+		recs[i].QuizCount = asm.quizCount[slug]
+		if state, ok := asm.in.States[slug]; ok {
+			lv := gatedAnchoredLevel(state, asm.in.DirectFacts[slug], now)
 			recs[i].Level = string(lv.Level)
 			// Explainability: the numbers behind the tier, plus the faded
 			// distinction (unseen tier WITH history) so the client can say
@@ -409,7 +537,7 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 			recs[i].NegativeCount = state.NegativeCount
 			recs[i].Faded = lv.Level == LevelUnseen && state.EvidenceCount > 0
 			recs[i].TierProgress = TierProgress(lv.Level, recs[i].PEff)
-			recs[i].NextTierHint = NextTierHint(lv.Level, direct[slug], now)
+			recs[i].NextTierHint = NextTierHint(lv.Level, asm.in.DirectFacts[slug], now)
 		} else {
 			// Bug fix: explore/bypass/blind-spot picks are state-less by
 			// definition — the level must be the explicit "unseen" enum,
@@ -419,7 +547,6 @@ func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Reco
 			recs[i].NextTierHint = HintFirstTouch
 		}
 	}
-	return recs, nil
 }
 
 // TakeQuiz serves the active questions of one node, preferring ones the
@@ -530,6 +657,12 @@ func (s *Service) resolveSourceDocs(
 // SubmitAnswer grades deterministically, records the attempt and folds the
 // event — unless the subject opted out of collection, in which case the
 // verdict and explanation are still served but nothing is stored.
+//
+// The whole answer cycle runs under the per-node fold mutex: the
+// prior-attempt count, the "before" read, the attempt/event writes and the
+// fold are one read-modify-write, and a concurrent double-submit of the same
+// item would otherwise both read prior=0 and both earn the full weight —
+// exactly the anti-farm decay exists to prevent.
 func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error) {
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
@@ -540,22 +673,32 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	if item == nil {
 		return nil, ErrQuizNotFound
 	}
+	mu := s.lockNode(scope, item.Slug)
+	defer mu.Unlock()
+	return s.submitAnswerNode(ctx, scope, item, chosenKey)
+}
 
-	// Repeat-attempt decay counts only attempts on this item inside the
-	// re-ask window: rapid re-answers still converge to nothing (the
-	// anti-farm guarantee), but practice spaced across days earns the full
-	// weight again — the spacing effect, so a learner who returns tomorrow
-	// is never trapped in near-zero-weight drills.
+func (s *Service) submitAnswerNode(
+	ctx context.Context, scope interfaces.LearningScope, item *types.LearningQuizItem, chosenKey string,
+) (*AnswerResult, error) {
+	itemID := item.ID
+
+	// Any attempt reveals feedback, so the same item's retries inside the
+	// 48-hour window earn no independent evidence. Spaced practice remains
+	// eligible. Use one timestamp for eligibility, event and answer.
+	now := time.Now()
 	var priorAttempts []types.LearningQuizAttempt
 	prior := 0
 	if attempts, err := s.repo.ListAttempts(ctx, scope, item.Slug); err == nil {
 		priorAttempts = attempts
-		windowStart := time.Now().Add(-ReAskWindowHours * time.Hour)
+		windowStart := now.Add(-ReAskWindowHours * time.Hour)
 		for _, a := range attempts {
 			if a.QuizItemID == itemID && a.AnsweredAt.After(windowStart) {
 				prior++
 			}
 		}
+	} else {
+		return nil, err // never award fresh evidence when repeat history is unavailable
 	}
 	grade, err := GradeQuiz(item.CorrectKey, chosenKey, prior)
 	if err != nil {
@@ -567,11 +710,10 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 		Unsure: grade.EventType == types.LearningEventQuizUnsure,
 	}
 
-	if s.prefs.collectionDisabled(ctx, s.repo, scope.TenantID, scope.SubjectID) {
+	if s.prefs.collectionDisabled(ctx, s.repo, scope.SubjectID) {
 		return result, nil // opted out: verdict served, nothing stored
 	}
 
-	now := time.Now()
 	// The fast-feedback bracket: p_eff immediately before this answer.
 	facts := CollectDirectFacts(priorAttempts)[item.Slug]
 	var before *float64
@@ -580,11 +722,12 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 			before = &p
 		}
 	}
-	if err := s.repo.InsertAttempt(ctx, &types.LearningQuizAttempt{
+	attempt := types.LearningQuizAttempt{
 		TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
 		QuizItemID: itemID, Slug: item.Slug,
 		ChosenKey: chosenKey, IsCorrect: grade.Correct, AnsweredAt: now,
-	}); err != nil {
+	}
+	if err := s.repo.InsertAttempt(ctx, &attempt); err != nil {
 		return nil, err
 	}
 	if err := s.repo.AppendEvent(ctx, &types.LearningEvent{
@@ -594,25 +737,10 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 		return nil, err
 	}
 	if grade.Weight != 0 {
-		// A correct answer adds one distinct-item fact for the gate; an
-		// unsure declaration folds nothing and grants nothing.
-		// Bug fix: only append when this item isn't already in the facts —
-		// CollectDirectFacts deduplicates by first-correct per item, but a
-		// re-correct on the same item was appending a duplicate, letting
-		// the gate see "2 facts" from one memorized answer.
-		if grade.Correct {
-			duplicate := false
-			for _, f := range facts {
-				if f.ItemID == itemID {
-					duplicate = true
-					break
-				}
-			}
-			if !duplicate {
-				facts = append(facts, DirectQuizFact{ItemID: itemID, FirstCorrectAt: now})
-			}
-		}
-		s.foldOne(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now})
+		// Use the same reduction as a fresh profile read, including the last
+		// correct timestamp of repeated items used for delayed verification.
+		facts = CollectDirectFacts(append(priorAttempts, attempt))[item.Slug]
+		s.foldOneLocked(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now})
 	}
 	// The deterministic review schedule: how many days the folded state
 	// keeps its tier before decay pulls it below the demotion gate, plus
@@ -654,7 +782,7 @@ func (s *Service) findQuizItem(ctx context.Context, scope interfaces.LearningSco
 	if err != nil || item == nil {
 		return nil
 	}
-	if item.KnowledgeBaseID != scope.KnowledgeBaseID {
+	if item.KnowledgeBaseID != scope.KnowledgeBaseID || item.Status != types.LearningQuizStatusActive {
 		return nil
 	}
 	return item
@@ -705,11 +833,12 @@ func (s *Service) Timeline(ctx context.Context, kbID string, page, pageSize int)
 }
 
 // ExportProfile assembles the caller's full personal learning data.
+// ExportProfile assembles the caller's full personal learning data. Every
+// read is subject-scoped, not tenant-scoped: learning rows collected
+// through a shared KB land under the KB owner's effective tenant, and the
+// data-sovereignty export must cover them — "everything you did, wherever
+// it was filed".
 func (s *Service) ExportProfile(ctx context.Context) (*ExportPayload, error) {
-	tenantID, ok := types.TenantIDFromContext(ctx)
-	if !ok || tenantID == 0 {
-		return nil, ErrNoLearningScope
-	}
 	principal, ok := types.PrincipalFromContext(ctx)
 	if !ok {
 		return nil, ErrNoLearningScope
@@ -721,16 +850,19 @@ func (s *Service) ExportProfile(ctx context.Context) (*ExportPayload, error) {
 
 	payload := &ExportPayload{ExportedAt: time.Now()}
 	var err error
-	if payload.Events, err = s.repo.ListEventsBySubject(ctx, tenantID, subject); err != nil {
+	if payload.Events, err = s.repo.ListEventsBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
-	if payload.Mastery, err = s.repo.ListMasteryBySubject(ctx, tenantID, subject); err != nil {
+	if payload.Mastery, err = s.repo.ListMasteryBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
-	if payload.TopicMaps, err = s.repo.ListMapsBySubject(ctx, tenantID, subject); err != nil {
+	if payload.TopicMaps, err = s.repo.ListAllMapsBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
-	if payload.Attempts, err = s.repo.ListAttemptsBySubject(ctx, tenantID, subject); err != nil {
+	if payload.Attempts, err = s.repo.ListAttemptsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.Skips, err = s.repo.ListSkipsBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
 	payload.KBSummary = s.exportKBSummary(ctx, payload)
@@ -773,6 +905,9 @@ func (s *Service) exportKBSummary(ctx context.Context, payload *ExportPayload) [
 	for _, a := range payload.Attempts {
 		get(a.KnowledgeBaseID).Attempts++
 	}
+	for _, s := range payload.Skips {
+		get(s.KnowledgeBaseID).Skips++
+	}
 	out := make([]ExportKBSummary, 0, len(byKB))
 	for _, u := range byKB {
 		out = append(out, *u)
@@ -802,9 +937,12 @@ func (s *Service) DeleteProfile(ctx context.Context, optOut bool) error {
 	if subject == "" {
 		return ErrNoLearningScope
 	}
-	if err := s.repo.DeleteLearningDataBySubject(ctx, tenantID, subject); err != nil {
+	// Subject-scoped: shared-KB rows filed under the KB owner's tenant go
+	// with everything else — a tenant predicate would leave them behind.
+	if err := s.repo.DeleteLearningDataBySubject(ctx, subject); err != nil {
 		return err
 	}
+	s.evictFoldMu(subject)
 	if optOut {
 		if err := s.repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
 			TenantID: tenantID, SubjectID: subject, CollectDisabled: true,
@@ -813,22 +951,18 @@ func (s *Service) DeleteProfile(ctx context.Context, optOut bool) error {
 		}
 		// The opt-out must hold on the very next request — never wait out
 		// the prefs cache TTL after telling the user their data is gone.
-		s.prefs.invalidate(tenantID, subject)
+		s.prefs.invalidate(subject)
 	}
 	return nil
 }
 
 // GetSettings reads the collection opt-out.
 func (s *Service) GetSettings(ctx context.Context) (*LearningSettings, error) {
-	tenantID, ok := types.TenantIDFromContext(ctx)
-	if !ok || tenantID == 0 {
-		return nil, ErrNoLearningScope
-	}
 	principal, ok := types.PrincipalFromContext(ctx)
 	if !ok {
 		return nil, ErrNoLearningScope
 	}
-	prefs, err := s.repo.GetSubjectPrefs(ctx, tenantID, principal.StorageID())
+	prefs, err := s.repo.GetSubjectPrefs(ctx, principal.StorageID())
 	if err != nil {
 		return nil, err
 	}
@@ -852,7 +986,7 @@ func (s *Service) UpdateSettings(ctx context.Context, disabled bool) error {
 	}); err != nil {
 		return err
 	}
-	s.prefs.invalidate(tenantID, principal.StorageID())
+	s.prefs.invalidate(principal.StorageID())
 	return nil
 }
 
@@ -880,18 +1014,11 @@ func (s *Service) MasteryOverlay(ctx context.Context, kbID string, slugs []strin
 	return out, nil
 }
 
-// nodePages lists the KB's entity/concept pages once, shared by every read
-// path that needs the node universe.
+// nodePages lists the KB's entity/concept pages, shared by every read path
+// that needs the node universe. Served from the 5-minute page cache the
+// evidence index already uses — previously every read request re-read the
+// full page table while the write path enjoyed the cache. Slug-sorted;
+// callers treat the pages as read-only (shared pointers).
 func (s *Service) nodePages(ctx context.Context, kbID string) ([]*types.WikiPage, error) {
-	pages, err := s.wikiRepo.ListAll(ctx, kbID)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*types.WikiPage, 0, len(pages))
-	for _, p := range pages {
-		if p != nil && p.Slug != "" && (p.PageType == "entity" || p.PageType == "concept") {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return s.pages.nodes(ctx, s.wikiRepo, kbID)
 }

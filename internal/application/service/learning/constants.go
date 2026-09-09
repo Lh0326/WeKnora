@@ -27,14 +27,18 @@ var (
 	WeightQuizCorrect = 2.2
 	// WeightQuizWrong: the only direct negative mastery evidence.
 	WeightQuizWrong = -1.5
-	// QuizRepeatDecay: the n-th rapid attempt on the same item earns
-	// Decay^(n-1) of the base weight, so re-answering within the re-ask
-	// window cannot farm score. The exponent is capped by
-	// QuizRepeatDecayCap: practice must always move the needle (weight
-	// never below Decay^Cap of base), and the logit clamp bounds the
-	// absolute total anyway.
+	// Legacy tuning names retained for compatibility with old bench input.
+	// GradeQuiz now awards zero evidence to feedback-exposed rapid retries;
+	// these values no longer control online grading or calibration.
 	QuizRepeatDecay    = 0.5
 	QuizRepeatDecayCap = 2
+	// WeightWikiDeepRead: the "deep" tier of the wiki read signal — the
+	// reader stayed past the frontend deep-dwell threshold (60s). Sits on
+	// top of the normal read weight (0.5) so a studied page distinguishes
+	// itself (sigmoid(0.8)≈69%) from a glance (62%). Tier constants are a
+	// finite enum frozen on the event row — replay-safe and bench-sweepable.
+	WeightWikiDeepRead = 0.3
+
 	// BackfillDiscount: replayed doc-affinity history is document-grained
 	// and therefore coarser than live chunk-grained citations.
 	BackfillDiscount = 0.5

@@ -18,8 +18,9 @@ const touchLookback = 7 * 24 * time.Hour
 // kbCitations is one answer's evidence, grouped per knowledge base:
 // the chunk ids and document ids the answer actually cited.
 type kbCitations struct {
-	chunkIDs map[string]bool
-	docIDs   map[string]bool
+	chunkIDs    map[string]bool
+	docIDs      map[string]bool
+	preciseDocs map[string]bool // a cited chunk identifies this document; no coarse fallback
 }
 
 // citationsByKB groups an answer's references by knowledge base and drops
@@ -35,11 +36,14 @@ func citationsByKB(refs types.References) map[string]kbCitations {
 		}
 		c, ok := byKB[ref.KnowledgeBaseID]
 		if !ok {
-			c = kbCitations{chunkIDs: map[string]bool{}, docIDs: map[string]bool{}}
+			c = kbCitations{chunkIDs: map[string]bool{}, docIDs: map[string]bool{}, preciseDocs: map[string]bool{}}
 			byKB[ref.KnowledgeBaseID] = c
 		}
 		if ref.ID != "" {
 			c.chunkIDs[ref.ID] = true
+			if ref.KnowledgeID != "" {
+				c.preciseDocs[ref.KnowledgeID] = true
+			}
 		}
 		if ref.KnowledgeID != "" {
 			c.docIDs[ref.KnowledgeID] = true
@@ -131,7 +135,7 @@ func (idx *pageRefIndex) touchedSlugs(c kbCitations) []string {
 		}
 		if !hit {
 			for docID := range c.docIDs {
-				if pr.docIDs[docID] {
+				if pr.docIDs[docID] && !c.preciseDocs[docID] {
 					hit = true
 					break
 				}

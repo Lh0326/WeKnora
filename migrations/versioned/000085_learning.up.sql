@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS learning_events (
     -- Wiki page slug with type prefix, e.g. "concept/rag".
     slug VARCHAR(512) NOT NULL,
     -- answer_cite | re_ask | cross_ref | topic_signal | quiz_correct |
-    -- quiz_wrong | backfill_cite | wiki_tool_read
+    -- quiz_wrong | quiz_unsure | wiki_tool_read | backfill_cite |
+    -- self_assess_up | self_assess_down_all | self_assess_down_doc_gap |
+    -- self_assess_down_doc_updated | self_assess_down_quiz_easy
     event_type VARCHAR(32) NOT NULL,
     -- Frozen at append time so replaying history reproduces the state that
     -- was visible at the time, even after constants are retuned.

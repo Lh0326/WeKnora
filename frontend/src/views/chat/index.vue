@@ -157,6 +157,7 @@ import {
     getMessageSuggestions,
     recordMessageSuggestionEvent,
 } from '@/api/message-suggestion';
+import { buildQueryWithHostContext } from '@/utils/embedContext';
 import { provideChatReferencesDrawer } from '@/composables/useChatReferencesDrawer';
 import { provideChatAttachmentPreviewDrawer } from '@/composables/useChatAttachmentPreviewDrawer';
 
@@ -169,6 +170,12 @@ const props = defineProps({
     agentId: { type: String, default: '' },
     kbIds: { type: Array, default: () => [] },
     embeddedMode: { type: Boolean, default: false },
+    // Host-page context for embedded chats (wiki reader assistant): each
+    // outgoing query is prefixed with a [Host context] block describing the
+    // page the user is browsing, so retrieval and the answer center on it.
+    // Display-side user messages keep the raw query; only the wire query is
+    // wrapped (same contract as the public embed channel).
+    hostContext: { type: Object, default: null },
 });
 
 const usemenuStore = useMenuStore();
@@ -177,7 +184,11 @@ const useSettingsStoreInstance = useSettingsStore();
 // Whether the active chat session is using the Agent pipeline (not quick-answer).
 const isAgentStreamSession = () => {
     if (props.embeddedMode) {
-        return !!(props.agentId && props.agentId !== 'builtin-quick-answer');
+        if (!props.agentId) return false;
+        // Quick-answer-mode builtin agents ride the knowledge-chat (RAG)
+        // pipeline even though they are not the default quick-answer agent.
+        const embeddedRagAgents = ['builtin-quick-answer', 'builtin-wiki-page-assistant'];
+        return !embeddedRagAgents.includes(props.agentId);
     }
     return useSettingsStoreInstance.isAgentStreamMode;
 };
@@ -833,7 +844,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
         images: imageAttachments.length > 0 ? imageAttachments : undefined,
         attachment_uploads: attachmentUploads.length > 0 ? attachmentUploads : undefined,
         attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
-        query: value,
+        query: buildQueryWithHostContext(value, props.hostContext),
         suggestion_attribution: suggestionAttribution || undefined,
         method: 'POST',
         url: endpoint,

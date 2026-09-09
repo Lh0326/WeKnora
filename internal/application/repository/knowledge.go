@@ -339,7 +339,7 @@ func (r *knowledgeRepository) GetKnowledgeBatch(
 	ctx context.Context, tenantID uint64, ids []string,
 ) ([]*types.Knowledge, error) {
 	var knowledge []*types.Knowledge
-	if err := r.db.WithContext(ctx).Debug().
+	if err := r.db.WithContext(ctx).
 		Where("tenant_id = ? AND id IN ?", tenantID, ids).
 		Find(&knowledge).Error; err != nil {
 		return nil, err

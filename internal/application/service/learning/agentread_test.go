@@ -124,8 +124,27 @@ func TestAgentReadHookRefreshShield(t *testing.T) {
 	}
 
 	waitForEvents(t, repo, 1)
-	time.Sleep(150 * time.Millisecond)
-	if n := len(repo.snapshotEvents()); n != 1 {
-		t.Fatalf("rapid re-reads must collapse to one event, got %d", n)
+	// Wait for QUIESCENCE, not a fixed window: under -race the three
+	// fire-and-forget recorders can be scheduled far apart, and a fixed
+	// sleep after the FIRST event is exactly what made this test flaky
+	// (a straggler goroutine landing after the window read as a shield
+	// failure). Quiescence = the count stops changing for a sustained
+	// interval; a real shield break always surfaces inside the deadline.
+	last, stable := -1, 0
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		n := len(repo.snapshotEvents())
+		if n == last {
+			stable++
+		} else {
+			last, stable = n, 0
+		}
+		if stable >= 20 { // ~400ms with no new event
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if last != 1 {
+		t.Fatalf("rapid re-reads must collapse to one event, got %d", last)
 	}
 }

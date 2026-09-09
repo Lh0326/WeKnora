@@ -36,7 +36,17 @@ func (s *Service) PassiveChanges(ctx context.Context, kbID string, limit int) (*
 			states[rows[i].Slug] = StateFromModel(&rows[i])
 		}
 	}
-	return derivePassiveChanges(pages, states, s.directFacts(ctx, scope), time.Now(), limit), nil
+	// Standing skips leave the forgetting digest too — the user retired the
+	// node from every "what to do next" surface, this queue included.
+	skips := map[string]bool{}
+	if rows, err := s.repo.ListSkips(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: passive-changes skip read failed (kb %s): %v", kbID, err)
+	} else {
+		for slug := range rows {
+			skips[slug] = true
+		}
+	}
+	return derivePassiveChanges(pages, states, s.directFacts(ctx, scope), skips, time.Now(), limit), nil
 }
 
 // derivePassiveChanges is the pure, table-testable core: which earned
@@ -44,10 +54,11 @@ func (s *Service) PassiveChanges(ctx context.Context, kbID string, limit int) (*
 // PassiveDueSoonDays, and the most urgent items first. Nodes with nothing
 // earned (anchor unseen) are skipped — nothing to forget. The anchor is
 // direct-gate capped: a tier the gate would not grant can never read as
-// "demoted from" it.
+// "demoted from" it. Skipped nodes (nil map = none) are excluded — the
+// user's standing declaration retires the node from this queue as well.
 func derivePassiveChanges(
 	pages []*types.WikiPage, states map[string]FoldState,
-	direct map[string][]DirectQuizFact, now time.Time, limit int,
+	direct map[string][]DirectQuizFact, skips map[string]bool, now time.Time, limit int,
 ) *interfaces.PassiveChangesSummary {
 	titleBySlug := map[string]string{}
 	for _, p := range pages {
@@ -67,6 +78,9 @@ func derivePassiveChanges(
 	for slug, st := range states {
 		if st.EvidenceCount == 0 || st.LastEvidenceAt.IsZero() {
 			continue
+		}
+		if skips[slug] {
+			continue // user-retired from every next-step surface
 		}
 		anchor, view := gatedAnchorAndView(st, direct[slug], now)
 		ar, vr := levelRank(anchor), levelRank(view)

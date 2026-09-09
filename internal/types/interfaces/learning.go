@@ -53,15 +53,30 @@ type LearningRepository interface {
 	// event type (carries the down reason) and its time. Read-side only —
 	// the tier display never consumes it; hover cards and the timeline do.
 	ListSelfAssess(ctx context.Context, scope LearningScope) (map[string]SelfAssessMark, error)
-	// GetSubjectPrefs returns the collection opt-out, or (nil, nil) when
-	// the subject never set one.
-	GetSubjectPrefs(ctx context.Context, tenantID uint64, subjectID string) (*types.LearningSubjectPrefs, error)
+	// ListActiveDays returns the distinct YYYY-MM-DD days (server calendar)
+	// on which the subject stored any event since the given time — the
+	// streak input, so a heavy history cannot truncate it through the
+	// paged event read.
+	ListActiveDays(ctx context.Context, scope LearningScope, since time.Time) ([]string, error)
+	// GetSubjectPrefs returns the subject's collection opt-out, or (nil,
+	// nil) when the subject never set one. Subject-scoped (not
+	// tenant-scoped): shared-KB requests run under the KB owner's
+	// effective tenant, and the opt-out is a property of the person, not
+	// of the workspace — a disabled row in any tenant wins.
+	GetSubjectPrefs(ctx context.Context, subjectID string) (*types.LearningSubjectPrefs, error)
 	// UpsertSubjectPrefs sets the collection opt-out.
 	UpsertSubjectPrefs(ctx context.Context, prefs *types.LearningSubjectPrefs) error
 	// UpsertEdge inserts or updates one KB-shared prerequisite edge.
 	UpsertEdge(ctx context.Context, edge *types.LearningEdge) error
+	// DeleteEdge removes one stored edge — the reconciler's repair path for
+	// edges whose endpoints no longer resolve to any live page.
+	DeleteEdge(ctx context.Context, tenantID uint64, knowledgeBaseID, fromSlug, toSlug string) error
 	// ListEdges returns all prerequisite edges of one KB.
 	ListEdges(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningEdge, error)
+	// ListAllEdges returns every stored edge across KBs — edges are
+	// KB-shared, so the reconciler's repair walk must discover KBs that no
+	// subject's rows point at anymore (everyone's data deleted, edges left).
+	ListAllEdges(ctx context.Context) ([]types.LearningEdge, error)
 	// UpsertQuizItem inserts or updates one KB-shared quiz item by id.
 	UpsertQuizItem(ctx context.Context, item *types.LearningQuizItem) error
 	// ListQuizItems returns the items of one node, active first filter left
@@ -69,7 +84,7 @@ type LearningRepository interface {
 	ListQuizItems(ctx context.Context, tenantID uint64, knowledgeBaseID, slug string) ([]types.LearningQuizItem, error)
 	// InsertAttempt stores one personal answer record.
 	InsertAttempt(ctx context.Context, attempt *types.LearningQuizAttempt) error
-	// ListAttempts returns the subject's answer history for one node,
+	// ListAttempts returns the subject's answer history for one node (empty slug selects the scoped KB),
 	// oldest first — the input for repeat-attempt decay.
 	ListAttempts(ctx context.Context, scope LearningScope, slug string) ([]types.LearningQuizAttempt, error)
 	// ListCorrectAttempts returns the subject's correct answers in one KB,
@@ -85,10 +100,15 @@ type LearningRepository interface {
 	// daily reconcile pass is its only caller; the table is bounded by
 	// (people × nodes), which keeps a full scan honest at that cadence.
 	ListAllMastery(ctx context.Context) ([]types.MasteryState, error)
-	// ListBackfilledSlugs returns the node slugs that already carry a
-	// backfill event for this scope — the idempotency set that makes the
-	// backfill task safe to re-run.
-	ListBackfilledSlugs(ctx context.Context, scope LearningScope) ([]string, error)
+	// BackfillDone reports whether the scope already carries its
+	// bootstrap mark — the idempotency that makes the backfill task safe to
+	// re-run AND safe across profile deletion (the mark lives outside the
+	// deletable event history, so a deleted profile cannot resurrect).
+	BackfillDone(ctx context.Context, scope LearningScope) (bool, error)
+	// MarkBackfillDone records the scope's bootstrap mark. Callers write it
+	// BEFORE appending backfill events: a mark without events can only
+	// under-light, an event without a mark would duplicate folded weights.
+	MarkBackfillDone(ctx context.Context, scope LearningScope) error
 	// ListDocAffinity reads the memory subsystem's doc-affinity rows as the
 	// backfill source. Reading the table here (rather than widening the
 	// memory repository) keeps the learning layer self-contained and leaves
@@ -114,14 +134,20 @@ type LearningRepository interface {
 	// events plus the total count (timeline).
 	ListRecentEvents(ctx context.Context, scope LearningScope, limit, offset int) ([]types.LearningEvent, int64, error)
 	// ListEventsBySubject / ListMasteryBySubject / ListAttemptsBySubject
-	// are the export payload members, cross-KB by design.
-	ListEventsBySubject(ctx context.Context, tenantID uint64, subjectID string) ([]types.LearningEvent, error)
-	ListMasteryBySubject(ctx context.Context, tenantID uint64, subjectID string) ([]types.MasteryState, error)
-	ListAttemptsBySubject(ctx context.Context, tenantID uint64, subjectID string) ([]types.LearningQuizAttempt, error)
+	// are the export payload members, subject-scoped by design: shared-KB
+	// learning rows land under the KB owner's effective tenant, and the
+	// export must cover every row that belongs to the person.
+	ListEventsBySubject(ctx context.Context, subjectID string) ([]types.LearningEvent, error)
+	ListMasteryBySubject(ctx context.Context, subjectID string) ([]types.MasteryState, error)
+	ListAttemptsBySubject(ctx context.Context, subjectID string) ([]types.LearningQuizAttempt, error)
+	// ListAllMapsBySubject is the export-side, subject-scoped variant of
+	// ListMapsBySubject (which stays per-tenant for the maintenance pass).
+	ListAllMapsBySubject(ctx context.Context, subjectID string) ([]types.MemoryWikiMap, error)
 	// DeleteLearningDataBySubject removes the subject's events, states,
-	// mappings and attempts in one sweep. The KB-shared quiz bank is not
+	// mappings and attempts in one sweep, across every workspace their
+	// shared KBs may have filed rows under. The KB-shared quiz bank is not
 	// personal data and is never touched.
-	DeleteLearningDataBySubject(ctx context.Context, tenantID uint64, subjectID string) error
+	DeleteLearningDataBySubject(ctx context.Context, subjectID string) error
 	// DeleteLearningDataByKB removes EVERY subject's learning data inside
 	// one knowledge base — the orphan sweep for KBs that no longer exist.
 	DeleteLearningDataByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) error
@@ -137,6 +163,21 @@ type LearningRepository interface {
 	// since the given time, newest first — the health view's content-work
 	// queue. Tenant- and KB-scoped like every query here.
 	ListMaintenanceMarks(ctx context.Context, tenantID uint64, kbID string, since time.Time) ([]types.LearningEvent, error)
+	// AddSkip records one standing "已掌握，不再推荐" declaration for the
+	// scope (idempotent on conflict; createdAt preserved for alias moves).
+	AddSkip(ctx context.Context, scope LearningScope, slug string, createdAt time.Time) error
+	// RemoveSkip revokes one skip declaration (absent rows are a no-op).
+	RemoveSkip(ctx context.Context, scope LearningScope, slug string) error
+	// ListSkips returns the scope's skip declarations, slug → declared at.
+	ListSkips(ctx context.Context, scope LearningScope) (map[string]time.Time, error)
+	// ListSkipsBySubject is the export-side, subject-scoped variant: the
+	// profile export must cover skips filed under every workspace the
+	// person's shared KBs belong to.
+	ListSkipsBySubject(ctx context.Context, subjectID string) ([]types.LearningSkip, error)
+	// ListAllSkips returns every skip row across subjects and KBs — the
+	// reconcile pass's skip-alias repair walks it exactly like ListAllMastery;
+	// a subject with skips but no folded mastery must still be visited.
+	ListAllSkips(ctx context.Context) ([]types.LearningSkip, error)
 }
 
 // LearningService is the write-path entry the QA handler calls after each
@@ -151,12 +192,20 @@ type LearningService interface {
 	// RecordWikiRead folds one deliberate wiki page open into the caller's
 	// mastery (the §3.3.6 low-trust read signal). Deduped per slug per
 	// re-ask window; rejects non-node slugs with ErrWikiReadTarget.
-	RecordWikiRead(ctx context.Context, kbID, slug string) error
+	// tier: "" / "normal" = the standard glance signal; "deep" = the reader
+	// stayed past the deep-dwell threshold — its own event type, capped at
+	// one per node per re-ask window.
+	RecordWikiRead(ctx context.Context, kbID, slug, tier string) error
 	// RecordSelfAssess lands the skills-matrix self-assessment: "up" lifts
 	// the frozen logit into the mastered band (the tier gate still demands
 	// quiz proof), "down" demotes with a reason taxonomy (all / doc_gap /
 	// doc_updated / quiz_easy) whose labels feed content maintenance.
 	RecordSelfAssess(ctx context.Context, kbID, slug string, up bool, reason string) error
+	// RecordSkip lands the user's standing queue-suppression declaration
+	// ("已掌握，不再推荐") or revokes it. Unlike self-assessment it folds
+	// nothing and expires never — the recommender simply stops offering the
+	// node until the user takes the skip back.
+	RecordSkip(ctx context.Context, kbID, slug string, skipped bool) error
 	// RunBackfill replays doc-affinity history into learning events; safe
 	// to call repeatedly (per-scope idempotent).
 	RunBackfill(ctx context.Context) error
@@ -173,6 +222,12 @@ type LearningService interface {
 	ListMasteryView(ctx context.Context, kbID string) ([]MasteryView, error)
 	// Recommend produces the "look next" cards.
 	Recommend(ctx context.Context, kbID string, limit int) ([]Recommendation, error)
+	// ZoneMap produces the module-partitioned view: every wiki folder is a
+	// knowledge zone with its own next step ("1") and follow-up ("2")
+	// derived from the same multi-channel ranking, plus the full node set
+	// (with zone/material context) and the prerequisite edges the
+	// constellation renders as relation lines.
+	ZoneMap(ctx context.Context, kbID string) (*ZoneMapResponse, error)
 	// TakeQuiz serves a node's active questions without answer material.
 	TakeQuiz(ctx context.Context, kbID, slug string) ([]QuizQuestion, error)
 	// SubmitAnswer grades deterministically and folds the result (opted-out
@@ -201,6 +256,62 @@ type LearningService interface {
 	// deterministic (no LLM); no subject identifier ever leaves the
 	// aggregate — people are counted, never named.
 	KnowledgeHealth(ctx context.Context, kbID string) (*KnowledgeHealth, error)
+}
+
+// ZoneMapResponse is the module-partitioned recommendation surface: the
+// constellation's nodes-and-edges payload plus one "next step" card per
+// knowledge zone (wiki folder). Zones are ordered best-next-first so the
+// sidebar reads as a set of parallel entry points, one per module.
+type ZoneMapResponse struct {
+	Zones []ZoneSummary `json:"zones"`
+	Nodes []ZoneNode    `json:"nodes"`
+	Edges []ZoneEdge    `json:"edges"`
+}
+
+// ZoneSummary is one module knowledge zone and its next steps. Next/Second
+// come from the SAME global ranking as the linear recommendation — the
+// zone view partitions that ranking per folder instead of mixing modules.
+type ZoneSummary struct {
+	FolderID   string `json:"folder_id"`
+	FolderName string `json:"folder_name"`
+	Total      int    `json:"total"`
+	Lit        int    `json:"lit"`
+	// Next is the zone's current "1" (nil when the zone is complete —
+	// everything mastered or user-retired). Second is its "2", if any.
+	Next   *Recommendation `json:"next,omitempty"`
+	Second *Recommendation `json:"second,omitempty"`
+}
+
+// ZoneNode is one node of the constellation payload: the mastery-view
+// fields plus the zone/material context the 3D layout and hover states
+// consume (folder, chapter label, material position).
+type ZoneNode struct {
+	Slug           string    `json:"slug"`
+	Title          string    `json:"title"`
+	Level          string    `json:"level"`
+	PEff           float64   `json:"p_eff"`
+	EvidenceCount  int       `json:"evidence_count"`
+	LowConfidence  bool      `json:"low_confidence"`
+	LastActivityAt time.Time `json:"last_activity_at"`
+	Recent         bool      `json:"recent,omitempty"`
+	Skipped        bool      `json:"skipped,omitempty"`
+	Faded          bool      `json:"faded,omitempty"`
+	FolderID       string    `json:"folder_id"`
+	FolderName     string    `json:"folder_name,omitempty"`
+	Section        string    `json:"section,omitempty"`
+	DocTitle       string    `json:"doc_title,omitempty"`
+	DocRank        int       `json:"doc_rank,omitempty"`
+}
+
+// ZoneEdge is one prerequisite relation for the constellation's relation
+// lines. Cross-zone links (from/to in different folders) render dashed —
+// the inter-module dependency the zones cannot hide.
+type ZoneEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	// Kind: "prereq" (LLM-adjudicated prerequisite, solid line) or
+	// "wikilink" (wiki OutLink between node pages, lighter curve).
+	Kind string `json:"kind,omitempty"`
 }
 
 // KnowledgeHealth is the owner/admin org view of one KB's learning state:
@@ -324,6 +435,12 @@ type MasteryView struct {
 	// nil when the person never challenged this node. Display-only: it never
 	// feeds the tier math (the fold already consumed the set-point weight).
 	SelfAssess *SelfAssessMark `json:"self_assess,omitempty"`
+	// Skipped marks a standing user declaration ("已掌握，不再推荐"): the
+	// recommender excludes the node and the client badges it; SkippedAt is
+	// when the declaration was made (nil when not skipped — a bare
+	// time.Time would serialize the zero value on every row).
+	Skipped   bool       `json:"skipped,omitempty"`
+	SkippedAt *time.Time `json:"skipped_at,omitempty"`
 }
 
 // SelfAssessMark is one self-assessment as the read side surfaces it.
@@ -452,6 +569,9 @@ type ExportPayload struct {
 	Mastery   []types.MasteryState        `json:"mastery"`
 	TopicMaps []types.MemoryWikiMap       `json:"topic_maps"`
 	Attempts  []types.LearningQuizAttempt `json:"quiz_attempts"`
+	// Skips are the standing "已掌握，不再推荐" declarations — a preference
+	// the user set, hence part of the profile they can view and export.
+	Skips []types.LearningSkip `json:"skips"`
 }
 
 // ExportKBSummary is one knowledge base's roll-up inside the export.
@@ -462,6 +582,7 @@ type ExportKBSummary struct {
 	Events       int    `json:"events"`
 	MasteryNodes int    `json:"mastery_nodes"`
 	Attempts     int    `json:"attempts"`
+	Skips        int    `json:"skips"`
 }
 
 // LearningSettings is the collection opt-out surface.
@@ -508,4 +629,22 @@ type Recommendation struct {
 	// making the gate's requirements a visible goal instead of hidden
 	// arithmetic.
 	NextTierHint string `json:"next_tier_hint,omitempty"`
+	// DocRank is the node's 1-based position in the source material (the
+	// 从浅入深 channel): 1 = the material's opening content. Zero when the
+	// position could not be resolved from chunk/document evidence — the
+	// client hides the marker then. Display-only.
+	DocRank int `json:"doc_rank,omitempty"`
+	// Section is the node's chapter-scale label from the source material's
+	// heading structure ("" when the material carries no headings).
+	Section string `json:"section,omitempty"`
+	// DocTitle is the node's home document title ("" when unresolvable).
+	DocTitle string `json:"doc_title,omitempty"`
+	// Why is the narrative key for the one-line learning reason
+	// (承上启下): continues_prereq | same_section | continues_prev |
+	// first_stop | material_start | chapter_of | in_doc. Empty = no line.
+	Why string `json:"why,omitempty"`
+	// WhyRef backs the narrative: the REFERENCED node's slug for the
+	// continues_*/same_section keys (the service layer translates it to a
+	// title before serving; never shipped raw). Display-only.
+	WhyRef string `json:"why_ref,omitempty"`
 }

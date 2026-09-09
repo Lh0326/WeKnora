@@ -38,6 +38,12 @@ const (
 	// LearningEventBackfillCite: historical doc affinity replayed as an
 	// event. Document-grained, so it carries the backfill discount.
 	LearningEventBackfillCite = "backfill_cite"
+	// LearningEventWikiDeepRead: the reader stayed on the node page past
+	// the deep-dwell threshold (frontend tier "deep") — a studied read,
+	// not a glance. Capped at one per node per re-ask window; weight is
+	// the tier constant WeightWikiDeepRead.
+	LearningEventWikiDeepRead = "wiki_deep_read"
+
 	// LearningEventWikiToolRead: an agent wiki_read_page call, collected
 	// opportunistically where a hook exists. May never be produced.
 	LearningEventWikiToolRead = "wiki_tool_read"
@@ -327,3 +333,48 @@ type LearningSubjectPrefs struct {
 }
 
 func (LearningSubjectPrefs) TableName() string { return "learning_subject_prefs" }
+
+// LearningBackfillMark records that one (subject, KB) scope has already been
+// bootstrapped from doc-affinity history. It deliberately survives
+// DeleteLearningDataBySubject — like the opt-out prefs, it is a processing
+// tombstone, not learning data — because backfill idempotency previously
+// lived in learning_events (the backfill_cite rows themselves), which profile
+// deletion removes: without an independent mark the next startup backfill
+// would re-derive and re-fold the deleted history, silently resurrecting the
+// profile the user asked to be gone. One row per scope, written before any
+// event is appended so a crash can under-light but never duplicate weights.
+type LearningBackfillMark struct {
+	TenantID uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;uniqueIndex:idx_learning_backfill_marks_scope,priority:1"`
+	// SubjectID is Principal.StorageID().
+	SubjectID string `json:"subject_id" gorm:"type:varchar(512);not null;uniqueIndex:idx_learning_backfill_marks_scope,priority:2"`
+	// KnowledgeBaseID scopes the bootstrap to one wiki graph.
+	KnowledgeBaseID string    `json:"knowledge_base_id" gorm:"type:varchar(36);not null;uniqueIndex:idx_learning_backfill_marks_scope,priority:3"`
+	CompletedAt     time.Time `json:"completed_at"`
+}
+
+func (LearningBackfillMark) TableName() string { return "learning_backfill_marks" }
+
+// LearningSkip is the user-declared skip list ("已掌握，不再推荐"): a
+// standing, revocable statement that the subject considers themselves done
+// with one node. It is deliberately NOT foldable evidence — the mastery
+// math never sees it — and NOT an event: view windows would age an event
+// out, while a skip must hold until revoked. Reads consume it as queue
+// suppression (the recommender's exclusion set) and as a badge on the
+// node's view. Personal data: profile delete and the KB orphan sweep
+// remove it.
+type LearningSkip struct {
+	TenantID uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;uniqueIndex:idx_learning_skips_scope,priority:1"`
+	// SubjectID is Principal.StorageID().
+	// The plain index mirrors the migration's idx_learning_skips_scope_subject
+	// so the subject-scoped export read stays index-backed on AutoMigrate'd
+	// databases too.
+	SubjectID string `json:"subject_id" gorm:"type:varchar(512);not null;uniqueIndex:idx_learning_skips_scope,priority:2;index:idx_learning_skips_scope_subject"`
+	// KnowledgeBaseID scopes the skip to one wiki graph.
+	KnowledgeBaseID string `json:"knowledge_base_id" gorm:"type:varchar(36);not null;uniqueIndex:idx_learning_skips_scope,priority:3"`
+	// Slug carries the type prefix; alias reconciliation migrates stale
+	// values here when a page is renamed or merged, same as mastery rows.
+	Slug      string    `json:"slug" gorm:"type:varchar(512);not null;uniqueIndex:idx_learning_skips_scope,priority:4"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func (LearningSkip) TableName() string { return "learning_skips" }

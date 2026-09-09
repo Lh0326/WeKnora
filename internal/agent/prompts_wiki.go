@@ -509,6 +509,7 @@ Extract ONLY the document's primary subjects: the handful of entities/concepts t
 
 INCLUDE:
 - The document's main subject(s) — e.g. for a resume: the person and their named projects; for an announcement: the announcing organization and the event/product being announced; for a product page: the product itself and its maker.
+- Foundational concepts the document introduces in its opening/overview sections and then builds on later (dropping them orphans everything that references them; they count toward what the document is ABOUT).
 - At most 3-7 items total across entities and concepts combined.
 
 EXCLUDE (even if named explicitly):
@@ -525,6 +526,7 @@ Extract the document's main subjects PLUS entities/concepts that are substantive
 INCLUDE:
 - The document's main subject(s).
 - Secondary entities/concepts that receive a concrete block of content (a paragraph, a multi-point list, or a dedicated sub-section).
+- Foundational concepts from the opening/overview chapters that later sections assume or build on, even when their own section is short — they are the on-ramp the rest of the document depends on.
 - Named methodologies, architectures, or techniques when the document explains HOW the subject uses them — not merely names them.
 
 EXCLUDE:

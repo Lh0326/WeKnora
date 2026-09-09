@@ -37,6 +37,9 @@ export interface MasteryView {
   last_activity_at: string;
   /** 7 天内最新一次自评（悬停回显用；不参与档位计算）。 */
   self_assess?: { direction: 'up' | 'down'; event_type: string; occurred_at: string };
+  /** 用户声明的「已掌握，不再推荐」：推荐队列排除该节点，客户端加徽标。 */
+  skipped?: boolean;
+  skipped_at?: string;
   /** 节点页中文标题（读时批量解析）；页面不存在时为空。 */
   title?: string;
   /** 档位内进度（0–1，p_eff 在当前档区间的位置）与下档路径提示。 */
@@ -62,6 +65,14 @@ export interface Recommendation {
   /** 档位内进度（0–1）与下档路径提示（直接证据门控的解锁条件）。 */
   tier_progress?: number;
   next_tier_hint?: string;
+  /** 资料位次（1=开篇，从浅入深信号）；解析不到时缺省。 */
+  doc_rank?: number;
+  /** 承上启下叙述：章节标签 / 归属文档标题 / 一行学习理由（why 键见 whyText）。 */
+  section?: string;
+  doc_title?: string;
+  why?: string;
+  /** 叙述引用对象：上一节点标题或章节/文档标签。 */
+  why_ref?: string;
 }
 
 export interface QuizSourceDoc {
@@ -210,6 +221,42 @@ export function getLearningRecommend(kbId: string, limit = 5) {
   return get<Envelope<Recommendation[]>>(`/api/v1/learning/kb/${kbId}/recommend?limit=${limit}`);
 }
 
+/** 模块分区视图：每个 wiki 目录一个知识区，各区自己的"1/2" + 全量节点 + 先修边。 */
+export interface ZoneSummary {
+  folder_id: string;
+  /** 目录名；根目录为空串（前端用 rootUnit 文案标注）。 */
+  folder_name: string;
+  total: number;
+  lit: number;
+  next?: Recommendation;
+  second?: Recommendation;
+}
+
+export interface ZoneNode extends MasteryView {
+  folder_id: string;
+  folder_name?: string;
+  section?: string;
+  doc_title?: string;
+  doc_rank?: number;
+  recent?: boolean;
+}
+
+export interface ZoneEdge {
+  from: string;
+  to: string;
+  kind?: string;
+}
+
+export interface ZoneMapResponse {
+  zones: ZoneSummary[];
+  nodes: ZoneNode[];
+  edges: ZoneEdge[];
+}
+
+export function getLearningZoneMap(kbId: string) {
+  return get<Envelope<ZoneMapResponse>>(`/api/v1/learning/kb/${kbId}/zone-map`);
+}
+
 // 遗忘动态：非用户操作（被动）导致的档位/掌握度变化，读时派生。
 export function getLearningChanges(kbId: string, limit = 20) {
   return get<Envelope<PassiveChangesSummary>>(`/api/v1/learning/kb/${kbId}/changes?limit=${limit}`);
@@ -232,8 +279,8 @@ export function submitLearningAnswer(kbId: string, itemId: string, chosenKey: st
 
 // Reading a wiki page is a deliberate low-trust touch (§3.3.6 signal);
 // the backend dedupes per slug per 48h window, so fire-and-forget is safe.
-export function recordWikiRead(kbId: string, slug: string) {
-  return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/read`, { slug });
+export function recordWikiRead(kbId: string, slug: string, tier?: string) {
+  return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/read`, { slug, tier: tier || undefined });
 }
 
 export type SelfAssessDirection = 'up' | 'down';
@@ -242,6 +289,11 @@ export type SelfAssessDownReason = 'all' | 'doc_gap' | 'doc_updated' | 'quiz_eas
 /** Skill-matrix self-assessment: up lifts the score into the mastered band (tier still gated on quiz proof); down demotes by reason. */
 export function selfAssess(kbId: string, slug: string, direction: SelfAssessDirection, reason?: SelfAssessDownReason) {
   return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/self-assess`, { slug, direction, reason });
+}
+
+/** Standing queue-suppression declaration ("已掌握，不再推荐") or its revocation; the node leaves every next-step surface until revoked. */
+export function skipNode(kbId: string, slug: string, skipped: boolean) {
+  return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/skip`, { slug, skipped });
 }
 
 export function getLearningTimeline(kbId: string, page = 1, pageSize = 20) {

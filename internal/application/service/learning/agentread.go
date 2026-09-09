@@ -51,7 +51,7 @@ func (h *agentReadHook) Execute(ctx context.Context, args json.RawMessage) (*typ
 				// Best effort by design: a context without principal (e.g.
 				// a background caller) forfeits this one touch, never the
 				// answer itself.
-				_ = h.learning.RecordWikiRead(recordCtx, kbID, slug)
+				_ = h.learning.RecordWikiRead(recordCtx, kbID, slug, "")
 			}(kbID, slug)
 		}
 	}

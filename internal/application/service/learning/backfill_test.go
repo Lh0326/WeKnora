@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 func TestRunBackfillReplaysAffinityIdempotently(t *testing.T) {
@@ -73,6 +74,81 @@ func TestRunBackfillReplaysAffinityIdempotently(t *testing.T) {
 	}
 	if len(repo.snapshotEvents()) != 2 {
 		t.Fatalf("event count after re-run = %d, want still 2", len(repo.snapshotEvents()))
+	}
+}
+
+// TestRunBackfillDoesNotResurrectDeletedProfile is the deletion tombstone
+// regression: backfill idempotency used to live in the backfill_cite event
+// rows themselves, which DeleteLearningDataBySubject removes — so deleting a
+// profile and restarting the server re-derived the same events from the
+// still-present affinity rows and the "deleted" profile came back to life.
+// The mark table must survive the subject-level delete and block the re-run.
+func TestRunBackfillDoesNotResurrectDeletedProfile(t *testing.T) {
+	repo := newStubRepo()
+	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
+	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Rag Doc"}))
+	wiki.addPage(testKB, testWikiPage("concept/decay", nil, []string{"d1|Decay Doc"}))
+	svc := testService(repo, wiki)
+	t.Setenv("LEARNING_ENABLE", "true")
+
+	used := time.Date(2026, 8, 1, 10, 0, 0, 0, time.UTC)
+	repo.affinity = []types.MemoryDocAffinity{
+		{TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB, KnowledgeID: "d1", Hits: 5, LastUsedAt: used},
+	}
+	if err := svc.RunBackfill(context.Background()); err != nil {
+		t.Fatalf("backfill failed: %v", err)
+	}
+	if n := len(repo.snapshotEvents()); n != 2 {
+		t.Fatalf("first backfill events = %d, want 2", n)
+	}
+
+	// The user deletes their learning profile (without opting out of
+	// collection): events, mastery and attempts are gone, affinity is NOT
+	// (it belongs to the memory subsystem, a different deletion surface).
+	if err := repo.DeleteLearningDataBySubject(context.Background(), "web_user:alice"); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(repo.snapshotEvents()); n != 0 {
+		t.Fatalf("events after profile delete = %d, want 0", n)
+	}
+
+	// Server restart: the reconcile runner rides RunBackfill on startup.
+	// Without the surviving mark this re-appends the whole history.
+	if err := svc.RunBackfill(context.Background()); err != nil {
+		t.Fatalf("post-delete backfill failed: %v", err)
+	}
+	if n := len(repo.snapshotEvents()); n != 0 {
+		t.Fatalf("post-delete backfill resurrected %d events, want 0 (deleted must stay deleted)", n)
+	}
+}
+
+// TestRunBackfillMarksNewScopeOnly: a scope whose mark was swept with its KB
+// stays eligible; a scope marked under a live KB is skipped even when its
+// event history is empty (fresh extraction, no organic events yet).
+func TestRunBackfillMarkSurvivesSubjectDeleteOnly(t *testing.T) {
+	repo := newStubRepo()
+	scope := interfaces.LearningScope{TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB}
+	repo.MarkBackfillDone(context.Background(), scope)
+
+	done, err := repo.BackfillDone(context.Background(), scope)
+	if err != nil || !done {
+		t.Fatalf("BackfillDone after mark = %v, %v; want true, nil", done, err)
+	}
+
+	// Subject-level delete keeps the mark (resurrection guard)…
+	if err := repo.DeleteLearningDataBySubject(context.Background(), "web_user:alice"); err != nil {
+		t.Fatal(err)
+	}
+	if done, _ := repo.BackfillDone(context.Background(), scope); !done {
+		t.Fatal("subject delete must keep the backfill mark")
+	}
+
+	// …the KB orphan sweep clears it with the rest of the KB's data.
+	if err := repo.DeleteLearningDataByKB(context.Background(), 1, testKB); err != nil {
+		t.Fatal(err)
+	}
+	if done, _ := repo.BackfillDone(context.Background(), scope); done {
+		t.Fatal("KB sweep must clear the backfill mark")
 	}
 }
 

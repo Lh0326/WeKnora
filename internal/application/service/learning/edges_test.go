@@ -18,7 +18,7 @@ func TestEdgeCandidatePairsThreeSources(t *testing.T) {
 		{Slug: "concept/d", PageType: "concept", Title: "D", FolderID: "f2",
 			OutLinks: types.StringArray{"concept/a", "concept/a"}}, // self+dup ignored
 	}
-	pairs := edgeCandidatePairs(pages)
+	pairs := edgeCandidatePairs(pages, nil)
 	set := map[[2]string]bool{}
 	for _, p := range pairs {
 		set[p] = true
@@ -36,6 +36,50 @@ func TestEdgeCandidatePairsThreeSources(t *testing.T) {
 	}
 	if len(pairs) != len(set) {
 		t.Error("duplicate pairs leaked")
+	}
+}
+
+// Document order orients the candidate groups: within one source document
+// the pairs must run earlier→later, and the per-document cap keeps the
+// EARLIEST nodes instead of the alphabetically-first ones.
+func TestEdgeCandidatePairsDocOrder(t *testing.T) {
+	// Nine nodes in one sweeping document, each in its own folder so the
+	// only candidate source under test is document co-occurrence;
+	// alphabetical order would keep the first 8 of a-z and drop "z",
+	// document order keeps the 8 earliest and drops the tail instead.
+	mk := func(slug, title, folder string) *types.WikiPage {
+		return &types.WikiPage{Slug: slug, PageType: "concept", Title: title,
+			FolderID: folder, SourceRefs: types.StringArray{"doc1|D"}}
+	}
+	pages := []*types.WikiPage{
+		mk("concept/z", "Z", "fz"),
+		mk("concept/a", "A", "fa"),
+		mk("concept/m", "M", "fm"),
+		mk("concept/b", "B", "fb"),
+		mk("concept/c", "C", "fc"),
+		mk("concept/d", "D", "fd"),
+		mk("concept/e", "E", "fe"),
+		mk("concept/f", "F", "ff"),
+		mk("concept/g", "G", "fg"),
+	}
+	// Reading order: a(m pos 2)… let rank encode chapter order directly:
+	// a(0) b(1) c(2) m(3) d(4) e(5) f(6) g(7), z ranks last (8).
+	rank := map[string]int{
+		"concept/a": 0, "concept/b": 1, "concept/c": 2, "concept/m": 3,
+		"concept/d": 4, "concept/e": 5, "concept/f": 6, "concept/g": 7,
+		"concept/z": 8,
+	}
+	pairs := edgeCandidatePairs(pages, rank)
+	for _, p := range pairs {
+		if rank[p[0]] == 8 || rank[p[1]] == 8 {
+			t.Fatalf("tail node z must be evicted by the per-doc cap, got %v", p)
+		}
+		if rank[p[0]] > rank[p[1]] {
+			t.Fatalf("doc pair must run earlier→later, got %v (%d → %d)", p, rank[p[0]], rank[p[1]])
+		}
+	}
+	if len(pairs) == 0 {
+		t.Fatal("no pairs generated")
 	}
 }
 
@@ -84,5 +128,26 @@ func TestEdgeWatermarkTakesMaxCreatedAt(t *testing.T) {
 	}
 	if got := edgeWatermark(nil); !got.IsZero() {
 		t.Fatal("empty edges must give zero watermark")
+	}
+}
+
+// TestEdgeClosesCycle: the write-side guard — a new edge may not close a
+// cycle (including the one-node self cycle), whatever the adjudicator said.
+func TestEdgeClosesCycle(t *testing.T) {
+	existing := []types.LearningEdge{
+		{FromSlug: "a", ToSlug: "b", Relation: types.LearningEdgePrerequisite},
+		{FromSlug: "b", ToSlug: "c", Relation: types.LearningEdgePrerequisite},
+	}
+	if !edgeClosesCycle(existing, "c", "a") {
+		t.Fatal("c→a closes the a→b→c cycle")
+	}
+	if edgeClosesCycle(existing, "a", "c") {
+		t.Fatal("a→c extends the chain, no cycle")
+	}
+	if !edgeClosesCycle(existing, "x", "x") {
+		t.Fatal("self-edge is a one-node cycle")
+	}
+	if edgeClosesCycle(nil, "x", "y") {
+		t.Fatal("empty set cannot close a cycle")
 	}
 }

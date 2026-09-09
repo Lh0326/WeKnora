@@ -108,7 +108,7 @@ func TestCollectDirectFactsDeduplicatesItems(t *testing.T) {
 	attempts := []types.LearningQuizAttempt{
 		// q1 wrong first, then correct twice (later repeats keep the FIRST
 		// correct time, not the earliest attempt).
-		{Slug: "s", QuizItemID: "q1", IsCorrect: false, AnsweredAt: now.Add(-72 * time.Hour)},
+		{Slug: "s", QuizItemID: "q1", IsCorrect: false, AnsweredAt: now.Add(-120 * time.Hour)},
 		{Slug: "s", QuizItemID: "q1", IsCorrect: true, AnsweredAt: now.Add(-48 * time.Hour)},
 		{Slug: "s", QuizItemID: "q1", IsCorrect: true, AnsweredAt: now.Add(-1 * time.Hour)},
 		// q2 correct once; q3 only wrong → no fact.
@@ -194,5 +194,44 @@ func TestNextTierHintMatrix(t *testing.T) {
 		if got := NextTierHint(tc.level, tc.facts, now); got != tc.want {
 			t.Errorf("NextTierHint(%s, %d facts) = %q, want %q", tc.level, len(tc.facts), got, tc.want)
 		}
+	}
+}
+
+// TestDirectGateWholeBankReansweredAcrossGapUnlocksMastered（评审 P1-C 回归）：
+// 三道题首日全部答对，72 小时后全部再次答对——旧的"仅首次正确时间跨度"
+// 规则永远无法晋级（每个题的 first 都已耗尽），事实上惩罚了先做完题库的
+// 人。修复后的语义：不同题 ≥2 且 全局最早正确 → 最晚正确 ≥ 会话间隔，
+// 延迟重答本身即跨时段保持的证据。
+func TestDirectGateWholeBankReansweredAcrossGapUnlocksMastered(t *testing.T) {
+	day1 := time.Now().Add(-72 * time.Hour)
+	day3 := day1.Add(72 * time.Hour)
+	attempts := []types.LearningQuizAttempt{}
+	for _, item := range []string{"q1", "q2", "q3"} {
+		attempts = append(attempts,
+			types.LearningQuizAttempt{Slug: "concept/x", QuizItemID: item, IsCorrect: true, AnsweredAt: day1},
+			types.LearningQuizAttempt{Slug: "concept/x", QuizItemID: item, IsCorrect: true, AnsweredAt: day3},
+		)
+	}
+	facts := CollectDirectFacts(attempts)["concept/x"]
+	if got := DirectGateTier(facts, time.Now()); got != LevelMastered {
+		t.Fatalf("whole bank re-answered across the gap must unlock mastered, got %s", got)
+	}
+	// 对照：全部答案仍集中在同一天（无跨时段验证）不晋级。
+	sameDay := []types.LearningQuizAttempt{}
+	for _, item := range []string{"q1", "q2", "q3"} {
+		sameDay = append(sameDay, types.LearningQuizAttempt{
+			Slug: "concept/x", QuizItemID: item, IsCorrect: true, AnsweredAt: day1.Add(time.Hour),
+		})
+	}
+	if got := DirectGateTier(CollectDirectFacts(sameDay)["concept/x"], time.Now()); got != LevelFamiliar {
+		t.Fatalf("same-sitting answers stay familiar, got %s", got)
+	}
+	// 对照：单一题目跨日重答（覆盖面不足）不晋级。
+	oneItem := []types.LearningQuizAttempt{
+		{Slug: "concept/x", QuizItemID: "q1", IsCorrect: true, AnsweredAt: day1},
+		{Slug: "concept/x", QuizItemID: "q1", IsCorrect: true, AnsweredAt: day3},
+	}
+	if got := DirectGateTier(CollectDirectFacts(oneItem)["concept/x"], time.Now()); got != LevelFamiliar {
+		t.Fatalf("single item spans the gap but lacks breadth — familiar, got %s", got)
 	}
 }

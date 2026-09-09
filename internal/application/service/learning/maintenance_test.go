@@ -376,3 +376,68 @@ func TestMaintenanceTopicMappingWatermarkSkipsSettled(t *testing.T) {
 		t.Fatalf("re-adjudicated mapping not stored: %+v", repo.maps["decay→concept/decay"])
 	}
 }
+
+// TestMaintenanceNoResurrectionAfterDeleteAndOptOut（评审 P1-A 回归）：
+// 用户删除画像并停止采集后，即使长期记忆话题与文档亲和仍然存在、且
+// 存在可映射的节点，跑完全部后台维护也不得写入任何画像数据——零模型
+// 调用、零事件追加（无 topic_signal 复生通道）。
+func TestMaintenanceNoResurrectionAfterDeleteAndOptOut(t *testing.T) {
+	svc, repo, _, _, fake := maintenanceFixture(t)
+	t.Setenv("LEARNING_ENABLE", "true")
+	// 记忆侧数据仍在（删除学习画像不清记忆库），话题可映射到 concept/rag。
+	repo.mu.Lock()
+	repo.topicStats = append(repo.topicStats, types.MemoryTopicStat{
+		TenantID: 1, SubjectID: "web_user:alice", Topic: "RAG 检索", NormalizedKey: "rag",
+	})
+	repo.affinity = append(repo.affinity, types.MemoryDocAffinity{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+	})
+	repo.mu.Unlock()
+	// 用户已停止采集（删除画像 + opt-out 的落库形态）。
+	repo.prefs["web_user:alice"] = &types.LearningSubjectPrefs{CollectDisabled: true}
+
+	// 个人投影通道（话题映射）必须整个被挡住：零模型调用。
+	appendsBefore := repo.appends.Load()
+	callsBefore := fake.calls.Load()
+	if err := svc.runTopicMapping(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := fake.calls.Load(); got != callsBefore {
+		t.Fatalf("topic mapping must not call the model for an opted-out subject, got %d extra calls", got-callsBefore)
+	}
+	// 全部后台维护跑完（含 KB 级共享内容的边/题生成——它们不涉个人画像，
+	// 模型调用允许发生），唯一铁律：该主体零画像事件复生。
+	if err := svc.RunMaintenance(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := repo.appends.Load(); got != appendsBefore {
+		t.Fatalf("profile resurrection: %d events appended for a deleted+opted-out subject", got-appendsBefore)
+	}
+}
+
+// TestMaintenanceEdgeBatchRejectsSameBatchCycle（评审 P2-C 回归）：同一批
+// 裁决里 A→B 与 B→A 同时"通过"时，第二条必须在写入前被拒——受纳边要即
+// 时并入校验图，否则批内互相成环（读端虽降级为可学，图仍自相矛盾）。
+func TestMaintenanceEdgeBatchRejectsSameBatchCycle(t *testing.T) {
+	svc, repo, _, _, fake := maintenanceFixture(t)
+	t.Setenv("LEARNING_ENABLE", "true")
+	fake.responses = []*types.ChatResponse{
+		{Content: `{"pairs":[` +
+			`{"from":"concept/rag","to":"concept/decay","relation":"prerequisite","confidence":0.9},` +
+			`{"from":"concept/decay","to":"concept/rag","relation":"prerequisite","confidence":0.9}]}`,
+			FinishReason: "stop"},
+	}
+	if err := svc.RunMaintenance(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, e := range repo.edges {
+		if e.Relation == types.LearningEdgePrerequisite &&
+			(e.FromSlug == "concept/rag" || e.FromSlug == "concept/decay") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("same-batch reverse edge must be rejected: %d prerequisite edges stored, want 1", count)
+	}
+}

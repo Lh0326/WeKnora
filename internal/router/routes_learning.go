@@ -26,6 +26,8 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.GET("/progress", g.KBAccessRead("kb_id"), learningHandler.GetProgress)
 	kbGroup.GET("/map", g.KBAccessRead("kb_id"), learningHandler.ListMastery)
 	kbGroup.GET("/recommend", g.KBAccessRead("kb_id"), learningHandler.Recommend)
+	// 模块分区视图：每区自己的"1/2" + 全量节点 + 先修关系线。
+	kbGroup.GET("/zone-map", g.KBAccessRead("kb_id"), learningHandler.ZoneMap)
 	// Passive decay channel: read-time derived, never persisted, kept
 	// apart from the action timeline so passive volume cannot flood it.
 	kbGroup.GET("/changes", g.KBAccessRead("kb_id"), learningHandler.PassiveChanges)
@@ -34,6 +36,8 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	// Reading a wiki page is a deliberate low-trust touch (§3.3.6 signal).
 	kbGroup.POST("/read", g.KBAccessRead("kb_id"), learningHandler.RecordRead)
 	kbGroup.POST("/self-assess", g.KBAccessRead("kb_id"), learningHandler.SelfAssess)
+	// Standing "已掌握，不再推荐" declaration (and its revocation).
+	kbGroup.POST("/skip", g.KBAccessRead("kb_id"), learningHandler.RecordSkip)
 	kbGroup.GET("/timeline", g.KBAccessRead("kb_id"), learningHandler.Timeline)
 
 	// Knowledge health is the owner/admin org aggregate (cross-subject

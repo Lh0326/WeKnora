@@ -38,6 +38,8 @@ For each ordered pair of pages below, decide the relation from the FIRST page (f
 - "related": the two pages are connected in theme or vocabulary, but neither prepares the other in a directional way.
 - "none": no meaningful relation.
 
+Each page carries a pos attribute: the position where its subject first appears in the source material (smaller = introduced earlier). Earlier-introduced material is often the foundational one — when a genuine prerequisite relation exists, the earlier-introduced page is the natural "from". Treat pos as supporting evidence for the DIRECTION of a relation you have already justified on substance; never let a bare position difference turn a "related" or "none" pair into a prerequisite.
+
 ### Key principle: **related ≠ prerequisite**. Most connected pairs are merely related. Same folder, same document, shared jargon, or topical similarity is NOT a reason to answer prerequisite. A prerequisite claim must hold directionally: from genuinely prepares to. When in doubt, answer "related" or "none".
 
 Examples of CORRECT prerequisite (from -> to):

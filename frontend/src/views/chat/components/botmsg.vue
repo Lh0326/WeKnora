@@ -196,6 +196,17 @@ const props = defineProps({
 
 const showRequestInfo = computed(() => !!(props.session?.request_id || props.session?.id));
 
+// 受保护图片（含知识库检索出的 resource:// 图）经消息面代理取回——租户面
+// /files 对跨库/共享存储的资源会 404（对齐 AgentStreamDisplay 的锚定方式）。
+const protectedFileAccess = computed(() => {
+    const messageId = String(props.session?.assistant_message_id || props.session?.id || '').trim();
+    if (props.sessionId && messageId) {
+        return { mode: 'message', sessionId: props.sessionId, messageId };
+    }
+    return undefined;
+});
+
+
 // -----------------------------------------------------------------------------
 // Skill artifact download (drawer)
 // -----------------------------------------------------------------------------
@@ -359,7 +370,7 @@ watch(renderedHTML, () => {
 // 渲染 Mermaid 图表的函数
 onUpdated(() => {
     nextTick(async () => {
-        await hydrateProtectedFileImages(parentMd.value);
+        await hydrateProtectedFileImages(parentMd.value, protectedFileAccess.value);
         refreshMarkdownEnhancements(parentMd.value);
         if (props.session?.is_completed) {
             await renderMermaidInContainer(parentMd.value);
@@ -374,7 +385,7 @@ onMounted(async () => {
             parentMd.value.addEventListener('click', handleMarkdownImageClick, true);
         }
         rebindCitations();
-        await hydrateProtectedFileImages(parentMd.value);
+        await hydrateProtectedFileImages(parentMd.value, protectedFileAccess.value);
         await enhanceMarkdownContainer(parentMd.value);
     });
 });

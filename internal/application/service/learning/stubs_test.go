@@ -32,14 +32,23 @@ type stubLearningRepo struct {
 	edges        []types.LearningEdge
 	quizItems    []types.LearningQuizItem
 	quizAttempts []types.LearningQuizAttempt
-	prefsHits    atomic.Int32
-	appends      atomic.Int32
+	// backfillMarks mirrors learning_backfill_marks: subject-level deletes
+	// leave it alone (the resurrection guard), the KB sweep clears it.
+	backfillMarks map[string]bool
+	// skips mirrors learning_skips, keyed like mastery: tenant|subject|kb|slug.
+	skips     map[string]time.Time
+	prefsHits atomic.Int32
+	appends   atomic.Int32
+	// masteryUpserts counts UpsertMastery calls so no-op guarantees (the
+	// fold-drift audit must not rewrite converged state) are assertable.
+	masteryUpserts atomic.Int32
 }
 
 func newStubRepo() *stubLearningRepo {
 	return &stubLearningRepo{
-		mastery: map[string]*types.MasteryState{},
-		prefs:   map[string]*types.LearningSubjectPrefs{},
+		mastery:       map[string]*types.MasteryState{},
+		prefs:         map[string]*types.LearningSubjectPrefs{},
+		backfillMarks: map[string]bool{},
 	}
 }
 
@@ -85,6 +94,7 @@ func (s *stubLearningRepo) GetMastery(_ context.Context, scope interfaces.Learni
 func (s *stubLearningRepo) UpsertMastery(_ context.Context, state *types.MasteryState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.masteryUpserts.Add(1)
 	clone := *state
 	s.mastery[s.masteryKey(interfaces.LearningScope{
 		TenantID: state.TenantID, SubjectID: state.SubjectID, KnowledgeBaseID: state.KnowledgeBaseID,
@@ -110,21 +120,43 @@ func (s *stubLearningRepo) ListAllMastery(_ context.Context) ([]types.MasterySta
 	return out, nil
 }
 
-func (s *stubLearningRepo) ListBackfilledSlugs(_ context.Context, scope interfaces.LearningScope) ([]string, error) {
+func (s *stubLearningRepo) scopeKey(scope interfaces.LearningScope) string {
+	return strconv.FormatUint(scope.TenantID, 10) + "|" + scope.SubjectID + "|" + scope.KnowledgeBaseID
+}
+
+func (s *stubLearningRepo) ListActiveDays(_ context.Context, scope interfaces.LearningScope, since time.Time) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	seen := map[string]bool{}
 	var out []string
 	for _, e := range s.events {
-		if e.TenantID == scope.TenantID && e.SubjectID == scope.SubjectID &&
-			e.KnowledgeBaseID == scope.KnowledgeBaseID && e.Type == types.LearningEventBackfillCite {
-			if !seen[e.Slug] {
-				seen[e.Slug] = true
-				out = append(out, e.Slug)
-			}
+		if e.TenantID != scope.TenantID || e.SubjectID != scope.SubjectID || e.KnowledgeBaseID != scope.KnowledgeBaseID {
+			continue
+		}
+		if !since.IsZero() && e.OccurredAt.Before(since) {
+			continue
+		}
+		d := e.OccurredAt.Format("2006-01-02")
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
 		}
 	}
+	sort.Strings(out)
 	return out, nil
+}
+
+func (s *stubLearningRepo) BackfillDone(_ context.Context, scope interfaces.LearningScope) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.backfillMarks[s.scopeKey(scope)], nil
+}
+
+func (s *stubLearningRepo) MarkBackfillDone(_ context.Context, scope interfaces.LearningScope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.backfillMarks[s.scopeKey(scope)] = true
+	return nil
 }
 
 func (s *stubLearningRepo) ListDocAffinityByScope(_ context.Context, tenantID uint64, subjectID string) ([]types.MemoryDocAffinity, error) {
@@ -204,7 +236,7 @@ func (s *stubLearningRepo) ListAttempts(_ context.Context, scope interfaces.Lear
 	var out []types.LearningQuizAttempt
 	for _, a := range s.quizAttempts {
 		if a.TenantID == scope.TenantID && a.SubjectID == scope.SubjectID &&
-			a.KnowledgeBaseID == scope.KnowledgeBaseID && a.Slug == slug {
+			a.KnowledgeBaseID == scope.KnowledgeBaseID && (slug == "" || a.Slug == slug) {
 			out = append(out, a)
 		}
 	}
@@ -260,6 +292,37 @@ func (s *stubLearningRepo) UpsertEdge(_ context.Context, edge *types.LearningEdg
 	return nil
 }
 
+func (s *stubLearningRepo) DeleteEdge(_ context.Context, tenantID uint64, knowledgeBaseID, fromSlug, toSlug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.edges[:0]
+	for _, e := range s.edges {
+		if e.TenantID == tenantID && e.KnowledgeBaseID == knowledgeBaseID &&
+			e.FromSlug == fromSlug && e.ToSlug == toSlug {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	s.edges = kept
+	return nil
+}
+
+func (s *stubLearningRepo) ListAllEdges(_ context.Context) ([]types.LearningEdge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]types.LearningEdge{}, s.edges...)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].KnowledgeBaseID != out[j].KnowledgeBaseID {
+			return out[i].KnowledgeBaseID < out[j].KnowledgeBaseID
+		}
+		if out[i].FromSlug != out[j].FromSlug {
+			return out[i].FromSlug < out[j].FromSlug
+		}
+		return out[i].ToSlug < out[j].ToSlug
+	})
+	return out, nil
+}
+
 func (s *stubLearningRepo) ListEdges(_ context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningEdge, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -309,13 +372,28 @@ func (s *stubLearningRepo) ListRecentEvents(_ context.Context, scope interfaces.
 	return page, int64(len(reversed)), nil
 }
 
-func (s *stubLearningRepo) ListEventsBySubject(_ context.Context, tenantID uint64, subjectID string) ([]types.LearningEvent, error) {
+func (s *stubLearningRepo) ListEventsBySubject(_ context.Context, subjectID string) ([]types.LearningEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []types.LearningEvent
 	for _, e := range s.events {
-		if e.TenantID == tenantID && e.SubjectID == subjectID {
+		if e.SubjectID == subjectID {
 			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// ListAllMapsBySubject is the export's subject-scoped map read (every
+// tenant, like the real repository).
+func (s *stubLearningRepo) ListAllMapsBySubject(_ context.Context, subjectID string) ([]types.MemoryWikiMap, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.MemoryWikiMap
+	for _, m := range s.maps {
+		if m.SubjectID == subjectID {
+			clone := *m
+			out = append(out, clone)
 		}
 	}
 	return out, nil
@@ -412,46 +490,71 @@ func (s *stubLearningRepo) ListLastActivity(_ context.Context, scope interfaces.
 	return out, nil
 }
 
-func (s *stubLearningRepo) ListMasteryBySubject(_ context.Context, tenantID uint64, subjectID string) ([]types.MasteryState, error) {
+func (s *stubLearningRepo) ListMasteryBySubject(_ context.Context, subjectID string) ([]types.MasteryState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []types.MasteryState
 	for _, row := range s.mastery {
-		if row.TenantID == tenantID && row.SubjectID == subjectID {
+		if row.SubjectID == subjectID {
 			out = append(out, *row)
 		}
 	}
 	return out, nil
 }
 
-func (s *stubLearningRepo) ListAttemptsBySubject(_ context.Context, tenantID uint64, subjectID string) ([]types.LearningQuizAttempt, error) {
+func (s *stubLearningRepo) ListAttemptsBySubject(_ context.Context, subjectID string) ([]types.LearningQuizAttempt, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []types.LearningQuizAttempt
 	for _, a := range s.quizAttempts {
-		if a.TenantID == tenantID && a.SubjectID == subjectID {
+		if a.SubjectID == subjectID {
 			out = append(out, a)
 		}
 	}
 	return out, nil
 }
 
-func (s *stubLearningRepo) DeleteLearningDataBySubject(_ context.Context, tenantID uint64, subjectID string) error {
+// DeleteLearningDataBySubject is subject-scoped like the real repository:
+// every workspace's rows go, including shared-KB rows filed under a
+// foreign effective tenant. (Attempts of other subjects survive.)
+func (s *stubLearningRepo) DeleteLearningDataBySubject(_ context.Context, subjectID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.events = filterEvents(s.events, tenantID, subjectID)
+	s.events = filterEventsBySubject(s.events, subjectID)
 	for key, row := range s.mastery {
-		if row.TenantID == tenantID && row.SubjectID == subjectID {
+		if row.SubjectID == subjectID {
 			delete(s.mastery, key)
 		}
 	}
 	for key, m := range s.maps {
-		if m.TenantID == tenantID && m.SubjectID == subjectID {
+		if m.SubjectID == subjectID {
 			delete(s.maps, key)
 		}
 	}
-	s.quizAttempts = nil
+	var kept []types.LearningQuizAttempt
+	for _, a := range s.quizAttempts {
+		if a.SubjectID != subjectID {
+			kept = append(kept, a)
+		}
+	}
+	s.quizAttempts = kept
+	// Skips are personal data: the profile delete removes them too.
+	for key := range s.skips {
+		if parts := strings.Split(key, "|"); len(parts) == 4 && parts[1] == subjectID {
+			delete(s.skips, key)
+		}
+	}
 	return nil
+}
+
+func filterEventsBySubject(events []types.LearningEvent, subjectID string) []types.LearningEvent {
+	var out []types.LearningEvent
+	for _, e := range events {
+		if e.SubjectID != subjectID {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // DeleteLearningDataByKB is the orphan sweep seam: it records the call so
@@ -466,6 +569,18 @@ func (s *stubLearningRepo) DeleteLearningDataByKB(_ context.Context, tenantID ui
 		}
 	}
 	s.events = filterEventsByKB(s.events, tenantID, kbID)
+	for key := range s.backfillMarks {
+		// Marks of a swept KB go with it, like the real repository.
+		if strings.HasSuffix(key, "|"+kbID) && strings.HasPrefix(key, strconv.FormatUint(tenantID, 10)+"|") {
+			delete(s.backfillMarks, key)
+		}
+	}
+	for key := range s.skips {
+		// Skips of a swept KB go with it, like the real repository.
+		if strings.HasSuffix(key, "|"+kbID) && strings.HasPrefix(key, strconv.FormatUint(tenantID, 10)+"|") {
+			delete(s.skips, key)
+		}
+	}
 	return nil
 }
 
@@ -473,16 +588,6 @@ func filterEventsByKB(events []types.LearningEvent, tenantID uint64, kbID string
 	var out []types.LearningEvent
 	for _, e := range events {
 		if e.TenantID != tenantID || e.KnowledgeBaseID != kbID {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-func filterEvents(events []types.LearningEvent, tenantID uint64, subjectID string) []types.LearningEvent {
-	var out []types.LearningEvent
-	for _, e := range events {
-		if e.TenantID != tenantID || e.SubjectID != subjectID {
 			out = append(out, e)
 		}
 	}
@@ -497,7 +602,7 @@ func (s *stubLearningRepo) UpsertSubjectPrefs(_ context.Context, prefs *types.Le
 	return nil
 }
 
-func (s *stubLearningRepo) GetSubjectPrefs(_ context.Context, tenantID uint64, subjectID string) (*types.LearningSubjectPrefs, error) {
+func (s *stubLearningRepo) GetSubjectPrefs(_ context.Context, subjectID string) (*types.LearningSubjectPrefs, error) {
 	s.prefsHits.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -597,6 +702,19 @@ func (s *stubKBRepo) GetKnowledgeBaseByID(_ context.Context, id string) (*types.
 	return s.kbs[id], nil
 }
 
+func (s *stubKBRepo) ListKnowledgeBases(_ context.Context) ([]*types.KnowledgeBase, error) {
+	out := make([]*types.KnowledgeBase, 0, len(s.kbs))
+	keys := make([]string, 0, len(s.kbs))
+	for k := range s.kbs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, s.kbs[k])
+	}
+	return out, nil
+}
+
 // stubChunkRepo serves fixed chunks by id.
 type stubChunkRepo struct {
 	interfaces.ChunkRepository
@@ -621,7 +739,8 @@ func maintenanceService(repo *stubLearningRepo, wiki *stubWikiRepo, chunks *stub
 	return NewService(repo, wiki, chunks, ms, kbs, nil), ms
 }
 
-// stubKnowledgeRepo serves fixed documents by id (quiz source-doc titles).
+// stubKnowledgeRepo serves fixed documents by id (quiz source-doc titles
+// and the document-order channel's creation times).
 type stubKnowledgeRepo struct {
 	interfaces.KnowledgeRepository
 	docs map[string]*types.Knowledge
@@ -629,4 +748,95 @@ type stubKnowledgeRepo struct {
 
 func (s *stubKnowledgeRepo) GetKnowledgeByID(_ context.Context, _ uint64, id string) (*types.Knowledge, error) {
 	return s.docs[id], nil
+}
+
+func (s *stubKnowledgeRepo) GetKnowledgeBatch(_ context.Context, _ uint64, ids []string) ([]*types.Knowledge, error) {
+	var out []*types.Knowledge
+	for _, id := range ids {
+		if k, ok := s.docs[id]; ok {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+// ---- skip list (learning_skips) ----
+
+func (s *stubLearningRepo) AddSkip(_ context.Context, scope interfaces.LearningScope, slug string, createdAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.skips == nil {
+		s.skips = map[string]time.Time{}
+	}
+	key := s.masteryKey(scope, slug)
+	if _, ok := s.skips[key]; !ok {
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		s.skips[key] = createdAt
+	}
+	return nil
+}
+
+func (s *stubLearningRepo) RemoveSkip(_ context.Context, scope interfaces.LearningScope, slug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.skips, s.masteryKey(scope, slug))
+	return nil
+}
+
+func (s *stubLearningRepo) ListSkips(_ context.Context, scope interfaces.LearningScope) (map[string]time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := strconv.FormatUint(scope.TenantID, 10) + "|" + scope.SubjectID + "|" + scope.KnowledgeBaseID + "|"
+	out := map[string]time.Time{}
+	for key, at := range s.skips {
+		if strings.HasPrefix(key, prefix) {
+			out[key[len(prefix):]] = at
+		}
+	}
+	return out, nil
+}
+
+func (s *stubLearningRepo) ListSkipsBySubject(_ context.Context, subjectID string) ([]types.LearningSkip, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningSkip
+	for key, at := range s.skips {
+		parts := strings.Split(key, "|")
+		if len(parts) != 4 || parts[1] != subjectID {
+			continue
+		}
+		tenant, _ := strconv.ParseUint(parts[0], 10, 64)
+		out = append(out, types.LearningSkip{
+			TenantID: tenant, SubjectID: subjectID,
+			KnowledgeBaseID: parts[2], Slug: parts[3], CreatedAt: at,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *stubLearningRepo) ListAllSkips(_ context.Context) ([]types.LearningSkip, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningSkip
+	for key, at := range s.skips {
+		parts := strings.Split(key, "|")
+		if len(parts) != 4 {
+			continue
+		}
+		tenant, _ := strconv.ParseUint(parts[0], 10, 64)
+		out = append(out, types.LearningSkip{
+			TenantID: tenant, SubjectID: parts[1],
+			KnowledgeBaseID: parts[2], Slug: parts[3], CreatedAt: at,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].KnowledgeBaseID != out[j].KnowledgeBaseID {
+			return out[i].KnowledgeBaseID < out[j].KnowledgeBaseID
+		}
+		return out[i].Slug < out[j].Slug
+	})
+	return out, nil
 }
