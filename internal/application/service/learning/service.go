@@ -3,6 +3,7 @@ package learning
 import (
 	"context"
 	"fmt"
+	"github.com/google/uuid"
 	"math"
 	"os"
 	"sort"
@@ -39,14 +40,8 @@ type Service struct {
 	// channel's node positions in the source material).
 	docOrder docOrderCache
 
-	// foldMu serializes the read-modify-write fold cycle per (scope, slug).
-	// Bug fix: concurrent writers on the same node — the QA goroutine
-	// (RecordAnswerTouches) racing a quiz SubmitAnswer or a wiki Read —
-	// both read the same stale state, fold independently, and the later
-	// upsert silently overwrites the earlier fold's weight. The event row
-	// survives but the mastery state permanently drops one contribution.
-	// A keyed mutex eliminates the in-process race; horizontal scaling
-	// would need SELECT…FOR UPDATE, noted as a deployment note.
+	// Local folds keep their node mutex, always acquired after the durable
+	// subject transaction. Cross-instance correctness comes from WithSubject.
 	foldMu sync.Map // key: scopeKey → *sync.Mutex
 
 	// LLM write paths (stage 3): model channel, chunk evidence, KB config.
@@ -102,28 +97,25 @@ type kbReader interface {
 // context alone (Principal.StorageID(), the memory subsystem's
 // convention), so there is no parameter a caller could use to write
 // someone else's mastery.
-func (s *Service) RecordAnswerTouches(ctx context.Context, assistantMessage *types.Message) {
+func (s *Service) recordAnswerTouches(ctx context.Context, assistantMessage *types.Message) error {
 	if !learningEnabled() {
-		return
+		return nil
 	}
 	if assistantMessage == nil || len(assistantMessage.KnowledgeReferences) == 0 {
-		return
+		return nil
 	}
 
 	tenantID, ok := types.TenantIDFromContext(ctx)
 	if !ok || tenantID == 0 {
-		return
+		return nil
 	}
 	principal, ok := types.PrincipalFromContext(ctx)
 	if !ok {
-		return
+		return nil
 	}
 	subjectID := principal.StorageID()
 	if subjectID == "" {
-		return
-	}
-	if s.prefs.collectionDisabled(ctx, s.repo, subjectID) {
-		return
+		return nil
 	}
 
 	// Deterministic KB order keeps event ordering stable for a given
@@ -147,13 +139,23 @@ func (s *Service) RecordAnswerTouches(ctx context.Context, assistantMessage *typ
 		}
 
 		scope := interfaces.LearningScope{TenantID: tenantID, SubjectID: subjectID, KnowledgeBaseID: kbID}
-		prior, err := s.repo.ListEvents(ctx, scope, now.Add(-touchLookback), 0)
+		prior, err := listEventWindow(ctx, s.repo, scope, now.Add(-touchLookback))
 		if err != nil {
 			logger.Warnf(ctx, "learning: prior events lookup failed (kb %s): %v", kbID, err)
 			continue
 		}
 
 		for _, slug := range index.touchedSlugs(byKB[kbID]) {
+			duplicate := false
+			for _, previous := range prior {
+				if assistantMessage.ID != "" && previous.MessageID == assistantMessage.ID && previous.Slug == slug {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
 			eventType := classifyTouch(now, slug, prior)
 			if eventType == "" {
 				// Capped repeat touch (the window already recorded a re_ask):
@@ -172,13 +174,21 @@ func (s *Service) RecordAnswerTouches(ctx context.Context, assistantMessage *typ
 				MessageID:       assistantMessage.ID,
 				OccurredAt:      now,
 			}
+			if assistantMessage.ID != "" {
+				// Stable identity also deduplicates callbacks beyond the short
+				// lookback window. The transaction rolls back a duplicate append.
+				event.ID = uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%d\x00%s\x00%s\x00%s\x00%s", tenantID, subjectID, kbID, slug, assistantMessage.ID))).String()
+			}
 			if err := s.repo.AppendEvent(ctx, event); err != nil {
 				logger.Warnf(ctx, "learning: append event failed (slug %s): %v", slug, err)
-				continue
+				return err
 			}
-			s.foldOne(ctx, scope, slug, Event{Type: eventType, Weight: weight, OccurredAt: now})
+			if err := s.foldOne(ctx, scope, slug, Event{Type: eventType, Weight: weight, OccurredAt: now}); err != nil {
+				return err
+			}
 		}
 	}
+	return nil
 }
 
 // RecordWikiRead folds one deliberate wiki page open into the reader's
@@ -203,16 +213,13 @@ func (s *Service) RecordAnswerTouches(ctx context.Context, assistantMessage *typ
 // (wiki_deep_read, weight WeightWikiDeepRead), at most one per node per
 // re-ask window, and exempt from the refresh shield (it fires on page
 // leave, so rapid re-entry is already impossible from the caller side).
-func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug, tier string) error {
+func (s *Service) recordWikiRead(ctx context.Context, kbID, slug, tier string) error {
 	if !learningEnabled() {
 		return nil
 	}
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return err
-	}
-	if s.prefs.collectionDisabled(ctx, s.repo, scope.SubjectID) {
-		return nil // opted out: reads stay private, silently
 	}
 	index, err := s.pages.index(ctx, s.wikiRepo, kbID)
 	if err != nil {
@@ -227,7 +234,7 @@ func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug, tier string) e
 	defer mu.Unlock()
 
 	now := time.Now()
-	prior, err := s.repo.ListEvents(ctx, scope, now.Add(-touchLookback), 0)
+	prior, err := listEventWindow(ctx, s.repo, scope, now.Add(-touchLookback))
 	if err != nil {
 		logger.Warnf(ctx, "learning: wiki-read dedup lookup failed (slug %s): %v", slug, err)
 		return nil // conservative: skip rather than risk farming
@@ -266,7 +273,7 @@ func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug, tier string) e
 		return err
 	}
 	if weight > 0 {
-		s.foldOneLocked(ctx, scope, slug, Event{Type: types.LearningEventWikiToolRead, Weight: weight, OccurredAt: now})
+		return s.foldOneLocked(ctx, scope, slug, Event{Type: types.LearningEventWikiToolRead, Weight: weight, OccurredAt: now})
 	}
 	return nil
 }
@@ -297,8 +304,7 @@ func (s *Service) recordDeepRead(
 	}); err != nil {
 		return err
 	}
-	s.foldOneLocked(ctx, scope, slug, Event{Type: types.LearningEventWikiDeepRead, Weight: weight, OccurredAt: now})
-	return nil
+	return s.foldOneLocked(ctx, scope, slug, Event{Type: types.LearningEventWikiDeepRead, Weight: weight, OccurredAt: now})
 }
 
 // directFacts loads the subject's per-slug direct-evidence facts for one
@@ -337,16 +343,13 @@ func (s *Service) directFacts(ctx context.Context, scope interfaces.LearningScop
 // repeats are idempotent no-ops; switching direction inside the window is
 // allowed (people change their minds). The computed weight is frozen on the
 // event row like every other weight, so replays reproduce the set-point.
-func (s *Service) RecordSelfAssess(ctx context.Context, kbID, slug string, up bool, reason string) error {
+func (s *Service) recordSelfAssess(ctx context.Context, kbID, slug string, up bool, reason string) error {
 	if !learningEnabled() {
 		return nil
 	}
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return err
-	}
-	if s.prefs.collectionDisabled(ctx, s.repo, scope.SubjectID) {
-		return nil // opted out: assessments stay private, silently
 	}
 	index, err := s.pages.index(ctx, s.wikiRepo, kbID)
 	if err != nil {
@@ -357,7 +360,7 @@ func (s *Service) RecordSelfAssess(ctx context.Context, kbID, slug string, up bo
 	}
 
 	now := time.Now()
-	prior, err := s.repo.ListEvents(ctx, scope, now.Add(-touchLookback), 0)
+	prior, err := listEventWindow(ctx, s.repo, scope, now.Add(-touchLookback))
 	if err != nil {
 		logger.Warnf(ctx, "learning: self-assess dedup lookup failed (slug %s): %v", slug, err)
 		return nil // conservative: skip rather than risk spamming
@@ -428,8 +431,7 @@ func (s *Service) RecordSelfAssess(ctx context.Context, kbID, slug string, up bo
 	}); err != nil {
 		return err
 	}
-	s.foldOne(ctx, scope, slug, Event{Type: eventType, Weight: weight, OccurredAt: now})
-	return nil
+	return s.foldOne(ctx, scope, slug, Event{Type: eventType, Weight: weight, OccurredAt: now})
 }
 
 // selfAssessDemotionTarget is the logit set-point a "less proficient"
@@ -460,7 +462,7 @@ func selfAssessDemotionTarget(state FoldState, facts []DirectQuizFact, now time.
 // Recorded regardless of the collection opt-out, like the opt-out setting
 // itself: this is a preference the user set on purpose, not telemetry
 // collected in the background.
-func (s *Service) RecordSkip(ctx context.Context, kbID, slug string, skipped bool) error {
+func (s *Service) recordSkip(ctx context.Context, kbID, slug string, skipped bool) error {
 	if !learningEnabled() {
 		return nil
 	}
@@ -486,14 +488,8 @@ func logitOf(p float64) float64 {
 	return math.Log(p / (1 - p))
 }
 
-// evictFoldMu drops one subject's keyed fold mutexes after their profile is
-// deleted, so churned users cannot grow foldMu without bound. Keys are
-// matched on the subject segment (tenant|subject|kb|slug): shared-KB folds
-// carry the KB owner's effective tenant, so a tenant-prefixed match would
-// leave exactly those behind. The narrow race — a request already holding
-// an evicted mutex while a fresh one is created — can at worst lose one
-// fold contribution for a scope whose data was just deleted anyway, and
-// the daily drift audit replays it back.
+// evictFoldMu releases cached local mutexes after deletion. The database
+// subject lock and operation epoch remain the correctness boundary.
 func (s *Service) evictFoldMu(subjectID string) {
 	s.foldMu.Range(func(key, _ any) bool {
 		k, ok := key.(string)
@@ -508,16 +504,14 @@ func (s *Service) evictFoldMu(subjectID string) {
 	})
 }
 
-// foldOne incrementally folds one event into the persisted mastery row.
-// The append already happened, so a fold failure only means the state is
-// stale until the next event (or a replay) refreshes it — worth a warning,
-// never worth failing the turn.
+// foldOne updates a projection inside the caller's subject transaction.
+// Failures propagate so the associated event and attempt roll back too.
 func (s *Service) foldOne(
 	ctx context.Context, scope interfaces.LearningScope, slug string, event Event,
-) {
+) error {
 	mu := s.lockNode(scope, slug)
 	defer mu.Unlock()
-	s.foldOneLocked(ctx, scope, slug, event)
+	return s.foldOneLocked(ctx, scope, slug, event)
 }
 
 // lockNode acquires the per-(scope, slug) keyed mutex and returns it locked;
@@ -540,11 +534,11 @@ func (s *Service) lockNode(scope interfaces.LearningScope, slug string) *sync.Mu
 // foldOneLocked is foldOne for callers already holding lockNode.
 func (s *Service) foldOneLocked(
 	ctx context.Context, scope interfaces.LearningScope, slug string, event Event,
-) {
+) error {
 	row, err := s.repo.GetMastery(ctx, scope, slug)
 	if err != nil {
 		logger.Warnf(ctx, "learning: mastery read failed (slug %s): %v", slug, err)
-		return
+		return err
 	}
 	if row == nil {
 		row = &types.MasteryState{
@@ -556,7 +550,5 @@ func (s *Service) foldOneLocked(
 	}
 	state := FoldEvent(StateFromModel(row), event)
 	state.ApplyTo(row)
-	if err := s.repo.UpsertMastery(ctx, row); err != nil {
-		logger.Warnf(ctx, "learning: mastery upsert failed (slug %s): %v", slug, err)
-	}
+	return s.repo.UpsertMastery(ctx, row)
 }

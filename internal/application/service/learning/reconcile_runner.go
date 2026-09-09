@@ -2,6 +2,9 @@ package learning
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 	"sort"
@@ -20,11 +23,35 @@ const (
 	reconcileInterval     = 24 * time.Hour
 	reconcileStartupDelay = 10 * time.Minute
 	reconcileRunTimeout   = 30 * time.Second
-	// reconcileEventLimit bounds the per-subject event fetch that feeds the
-	// replay merge. It deliberately exceeds the API-facing default so a
-	// merge rarely works from a truncated history.
-	reconcileEventLimit = 10000
+	// Keyset pages remove the old hard cap. The full scoped replay remains
+	// bounded by the job deadline and available memory; failure rolls back.
+	reconcilePageSize = 1000
 )
+
+// listAllEventsPaged folds the whole scoped history through the keyset
+// reader in the canonical (occurred_at, id) order. Same-timestamp batches
+// are tie-broken by id on both sides of a page boundary, so the sequence is
+// a pure function of the stored rows — insert order cannot change a replay.
+func listAllEventsPaged(
+	ctx context.Context, repo interfaces.LearningRepository,
+	scope interfaces.LearningScope, pageSize int,
+) ([]types.LearningEvent, error) {
+	var all []types.LearningEvent
+	var after time.Time
+	var afterID string
+	for {
+		page, err := repo.ListEventsPaged(ctx, scope, after, afterID, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if len(page) < pageSize {
+			return all, nil
+		}
+		last := page[len(page)-1]
+		after, afterID = last.OccurredAt, last.ID
+	}
+}
 
 // ReconcileRunner repairs wiki-rename drift in mastery_states on a slow
 // cadence: once a day it walks every folded row whose slug no longer
@@ -139,11 +166,9 @@ func (r *ReconcileRunner) loop(ctx context.Context, svc interfaces.LearningServi
 	}
 }
 
-// runOnce walks every folded mastery row, groups it per (tenant, KB),
-// rebuilds the live-slug/alias view of that KB's wiki, and applies the
-// pure ReconcileSlug decisions to storage. Event history stays untouched:
-// events are facts about the past under the name of their day, only the
-// folded state follows the node to its new slug.
+// runOnce discovers subjects from events, states and preferences, then rereads
+// each subject under its database lock. Canonical event identity follows a
+// migration while OriginalSlug preserves the name recorded by the action.
 func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 	rows, err := r.repo.ListAllMastery(ctx)
 	if err != nil {
@@ -162,7 +187,11 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(rows) == 0 && len(skipRows) == 0 && len(edgeRows) == 0 {
+	eventScopes, err := r.repo.ListEventScopes(ctx)
+	if err != nil {
+		return err
+	}
+	if len(rows) == 0 && len(skipRows) == 0 && len(edgeRows) == 0 && len(eventScopes) == 0 {
 		return nil
 	}
 
@@ -174,6 +203,11 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 	for _, row := range rows {
 		key := kbKey{row.TenantID, row.KnowledgeBaseID}
 		byKB[key] = append(byKB[key], row)
+	}
+	// Empty discovery rows only locate subjects; state is reread under lock below.
+	for _, scope := range eventScopes {
+		key := kbKey{scope.TenantID, scope.KnowledgeBaseID}
+		byKB[key] = append(byKB[key], types.MasteryState{TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID})
 	}
 	kbSkips := map[kbKey]map[string]map[string]time.Time{}
 	for _, row := range skipRows {
@@ -214,6 +248,7 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 		return kbKeys[i].kb < kbKeys[j].kb
 	})
 
+	var failures []error
 	migrations := 0
 	repaired := 0
 	skipsMoved := 0
@@ -256,19 +291,7 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 		}
 		pages := append(append([]*types.WikiPage{}, entities...), concepts...)
 
-		live := map[string]bool{}
-		aliasIndex := map[string]string{}
-		for _, p := range pages {
-			if p == nil || p.Slug == "" {
-				continue
-			}
-			live[p.Slug] = true
-			for _, candidate := range aliasKeysForPage(p) {
-				if candidate != p.Slug && !live[candidate] {
-					aliasIndex[candidate] = p.Slug
-				}
-			}
-		}
+		live, aliasIndex := canonicalAliasIndex(pages)
 
 		// Edge repair: prerequisite edges whose endpoints no longer resolve
 		// (page deleted, or renamed so the slug drifted) gate their targets
@@ -336,96 +359,140 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 
 		for _, subject := range subjects {
 			scope := interfaces.LearningScope{TenantID: key.tenant, SubjectID: subject, KnowledgeBaseID: key.kb}
-			// Skip rows ride the same alias repair and run for EVERY subject:
-			// a standing "已掌握，不再推荐" must follow the node it names, or
-			// a rename silently resurrects the recommendation the user
-			// retired — including for subjects with no folded mastery at
-			// all (the skip archetype: seen it, known it, moved on).
-			staleSkips := make([]string, 0, len(kbSkips[key][subject]))
-			for from := range kbSkips[key][subject] {
-				staleSkips = append(staleSkips, from)
-			}
-			// Two stale slugs can alias onto one live page (a page that
-			// absorbed several renames); the EARLIEST declaration must win the
-			// AddSkip conflict, so the iteration order is fixed instead of left
-			// to map randomness.
-			sort.Slice(staleSkips, func(i, j int) bool {
-				a, b := kbSkips[key][subject][staleSkips[i]], kbSkips[key][subject][staleSkips[j]]
-				if !a.Equal(b) {
-					return a.Before(b)
-				}
-				return staleSkips[i] < staleSkips[j]
-			})
-			for _, from := range staleSkips {
-				createdAt := kbSkips[key][subject][from]
-				to, ok := aliasIndex[from]
-				if !ok || to == from {
-					continue
-				}
-				if err := r.repo.AddSkip(ctx, scope, to, createdAt); err != nil {
-					logger.Warnf(ctx, "learning: reconcile skip move failed (%s -> %s): %v", from, to, err)
-					continue
-				}
-				if err := r.repo.RemoveSkip(ctx, scope, from); err != nil {
-					logger.Warnf(ctx, "learning: reconcile skip retire failed (%s): %v", from, err)
-					continue
-				}
-				skipsMoved++
-			}
-			// Live rows join the map too: a stale slug migrating onto a
-			// live target that already carries state must take the
-			// replay-merge branch inside ReconcileSlug, not overwrite it.
-			// Live rows themselves never migrate — aliasIndex keys are
-			// never live slugs — so they are inert as sources.
-			states := map[string]FoldState{}
-			hasStale := false
-			for _, row := range bySubject[subject] {
-				if !live[row.Slug] {
-					hasStale = true
-				}
-				states[row.Slug] = StateFromModel(&row)
-			}
-
-			events, err := r.repo.ListEvents(ctx, scope, time.Time{}, reconcileEventLimit)
+			epoch, err := r.repo.GetSubjectEpoch(ctx, subject)
 			if err != nil {
-				logger.Warnf(ctx, "learning: reconcile events read failed (subject %s): %v", subject, err)
-				continue
+				return err
 			}
-			// Never rebuild OR merge from a possibly truncated suffix. A
-			// paginated replay is required for these large histories.
-			if len(events) >= reconcileEventLimit {
-				logger.Warnf(ctx, "learning: event history capped; skipping fold and slug merge for subject %s", subject)
-				continue
-			}
-			repaired += r.repairFoldDrift(ctx, scope, states, events, live, aliasIndex)
-			if !hasStale {
-				continue
+			beforeMigrations, beforeRepaired, beforeSkips := migrations, repaired, skipsMoved
+			err = r.repo.WithSubject(ctx, subject, epoch, false, func(ctx context.Context) error {
+				freshRows, err := r.repo.ListMastery(ctx, scope)
+				if err != nil {
+					return err
+				}
+				freshSkips, err := r.repo.ListSkips(ctx, scope)
+				if err != nil {
+					return err
+				}
+
+				// Skip rows ride the same alias repair and run for EVERY subject:
+				// a standing "已掌握，不再推荐" must follow the node it names, or
+				// a rename silently resurrects the recommendation the user
+				// retired — including for subjects with no folded mastery at
+				// all (the skip archetype: seen it, known it, moved on).
+				staleSkips := make([]string, 0, len(freshSkips))
+				for from := range freshSkips {
+					staleSkips = append(staleSkips, from)
+				}
+				// Two stale slugs can alias onto one live page (a page that
+				// absorbed several renames); the EARLIEST declaration must win the
+				// AddSkip conflict, so the iteration order is fixed instead of left
+				// to map randomness.
+				sort.Slice(staleSkips, func(i, j int) bool {
+					a, b := freshSkips[staleSkips[i]], freshSkips[staleSkips[j]]
+					if !a.Equal(b) {
+						return a.Before(b)
+					}
+					return staleSkips[i] < staleSkips[j]
+				})
+				for _, from := range staleSkips {
+					createdAt := freshSkips[from]
+					to, ok := aliasIndex[from]
+					if !ok || to == from {
+						continue
+					}
+					if err := r.repo.MoveSkip(ctx, scope, from, to, createdAt); err != nil {
+						logger.Warnf(ctx, "learning: reconcile skip move failed (%s -> %s): %v", from, to, err)
+						return err
+					}
+					skipsMoved++
+				}
+				// Live rows join the map too: a stale slug migrating onto a
+				// live target that already carries state must take the
+				// replay-merge branch inside ReconcileSlug, not overwrite it.
+				// Live rows themselves never migrate — aliasIndex keys are
+				// never live slugs — so they are inert as sources.
+				states := map[string]FoldState{}
+				hasStale := false
+				for _, row := range freshRows {
+					if !live[row.Slug] {
+						hasStale = true
+					}
+					states[row.Slug] = StateFromModel(&row)
+					if live[row.Slug] && row.ProjectionVersion != FoldProjectionVersion {
+						delete(states, row.Slug)
+					}
+				}
+
+				events, err := listAllEventsPaged(ctx, r.repo, scope, reconcilePageSize)
+				if err != nil {
+					logger.Warnf(ctx, "learning: reconcile events read failed (subject %s): %v", subject, err)
+					return err
+				}
+				// An old alias can have events but no surviving projection. It
+				// still needs canonical identity migration, not just a new fold.
+				for _, ev := range events {
+					if !live[ev.Slug] && aliasIndex[ev.Slug] != "" {
+						if _, ok := states[ev.Slug]; !ok {
+							states[ev.Slug] = FoldState{}
+						}
+						hasStale = true
+					}
+				}
+				n, err := r.repairFoldDrift(ctx, scope, states, events, live, aliasIndex)
+				if err != nil {
+					return err
+				}
+				repaired += n
+				if !hasStale {
+					return nil
+				}
+
+				eventsBySlug := map[string][]Event{}
+				for _, ev := range events {
+					eventsBySlug[ev.Slug] = append(eventsBySlug[ev.Slug],
+						Event{ID: ev.ID, Type: ev.Type, Weight: ev.Weight, OccurredAt: ev.OccurredAt})
+				}
+
+				for _, m := range ReconcileSlug(states, eventsBySlug, aliasIndex) {
+					row := &types.MasteryState{
+						TenantID:        key.tenant,
+						SubjectID:       subject,
+						KnowledgeBaseID: key.kb,
+						Slug:            m.ToSlug,
+					}
+					m.State.ApplyTo(row)
+					merged := []Event{}
+					for _, ev := range events {
+						if ev.Slug == m.ToSlug || aliasIndex[ev.Slug] == m.ToSlug {
+							merged = append(merged, Event{ID: ev.ID, Type: ev.Type, Weight: ev.Weight, OccurredAt: ev.OccurredAt})
+						}
+					}
+					if len(merged) > 0 {
+						row.ReplayHash, err = replayFingerprint(merged)
+						if err != nil {
+							return err
+						}
+					}
+					// One transaction moves the fold, re-tags the attempts that
+					// carry its direct evidence, and retires the stale row — a
+					// crash mid-move can no longer duplicate the person's state
+					// or strand attempts under the dead slug.
+					if err := r.repo.MigrateMastery(ctx, scope, m.FromSlug, m.ToSlug, row); err != nil {
+						logger.Warnf(ctx, "learning: reconcile migrate failed (%s -> %s): %v", m.FromSlug, m.ToSlug, err)
+						return err
+					}
+					migrations++
+				}
+				return nil
+			})
+			if err != nil {
+				logger.Warnf(ctx, "learning: reconcile subject rolled back: %v", err)
+				migrations, repaired, skipsMoved = beforeMigrations, beforeRepaired, beforeSkips
+				if !errors.Is(err, interfaces.ErrLearningEpochAdvanced) {
+					failures = append(failures, err)
+				}
 			}
 
-			eventsBySlug := map[string][]Event{}
-			for _, ev := range events {
-				eventsBySlug[ev.Slug] = append(eventsBySlug[ev.Slug],
-					Event{Type: ev.Type, Weight: ev.Weight, OccurredAt: ev.OccurredAt})
-			}
-
-			for _, m := range ReconcileSlug(states, eventsBySlug, aliasIndex) {
-				row := &types.MasteryState{
-					TenantID:        key.tenant,
-					SubjectID:       subject,
-					KnowledgeBaseID: key.kb,
-					Slug:            m.ToSlug,
-				}
-				m.State.ApplyTo(row)
-				if err := r.repo.UpsertMastery(ctx, row); err != nil {
-					logger.Warnf(ctx, "learning: reconcile upsert failed (%s -> %s): %v", m.FromSlug, m.ToSlug, err)
-					continue
-				}
-				if err := r.repo.DeleteMastery(ctx, scope, m.FromSlug); err != nil {
-					logger.Warnf(ctx, "learning: reconcile retire failed (%s): %v", m.FromSlug, err)
-					continue
-				}
-				migrations++
-			}
 		}
 	}
 	if migrations > 0 {
@@ -440,29 +507,12 @@ func (r *ReconcileRunner) runOnce(ctx context.Context) error {
 	if repaired > 0 {
 		logger.Infof(ctx, "learning: reconcile repaired %d drifted mastery folds by replay", repaired)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
-// repairFoldDrift audits every persisted fold against a from-scratch replay
-// of the subject's nonzero-weight events and rewrites what drifted.
-//
-// The write path appends an event and folds it in two steps with no shared
-// transaction: a crash (or a lost multi-writer race) between them leaves the
-// event stored but its contribution missing from mastery_states — until now
-// permanently, because the reconcile only repaired slug renames, never the
-// fold itself. The replay is the same FoldEvent the write path runs, so the
-// audit converges folds to exactly what a clean sequential history would
-// have produced.
-//
-// Scope, deliberately narrow: only groups whose rows already sit on their
-// canonical live slug. A group still holding a stale-slug row is the rename
-// migration's to rebuild (its merge branch is itself a replay); auditing it
-// now would fight the move, and the audit catches survivors next pass.
-// Subjects whose events hit the fetch cap are skipped upstream. A subject
-// with NO folded rows reaches this walk only through the skip-list union
-// (skip-only subjects), so a very first lost fold still waits for the
-// node's next event — the honest boundary of a daily pass rooted in folded
-// rows.
+// repairFoldDrift replays canonical groups under the same subject lock as
+// live writes and deletion. Events-only subjects are discovered independently.
+// Targets awaiting a grouped alias migration are handled by that migration.
 func (r *ReconcileRunner) repairFoldDrift(
 	ctx context.Context,
 	scope interfaces.LearningScope,
@@ -470,7 +520,7 @@ func (r *ReconcileRunner) repairFoldDrift(
 	events []types.LearningEvent,
 	live map[string]bool,
 	aliasIndex map[string]string,
-) int {
+) (int, error) {
 	// Group events by canonical slug: a stale slug's events fold onto the
 	// live slug its alias names.
 	grouped := map[string][]Event{}
@@ -481,7 +531,7 @@ func (r *ReconcileRunner) repairFoldDrift(
 				target = to
 			}
 		}
-		grouped[target] = append(grouped[target], Event{Type: ev.Type, Weight: ev.Weight, OccurredAt: ev.OccurredAt})
+		grouped[target] = append(grouped[target], Event{ID: ev.ID, Type: ev.Type, Weight: ev.Weight, OccurredAt: ev.OccurredAt})
 	}
 	pending := map[string]bool{}
 	for slug := range states {
@@ -504,16 +554,26 @@ func (r *ReconcileRunner) repairFoldDrift(
 			continue
 		}
 		evs := grouped[target]
-		sort.SliceStable(evs, func(i, j int) bool { return evs[i].OccurredAt.Before(evs[j].OccurredAt) })
+		sort.SliceStable(evs, func(i, j int) bool { return eventLess(evs[i], evs[j]) })
 		var expected FoldState
 		for _, e := range evs {
 			if e.Weight != 0 { // zero-weight events (deduped re-reads, unsure answers) never fold
 				expected = FoldEvent(expected, e)
 			}
 		}
+		fingerprint, err := replayFingerprint(evs)
+		if err != nil {
+			return repaired, err
+		}
 		persisted, hasRow := states[target]
 		if hasRow && foldMatches(persisted, expected) {
-			continue
+			stored, err := r.repo.GetMastery(ctx, scope, target)
+			if err != nil {
+				return repaired, err
+			}
+			if stored != nil && stored.ProjectionVersion == FoldProjectionVersion && stored.ReplayHash == fingerprint {
+				continue
+			}
 		}
 		if !hasRow && expected.EvidenceCount == 0 {
 			continue
@@ -525,13 +585,27 @@ func (r *ReconcileRunner) repairFoldDrift(
 			Slug:            target,
 		}
 		expected.ApplyTo(row)
+		row.ReplayHash = fingerprint
 		if err := r.repo.UpsertMastery(ctx, row); err != nil {
 			logger.Warnf(ctx, "learning: fold drift repair failed (%s): %v", target, err)
-			continue
+			return repaired, err
 		}
 		repaired++
 	}
-	return repaired
+	return repaired, nil
+}
+
+// replayFingerprint identifies the ordered evidence verified by a full replay.
+// Callers must hold the subject transaction until the projection commits.
+func replayFingerprint(events []Event) (string, error) {
+	ordered := append([]Event{}, events...)
+	sort.SliceStable(ordered, func(i, j int) bool { return eventLess(ordered[i], ordered[j]) })
+	snapshot, err := json.Marshal(ordered)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(snapshot)
+	return hex.EncodeToString(digest[:]), nil
 }
 
 // foldMatches compares a persisted fold with its replay expectation. Logit

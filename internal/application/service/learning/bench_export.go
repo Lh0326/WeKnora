@@ -3,9 +3,11 @@ package learning
 import (
 	"encoding/json"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 // This file exports the two seams learning-bench (stage 5) needs from this
@@ -20,22 +22,46 @@ func BenchAnchoredLevel(state FoldState, now time.Time) LevelResult {
 }
 
 // BenchRecommendInput is the exported shape of recommendInput.
-type BenchRecommendInput struct {
-	Pages         []*types.WikiPage
-	Edges         []types.LearningEdge
-	States        map[string]FoldState
-	Affinity      map[string]bool
-	HasQuiz       map[string]bool
-	QuizStruggled map[string]bool
-	DirectFacts   map[string][]DirectQuizFact
+type BenchRecommendInput = recommendInput
+
+// The exported input is an alias, so production fields cannot silently disappear
+// at the bench boundary. Callers must provide historical metadata or disclose
+// that they are evaluating an observed-node proxy.
+func BenchRecommendNodes(in BenchRecommendInput, now time.Time, rng *rand.Rand, limit int) []Recommendation {
+	return recommendNodes(in, now, rng, limit)
 }
 
-// BenchRecommendNodes is the exported rule-based recommender.
-func BenchRecommendNodes(in BenchRecommendInput, now time.Time, rng *rand.Rand, limit int) []Recommendation {
-	return recommendNodes(recommendInput{
-		Pages: in.Pages, Edges: in.Edges, States: in.States, Affinity: in.Affinity,
-		HasQuiz: in.HasQuiz, QuizStruggled: in.QuizStruggled, DirectFacts: in.DirectFacts,
-	}, now, rng, limit)
+func BenchHistoryInput(in BenchRecommendInput, history []types.LearningEvent, attempts []types.LearningQuizAttempt, now time.Time) BenchRecommendInput {
+	window := []types.LearningEvent{}
+	for _, ev := range history {
+		if !ev.OccurredAt.Before(now.Add(-touchLookback)) && ev.OccurredAt.Before(now) {
+			window = append(window, ev)
+		}
+	}
+	in.Recent = recentAnchors(window, now)
+	in.LastVisit = learningLastVisits(window, now)
+	in.DirectFacts = CollectDirectFacts(attempts)
+	in.QuizStruggled = map[string]bool{}
+	in.SelfAssess = map[string]interfaces.SelfAssessMark{}
+	for _, e := range history {
+		if !e.OccurredAt.Before(now) {
+			continue
+		}
+		if e.Type == types.LearningEventQuizWrong && !e.OccurredAt.Before(now.Add(-touchLookback)) {
+			in.QuizStruggled[e.Slug] = true
+		}
+		if strings.HasPrefix(e.Type, "self_assess_") && !e.OccurredAt.Before(now.Add(-interfaces.SelfAssessVisibleWindow)) {
+			old, ok := in.SelfAssess[e.Slug]
+			if !ok || !e.OccurredAt.Before(old.At) {
+				direction := "down"
+				if e.Type == types.LearningEventSelfAssessUp {
+					direction = "up"
+				}
+				in.SelfAssess[e.Slug] = interfaces.SelfAssessMark{Direction: direction, EventType: e.Type, At: e.OccurredAt}
+			}
+		}
+	}
+	return in
 }
 
 // ---- Verify-mode seams (stage "five-layer verification"): thin exported
@@ -90,4 +116,10 @@ func BenchAcceptedEdgesRaw(rawJSON string, submitted [][2]string) []BenchEdgeVer
 		return nil
 	}
 	return acceptedEdges(resp, submitted)
+}
+
+// BenchCanonicalAliases uses only pages from the caller's historical snapshot.
+func BenchCanonicalAliases(pages []*types.WikiPage) map[string]string {
+	_, aliases := canonicalAliasIndex(pages)
+	return aliases
 }

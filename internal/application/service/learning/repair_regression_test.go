@@ -142,7 +142,7 @@ func TestDelayedCorrectFeedbackUsesLatestGateFact(t *testing.T) {
 	scope := newReadScope(1, "web_user:alice")
 	old := time.Now().Add(-72 * time.Hour)
 	item := &types.LearningQuizItem{ID: "q-delayed", TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", CorrectKey: "A", Status: types.LearningQuizStatusActive}
-	_ = repo.UpsertQuizItem(ctx, item)
+	_ = storeGroundedQuiz(t, svc, repo, ctx, item)
 	for _, id := range []string{item.ID, "q-other"} {
 		_ = repo.InsertAttempt(ctx, &types.LearningQuizAttempt{TenantID: 1, KnowledgeBaseID: testKB, SubjectID: scope.SubjectID, Slug: item.Slug, QuizItemID: id, IsCorrect: true, ChosenKey: "A", AnsweredAt: old})
 	}

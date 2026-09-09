@@ -19,6 +19,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/storageurl"
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	secutils "github.com/Tencent/WeKnora/internal/utils"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -881,6 +882,9 @@ const (
 // executeQA is the unified execution flow for both KnowledgeQA and AgentQA modes.
 // It handles message creation, SSE setup, VLM analysis, service invocation, and error handling.
 func (h *Handler) executeQA(reqCtx *qaRequestContext, mode qaMode, generateTitle bool) {
+	if capture, ok := h.learningService.(interfaces.LearningContextCapturer); ok {
+		reqCtx.ctx = capture.CaptureCollectionContext(reqCtx.ctx)
+	}
 	ctx := reqCtx.ctx
 	sessionID := reqCtx.sessionID
 
@@ -1453,6 +1457,9 @@ func (h *Handler) completeAssistantMessage(
 func (h *Handler) recordTurnMemory(
 	ctx context.Context, assistantMessage *types.Message, userQuery, userMessageID string,
 ) {
+	if h.learningService != nil {
+		h.learningService.RecordAnswerTouches(ctx, assistantMessage)
+	}
 	if h.memoryService == nil {
 		return
 	}
@@ -1476,9 +1483,6 @@ func (h *Handler) recordTurnMemory(
 		}
 	}
 	h.recordAnswerSources(ctx, assistantMessage)
-	if h.learningService != nil {
-		h.learningService.RecordAnswerTouches(ctx, assistantMessage)
-	}
 	h.memoryService.ScheduleExtraction(ctx, assistantMessage.SessionID, assistantMessage.ID, assistantMessage.ModelID)
 }
 

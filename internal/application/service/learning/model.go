@@ -26,6 +26,8 @@ const (
 // FoldState is the fold of every event for one (person, node) pair. It is
 // the value FormOf the persisted row: FoldEvent consumes and produces it,
 // EffectiveP and LevelOf read it.
+const FoldProjectionVersion = "learning-fold-v2"
+
 type FoldState struct {
 	Logit          float64
 	EvidenceCount  int
@@ -57,6 +59,8 @@ func StateFromModel(m *types.MasteryState) FoldState {
 // ApplyTo writes the fold back onto a persisted row. Scope fields are left
 // untouched; the caller owns identity.
 func (s FoldState) ApplyTo(m *types.MasteryState) {
+	m.ProjectionVersion = FoldProjectionVersion
+	m.ReplayHash = "" // online updates invalidate the last full-replay fingerprint
 	m.Logit = s.Logit
 	m.EvidenceCount = s.EvidenceCount
 	m.PositiveCount = s.PositiveCount
@@ -70,6 +74,7 @@ func (s FoldState) ApplyTo(m *types.MasteryState) {
 // type × decay/discount factors) and is what gets frozen on the persisted
 // learning_events row.
 type Event struct {
+	ID         string
 	Type       string // one of the types.LearningEvent* constants
 	Weight     float64
 	OccurredAt time.Time

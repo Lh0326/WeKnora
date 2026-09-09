@@ -17,9 +17,9 @@ type stubWikiReadTool struct {
 	foundKBs map[string][]string
 }
 
-func (s *stubWikiReadTool) Name() string                  { return "wiki_read_page" }
-func (s *stubWikiReadTool) Description() string           { return "stub" }
-func (s *stubWikiReadTool) Parameters() json.RawMessage   { return nil }
+func (s *stubWikiReadTool) Name() string                { return "wiki_read_page" }
+func (s *stubWikiReadTool) Description() string         { return "stub" }
+func (s *stubWikiReadTool) Parameters() json.RawMessage { return nil }
 func (s *stubWikiReadTool) Execute(_ context.Context, _ json.RawMessage) (*types.ToolResult, error) {
 	if s.fail {
 		return &types.ToolResult{Success: false, Error: "not found"}, nil
@@ -57,16 +57,16 @@ func waitForEvents(t *testing.T, repo *stubLearningRepo, n int) []types.Learning
 	return nil
 }
 
-// TestAgentReadHookRecordsTouches: a successful agent read of two node pages
-// lands one wiki_tool_read per slug on the asker's mastery — the capture gap
-// the audit found (agent answers built from wiki reads carry no chunk
-// citations, so answer_cite never fired for them).
-func TestAgentReadHookRecordsTouches(t *testing.T) {
+// TestAgentReadHookRecordsTraces: a successful agent read of two node pages
+// lands one agent_read per slug on the asker's timeline — zero-weight trace
+// by contract: tool access is activity, never the person's learning
+// (channel separation, review P2-D).
+func TestAgentReadHookRecordsTraces(t *testing.T) {
 	svc, repo := readHookService(t)
 	t.Setenv("LEARNING_ENABLE", "true")
 
 	wrapped := WrapWikiReadTool(&stubWikiReadTool{foundKBs: map[string][]string{
-		"concept/rag":  {testKB},
+		"concept/rag":    {testKB},
 		"entity/weknora": {testKB},
 	}}, svc)
 	res, err := wrapped.Execute(collectorCtx(1, "alice"), json.RawMessage(`{"slugs":["concept/rag"]}`))
@@ -77,17 +77,51 @@ func TestAgentReadHookRecordsTouches(t *testing.T) {
 	events := waitForEvents(t, repo, 2)
 	bySlug := map[string]types.LearningEvent{}
 	for _, e := range events {
-		if e.Type != types.LearningEventWikiToolRead {
+		if e.Type != types.LearningEventAgentRead {
 			t.Fatalf("unexpected event type %s for %s", e.Type, e.Slug)
 		}
 		bySlug[e.Slug] = e
 	}
 	if len(bySlug) != 2 {
-		t.Fatalf("expected touches for both slugs, got %+v", bySlug)
+		t.Fatalf("expected traces for both slugs, got %+v", bySlug)
 	}
-	// §3.3.6: an opportunistic agent read rides the topic-signal weight.
-	if w := bySlug["concept/rag"].Weight; w != WeightTopicSignal {
-		t.Fatalf("agent read weight = %v, want %v", w, WeightTopicSignal)
+	// Zero by contract: an agent tool read must never fold mastery.
+	if w := bySlug["concept/rag"].Weight; w != 0 {
+		t.Fatalf("agent read weight = %v, want 0", w)
+	}
+}
+
+// TestAgentReadDoesNotConsumeHumanScoringWindow（评审 P2-D 通道分离回归）：
+// Agent 查页之后，本人再打开同一页面仍拿满首次阅读的计分权重——agent_read
+// 不但不加分，也不占用人类阅读的 48 小时首触窗口。
+func TestAgentReadDoesNotConsumeHumanScoringWindow(t *testing.T) {
+	svc, repo := readHookService(t)
+	t.Setenv("LEARNING_ENABLE", "true")
+
+	if err := svc.RecordAgentRead(collectorCtx(1, "alice"), testKB, "concept/rag"); err != nil {
+		t.Fatal(err)
+	}
+	// The human's deliberate read afterwards must still carry full weight.
+	if err := svc.RecordWikiRead(collectorCtx(1, "alice"), testKB, "concept/rag", ""); err != nil {
+		t.Fatal(err)
+	}
+	events := repo.snapshotEvents()
+	var human *types.LearningEvent
+	for i, e := range events {
+		if e.Type == types.LearningEventWikiToolRead {
+			human = &events[i]
+		}
+	}
+	if human == nil {
+		t.Fatal("human read event missing after agent read")
+	}
+	if human.Weight != WeightTopicSignal {
+		t.Fatalf("human read after agent read must keep full weight, got %v", human.Weight)
+	}
+	// Exactly ONE fold contribution — the human read's. If the agent trace
+	// had folded too, the count would be 2.
+	if row := repo.mastery["1|web_user:alice|"+testKB+"|concept/rag"]; row == nil || row.EvidenceCount != 1 {
+		t.Fatalf("exactly the human read must fold (evidence=1), got %+v", row)
 	}
 }
 

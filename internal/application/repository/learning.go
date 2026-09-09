@@ -44,7 +44,7 @@ func NewLearningRepository(db *gorm.DB) interfaces.LearningRepository {
 // subject and knowledge base, so a missing scope predicate is impossible —
 // the same containment strategy as the memory repository.
 func (r *learningRepository) scoped(ctx context.Context, scope interfaces.LearningScope) *gorm.DB {
-	return r.db.WithContext(ctx).
+	return r.database(ctx).
 		Where(
 			"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ?",
 			scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID,
@@ -55,7 +55,7 @@ func (r *learningRepository) AppendEvent(ctx context.Context, event *types.Learn
 	if event.ID == "" {
 		event.ID = uuid.New().String()
 	}
-	return r.db.WithContext(ctx).Create(event).Error
+	return r.database(ctx).Create(event).Error
 }
 
 func (r *learningRepository) ListEvents(
@@ -70,6 +70,36 @@ func (r *learningRepository) ListEvents(
 	}
 	var events []types.LearningEvent
 	if err := query.Order("occurred_at DESC").Limit(limit).Find(&events).Error; err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+// ListEventsPaged is the replay reader: keyset pagination in the canonical
+// deterministic order (occurred_at ASC, id ASC) — the id term is the
+// tie-break that makes same-timestamp batches stable regardless of insert
+// order, so a replay of the same history always folds the same sequence.
+// The cursor is the last (occurred_at, id) of the previous page; an empty
+// cursor starts from the beginning. A short page marks the end.
+func (r *learningRepository) ListEventsPaged(
+	ctx context.Context, scope interfaces.LearningScope,
+	afterOccurredAt time.Time, afterID string, limit int,
+) ([]types.LearningEvent, error) {
+	if limit <= 0 {
+		limit = defaultLearningEventLimit
+	}
+	query := r.scoped(ctx, scope)
+	if afterID != "" || !afterOccurredAt.IsZero() {
+		query = query.Where(
+			"(occurred_at > ? OR (occurred_at = ? AND id > ?))",
+			afterOccurredAt, afterOccurredAt, afterID,
+		)
+	}
+	var events []types.LearningEvent
+	if err := query.
+		Order("occurred_at ASC, id ASC").
+		Limit(limit).
+		Find(&events).Error; err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -90,7 +120,7 @@ func (r *learningRepository) GetMastery(
 }
 
 func (r *learningRepository) UpsertMastery(ctx context.Context, state *types.MasteryState) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "tenant_id"},
 			{Name: "subject_id"},
@@ -99,7 +129,7 @@ func (r *learningRepository) UpsertMastery(ctx context.Context, state *types.Mas
 		},
 		DoUpdates: clause.AssignmentColumns([]string{
 			"logit", "evidence_count", "positive_count", "negative_count",
-			"stability", "last_evidence_at", "first_seen_at", "updated_at",
+			"stability", "last_evidence_at", "first_seen_at", "updated_at", "projection_version", "replay_hash",
 		}),
 	}).Create(state).Error
 }
@@ -112,26 +142,23 @@ func (r *learningRepository) ListMastery(
 	return states, err
 }
 
-func (r *learningRepository) ListLastActivity(
-	ctx context.Context, scope interfaces.LearningScope,
-) (map[string]time.Time, error) {
-	var rows []struct {
-		Slug string    `gorm:"column:slug"`
-		Last time.Time `gorm:"column:last"`
-	}
-	err := r.scoped(ctx, scope).
-		Model(&types.LearningEvent{}).
-		Select("slug, MAX(occurred_at) AS last").
-		Group("slug").
-		Scan(&rows).Error
+func (r *learningRepository) ListLastActivity(ctx context.Context, scope interfaces.LearningScope) (map[string]time.Time, error) {
+	// Select the original typed timestamp column. SQLite returns MAX(datetime)
+	// as TEXT, which cannot be scanned directly into time.Time.
+	latest := r.scoped(ctx, scope).Model(&types.LearningEvent{}).
+		Where("event_type IN ?", types.HumanLearningEventTypes()).Select("slug, MAX(occurred_at)").Group("slug")
+	var rows []types.LearningEvent
+	err := r.scoped(ctx, scope).Model(&types.LearningEvent{}).
+		Where("event_type IN ?", types.HumanLearningEventTypes()).
+		Where("(slug, occurred_at) IN (?)", latest).Distinct("slug", "occurred_at").Find(&rows).Error
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]time.Time, len(rows))
+	result := map[string]time.Time{}
 	for _, row := range rows {
-		out[row.Slug] = row.Last
+		result[row.Slug] = row.OccurredAt
 	}
-	return out, nil
+	return result, nil
 }
 
 func (r *learningRepository) ListSelfAssess(
@@ -177,6 +204,7 @@ func (r *learningRepository) ListActiveDays(
 	var days []string
 	err := r.scoped(ctx, scope).
 		Model(&types.LearningEvent{}).
+		Where("event_type IN ?", types.HumanLearningEventTypes()).
 		Where("occurred_at >= ?", since).
 		Select("DISTINCT " + dayExpr).
 		Scan(&days).Error
@@ -196,7 +224,7 @@ func (r *learningRepository) GetSubjectPrefs(
 	// opt-out row would vanish. When several rows exist, a disabled row
 	// wins (data-sovereignty-first), then the most recently updated.
 	var prefs types.LearningSubjectPrefs
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Order("collect_disabled DESC, updated_at DESC").
 		First(&prefs).Error
@@ -210,17 +238,29 @@ func (r *learningRepository) GetSubjectPrefs(
 }
 
 func (r *learningRepository) UpsertSubjectPrefs(ctx context.Context, prefs *types.LearningSubjectPrefs) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns: []clause.Column{
-			{Name: "tenant_id"},
-			{Name: "subject_id"},
-		},
-		DoUpdates: clause.AssignmentColumns([]string{"collect_disabled", "updated_at"}),
-	}).Create(prefs).Error
+	return r.database(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := lockLearningSubject(tx, prefs.SubjectID); err != nil {
+			return err
+		}
+		if err := tx.Model(&types.LearningSubjectEpoch{}).Where("subject_id = ?", prefs.SubjectID).Updates(map[string]interface{}{"epoch": gorm.Expr("epoch + 1"), "updated_at": time.Now()}).Error; err != nil {
+			return err
+		}
+		// Consent belongs to the person, including rows stored under shared KB owners.
+		if err := tx.Model(&types.LearningSubjectPrefs{}).Where("subject_id = ?", prefs.SubjectID).Update("collect_disabled", prefs.CollectDisabled).Error; err != nil {
+			return err
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "tenant_id"},
+				{Name: "subject_id"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{"collect_disabled", "updated_at"}),
+		}).Create(prefs).Error
+	})
 }
 
 func (r *learningRepository) UpsertEdge(ctx context.Context, edge *types.LearningEdge) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "tenant_id"},
 			{Name: "knowledge_base_id"},
@@ -234,7 +274,7 @@ func (r *learningRepository) UpsertEdge(ctx context.Context, edge *types.Learnin
 // ListAllEdges returns every stored edge, ordered for deterministic walks.
 func (r *learningRepository) ListAllEdges(ctx context.Context) ([]types.LearningEdge, error) {
 	var edges []types.LearningEdge
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Order("tenant_id ASC, knowledge_base_id ASC, from_slug ASC, to_slug ASC").
 		Find(&edges).Error
 	return edges, err
@@ -244,7 +284,7 @@ func (r *learningRepository) ListAllEdges(ctx context.Context) ([]types.Learning
 func (r *learningRepository) DeleteEdge(
 	ctx context.Context, tenantID uint64, knowledgeBaseID, fromSlug, toSlug string,
 ) error {
-	return r.db.WithContext(ctx).
+	return r.database(ctx).
 		Where(
 			"tenant_id = ? AND knowledge_base_id = ? AND from_slug = ? AND to_slug = ?",
 			tenantID, knowledgeBaseID, fromSlug, toSlug,
@@ -256,7 +296,7 @@ func (r *learningRepository) ListEdges(
 	ctx context.Context, tenantID uint64, knowledgeBaseID string,
 ) ([]types.LearningEdge, error) {
 	var edges []types.LearningEdge
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID).
 		Order("from_slug ASC, to_slug ASC").
 		Find(&edges).Error
@@ -270,19 +310,42 @@ func (r *learningRepository) UpsertQuizItem(ctx context.Context, item *types.Lea
 	if item.Status == "" {
 		item.Status = types.LearningQuizStatusActive
 	}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "id"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"question", "options", "correct_key", "explanation", "chunk_refs", "status", "updated_at",
+			"question", "options", "correct_key", "explanation", "chunk_refs", "evidence_hash", "status", "updated_at",
 		}),
 	}).Create(item).Error
+}
+
+// StaleQuizItemsByEvidence auto-invalidates the slug's active items whose
+// evidence version no longer matches: every active row whose evidence_hash
+// differs from currentHash (legacy empty hashes included — "version
+// unknown" cannot be trusted) flips to the stale status, which stops quiz
+// serving and scoring until regeneration re-adjudicates against the new
+// material. Human-disabled rows are never touched. Returns how many rows
+// went stale.
+func (r *learningRepository) StaleQuizItemsByEvidence(
+	ctx context.Context, tenantID uint64, knowledgeBaseID, slug, currentHash string,
+) (int64, error) {
+	res := r.database(ctx).
+		Model(&types.LearningQuizItem{}).
+		Where(
+			"tenant_id = ? AND knowledge_base_id = ? AND slug = ? AND status = ? AND evidence_hash <> ?",
+			tenantID, knowledgeBaseID, slug, types.LearningQuizStatusActive, currentHash,
+		).
+		Updates(map[string]interface{}{
+			"status":     types.LearningQuizStatusStale,
+			"updated_at": time.Now(),
+		})
+	return res.RowsAffected, res.Error
 }
 
 func (r *learningRepository) ListQuizItems(
 	ctx context.Context, tenantID uint64, knowledgeBaseID, slug string,
 ) ([]types.LearningQuizItem, error) {
 	var items []types.LearningQuizItem
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where(
 			"tenant_id = ? AND knowledge_base_id = ? AND slug = ?",
 			tenantID, knowledgeBaseID, slug,
@@ -296,7 +359,7 @@ func (r *learningRepository) InsertAttempt(ctx context.Context, attempt *types.L
 	if attempt.ID == "" {
 		attempt.ID = uuid.New().String()
 	}
-	return r.db.WithContext(ctx).Create(attempt).Error
+	return r.database(ctx).Create(attempt).Error
 }
 
 func (r *learningRepository) ListAttempts(
@@ -328,9 +391,88 @@ func (r *learningRepository) DeleteMastery(
 		Delete(&types.MasteryState{}).Error
 }
 
+// MigrateMastery moves one (subject, node) fold from one slug to another in
+// a single transaction: the denormalized quiz attempts follow the node
+// (otherwise the direct-evidence facts of the renamed node stop matching its
+// history), and the source row is retired — a crash between the two writes
+// can no longer leave the same person's mastery described by two rows, nor
+// the target row's evidence stranded under the stale slug.
+func (r *learningRepository) MigrateMastery(
+	ctx context.Context, scope interfaces.LearningScope, fromSlug, toSlug string, state *types.MasteryState,
+) error {
+	return r.database(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "tenant_id"},
+				{Name: "subject_id"},
+				{Name: "knowledge_base_id"},
+				{Name: "slug"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"logit", "evidence_count", "positive_count", "negative_count",
+				"stability", "last_evidence_at", "first_seen_at", "updated_at", "projection_version", "replay_hash",
+			}),
+		}).Create(state).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&types.LearningQuizAttempt{}).
+			Where(
+				"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ?",
+				scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, fromSlug,
+			).
+			Updates(map[string]interface{}{"original_slug": gorm.Expr("CASE WHEN original_slug = '' THEN slug ELSE original_slug END"), "slug": toSlug}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&types.LearningEvent{}).Where("tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ?", scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, fromSlug).Updates(map[string]interface{}{
+			"original_slug": gorm.Expr("CASE WHEN original_slug = '' THEN slug ELSE original_slug END"), "slug": toSlug,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Where(
+			"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ?",
+			scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, fromSlug,
+		).Delete(&types.MasteryState{}).Error
+	})
+}
+
+// MoveSkip relocates one skip declaration onto a live slug atomically:
+// re-declare at the target (preserving the original declaration age) and
+// retire the source in one transaction, so a rename can never leave the
+// recommendation the user retired resurrected by a half-applied move.
+func (r *learningRepository) MoveSkip(
+	ctx context.Context, scope interfaces.LearningScope, fromSlug, toSlug string, createdAt time.Time,
+) error {
+	return r.database(ctx).Transaction(func(tx *gorm.DB) error {
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "tenant_id"},
+				{Name: "subject_id"},
+				{Name: "knowledge_base_id"},
+				{Name: "slug"},
+			},
+			DoNothing: true,
+		}).Create(&types.LearningSkip{
+			TenantID:        scope.TenantID,
+			SubjectID:       scope.SubjectID,
+			KnowledgeBaseID: scope.KnowledgeBaseID,
+			Slug:            toSlug,
+			CreatedAt:       createdAt,
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Where(
+			"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ?",
+			scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, fromSlug,
+		).Delete(&types.LearningSkip{}).Error
+	})
+}
+
 func (r *learningRepository) ListAllMastery(ctx context.Context) ([]types.MasteryState, error) {
 	var states []types.MasteryState
-	err := r.db.WithContext(ctx).Find(&states).Error
+	err := r.database(ctx).Find(&states).Error
 	return states, err
 }
 
@@ -338,7 +480,7 @@ func (r *learningRepository) BackfillDone(
 	ctx context.Context, scope interfaces.LearningScope,
 ) (bool, error) {
 	var count int64
-	err := r.db.WithContext(ctx).Model(&types.LearningBackfillMark{}).
+	err := r.database(ctx).Model(&types.LearningBackfillMark{}).
 		Where(
 			"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ?",
 			scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID,
@@ -351,7 +493,7 @@ func (r *learningRepository) BackfillDone(
 }
 
 func (r *learningRepository) MarkBackfillDone(ctx context.Context, scope interfaces.LearningScope) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "tenant_id"}, {Name: "subject_id"}, {Name: "knowledge_base_id"}},
 		DoNothing: true,
 	}).Create(&types.LearningBackfillMark{
@@ -364,13 +506,13 @@ func (r *learningRepository) MarkBackfillDone(ctx context.Context, scope interfa
 
 func (r *learningRepository) ListDocAffinityByScope(ctx context.Context, tenantID uint64, subjectID string) ([]types.MemoryDocAffinity, error) {
 	var rows []types.MemoryDocAffinity
-	err := r.db.WithContext(ctx).Where("tenant_id = ? AND subject_id = ?", tenantID, subjectID).Find(&rows).Error
+	err := r.database(ctx).Where("tenant_id = ? AND subject_id = ?", tenantID, subjectID).Find(&rows).Error
 	return rows, err
 }
 
 func (r *learningRepository) GetQuizItemByID(ctx context.Context, tenantID uint64, itemID string) (*types.LearningQuizItem, error) {
 	var item types.LearningQuizItem
-	err := r.db.WithContext(ctx).Where("tenant_id = ? AND id = ?", tenantID, itemID).First(&item).Error
+	err := r.database(ctx).Where("tenant_id = ? AND id = ?", tenantID, itemID).First(&item).Error
 	if err != nil {
 		return nil, err
 	}
@@ -379,25 +521,25 @@ func (r *learningRepository) GetQuizItemByID(ctx context.Context, tenantID uint6
 
 func (r *learningRepository) ListQuizItemsByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningQuizItem, error) {
 	var items []types.LearningQuizItem
-	err := r.db.WithContext(ctx).Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID).Find(&items).Error
+	err := r.database(ctx).Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID).Find(&items).Error
 	return items, err
 }
 
 func (r *learningRepository) ListDocAffinity(ctx context.Context) ([]types.MemoryDocAffinity, error) {
 	var rows []types.MemoryDocAffinity
-	err := r.db.WithContext(ctx).Find(&rows).Error
+	err := r.database(ctx).Find(&rows).Error
 	return rows, err
 }
 
 func (r *learningRepository) ListTopicStats(ctx context.Context) ([]types.MemoryTopicStat, error) {
 	var rows []types.MemoryTopicStat
-	err := r.db.WithContext(ctx).Find(&rows).Error
+	err := r.database(ctx).Find(&rows).Error
 	return rows, err
 }
 
 func (r *learningRepository) ListMapsBySubject(ctx context.Context, tenantID uint64, subjectID string) ([]types.MemoryWikiMap, error) {
 	var rows []types.MemoryWikiMap
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("tenant_id = ? AND subject_id = ?", tenantID, subjectID).
 		Order("updated_at DESC").
 		Find(&rows).Error
@@ -422,7 +564,7 @@ func (r *learningRepository) ListEventsBySubject(ctx context.Context, subjectID 
 	// effective tenant, and the export must cover every row that belongs
 	// to the person regardless of which workspace it was collected in.
 	var rows []types.LearningEvent
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Order("occurred_at ASC").
 		Find(&rows).Error
@@ -435,7 +577,7 @@ func (r *learningRepository) ListEventsBySubject(ctx context.Context, subjectID 
 // settled set at a time).
 func (r *learningRepository) ListAllMapsBySubject(ctx context.Context, subjectID string) ([]types.MemoryWikiMap, error) {
 	var rows []types.MemoryWikiMap
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Order("updated_at DESC").
 		Find(&rows).Error
@@ -444,7 +586,7 @@ func (r *learningRepository) ListAllMapsBySubject(ctx context.Context, subjectID
 
 func (r *learningRepository) ListMasteryBySubject(ctx context.Context, subjectID string) ([]types.MasteryState, error) {
 	var rows []types.MasteryState
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Find(&rows).Error
 	return rows, err
@@ -452,7 +594,7 @@ func (r *learningRepository) ListMasteryBySubject(ctx context.Context, subjectID
 
 func (r *learningRepository) ListAttemptsBySubject(ctx context.Context, subjectID string) ([]types.LearningQuizAttempt, error) {
 	var rows []types.LearningQuizAttempt
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Order("answered_at ASC").
 		Find(&rows).Error
@@ -487,8 +629,157 @@ func (r *learningRepository) DeleteLearningDataBySubject(ctx context.Context, su
 	}, "subject_id = ?", subjectID)
 }
 
+// GetSubjectEpoch returns the subject's deletion generation. An absent row
+// is epoch 0 — no profile deletion has ever fenced this subject's writes.
+func (r *learningRepository) GetSubjectEpoch(ctx context.Context, subjectID string) (int64, error) {
+	var row types.LearningSubjectEpoch
+	err := r.database(ctx).
+		Where("subject_id = ?", subjectID).
+		First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return row.Epoch, nil
+}
+
+// DeleteProfileData is the atomic "delete my learning profile": the
+// personal-data sweep, the collection opt-out and the deletion-epoch bump
+// commit as one transaction. The epoch bump is what fences background
+// writers that captured the old epoch before a long-running model call —
+// their writes land after the delete and are discarded instead of
+// resurrecting the profile. learning_backfill_marks is deliberately kept
+// (the re-backfill tombstone), matching DeleteLearningDataBySubject.
+func (r *learningRepository) DeleteProfileData(
+	ctx context.Context, tenantID uint64, subjectID string, optOut bool,
+) error {
+	return r.database(ctx).Transaction(func(tx *gorm.DB) error {
+		if _, err := lockLearningSubject(tx, subjectID); err != nil {
+			return err
+		}
+		for _, table := range []string{
+			"learning_events", "mastery_states", "memory_wiki_map", "learning_quiz_attempts",
+			"learning_skips",
+		} {
+			if err := tx.Table(table).Where("subject_id = ?", subjectID).Delete(nil).Error; err != nil {
+				return err
+			}
+		}
+		if optOut {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{{Name: "tenant_id"}, {Name: "subject_id"}},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"collect_disabled", "updated_at",
+				}),
+			}).Create(&types.LearningSubjectPrefs{
+				TenantID: tenantID, SubjectID: subjectID,
+				CollectDisabled: true, UpdatedAt: time.Now(),
+			}).Error; err != nil {
+				return err
+			}
+		}
+		now := time.Now()
+		return tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "subject_id"}},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				"epoch":      gorm.Expr("learning_subject_epochs.epoch + 1"),
+				"updated_at": now,
+			}),
+		}).Create(&types.LearningSubjectEpoch{
+			SubjectID: subjectID, Epoch: 1, UpdatedAt: now,
+		}).Error
+	})
+}
+
+// ApplyTopicMapping stores one adjudicated topic mapping together with its
+// optional projection event and mastery fold, fenced on the subject's
+// deletion epoch. The epoch row is read under FOR UPDATE on PostgreSQL (a
+// concurrent DeleteProfileData blocks until this transaction commits, so
+// delete-then-write and write-then-delete serialize); SQLite serializes
+// writers itself, where the plain read inside the transaction carries the
+// same guarantee. The fold closure runs inside the transaction and receives
+// the live mastery row (nil when unseen), keeping the fold algorithm in the
+// service layer while the transaction boundary stays here.
+func (r *learningRepository) ApplyTopicMapping(
+	ctx context.Context, expectedEpoch int64, scope interfaces.LearningScope,
+	mapping *types.MemoryWikiMap, event *types.LearningEvent,
+	fold func(existing *types.MasteryState) types.MasteryState,
+) error {
+	if mapping == nil {
+		return errors.New("learning: ApplyTopicMapping requires a mapping")
+	}
+	return r.WithSubject(ctx, scope.SubjectID, expectedEpoch, true, func(ctx context.Context) error {
+		tx := r.database(ctx)
+		if mapping != nil {
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "tenant_id"},
+					{Name: "subject_id"},
+					{Name: "knowledge_base_id"},
+					{Name: "normalized_topic_key"},
+					{Name: "slug"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"topic_label", "confidence", "decided_by", "updated_at",
+				}),
+			}).Create(mapping).Error; err != nil {
+				return err
+			}
+		}
+		if event != nil {
+			var count int64
+			if err := tx.Model(&types.LearningEvent{}).Where("tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ? AND event_type = ? AND occurred_at >= ?", scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, mapping.Slug, types.LearningEventTopicSignal, event.OccurredAt.Add(-48*time.Hour)).Count(&count).Error; err != nil {
+				return err
+			}
+			if count > 0 {
+				event = nil
+				fold = nil
+			}
+		}
+		if event != nil {
+			if event.ID == "" {
+				event.ID = uuid.New().String()
+			}
+			if err := tx.Create(event).Error; err != nil {
+				return err
+			}
+		}
+		if fold != nil {
+			var row types.MasteryState
+			err := tx.Where(
+				"tenant_id = ? AND subject_id = ? AND knowledge_base_id = ? AND slug = ?",
+				scope.TenantID, scope.SubjectID, scope.KnowledgeBaseID, mapping.Slug,
+			).First(&row).Error
+			var existing *types.MasteryState
+			if err == nil {
+				existing = &row
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			next := fold(existing)
+			if err := tx.Clauses(clause.OnConflict{
+				Columns: []clause.Column{
+					{Name: "tenant_id"},
+					{Name: "subject_id"},
+					{Name: "knowledge_base_id"},
+					{Name: "slug"},
+				},
+				DoUpdates: clause.AssignmentColumns([]string{
+					"logit", "evidence_count", "positive_count", "negative_count",
+					"stability", "last_evidence_at", "first_seen_at", "updated_at", "projection_version", "replay_hash",
+				}),
+			}).Create(&next).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (r *learningRepository) deleteLearningData(ctx context.Context, tables []string, where string, args ...interface{}) error {
-	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return r.database(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, table := range tables {
 			if err := tx.Table(table).Where(where, args...).Delete(nil).Error; err != nil {
 				return err
@@ -499,7 +790,7 @@ func (r *learningRepository) deleteLearningData(ctx context.Context, tables []st
 }
 
 func (r *learningRepository) UpsertTopicMap(ctx context.Context, m *types.MemoryWikiMap) error {
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "tenant_id"},
 			{Name: "subject_id"},
@@ -521,7 +812,7 @@ func (r *learningRepository) ListMasteryByKB(
 	ctx context.Context, tenantID uint64, kbID string,
 ) ([]types.MasteryState, error) {
 	var states []types.MasteryState
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).
 		Order("subject_id ASC, slug ASC").
 		Find(&states).Error
@@ -537,7 +828,7 @@ func (r *learningRepository) ListMaintenanceMarks(
 	ctx context.Context, tenantID uint64, kbID string, since time.Time,
 ) ([]types.LearningEvent, error) {
 	var events []types.LearningEvent
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where(
 			"tenant_id = ? AND knowledge_base_id = ? AND occurred_at >= ? AND event_type IN ?",
 			tenantID, kbID, since, selfAssessEventTypes,
@@ -555,7 +846,7 @@ func (r *learningRepository) AddSkip(ctx context.Context, scope interfaces.Learn
 	if createdAt.IsZero() {
 		createdAt = time.Now()
 	}
-	return r.db.WithContext(ctx).Clauses(clause.OnConflict{
+	return r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{
 			{Name: "tenant_id"},
 			{Name: "subject_id"},
@@ -600,7 +891,7 @@ func (r *learningRepository) ListSkipsBySubject(ctx context.Context, subjectID s
 	var rows []types.LearningSkip
 	// created_at ties (same-second declarations, bulk alias moves) break
 	// deterministically so the export is reproducible.
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Where("subject_id = ?", subjectID).
 		Order("created_at ASC, tenant_id ASC, knowledge_base_id ASC, slug ASC").
 		Find(&rows).Error
@@ -611,7 +902,7 @@ func (r *learningRepository) ListSkipsBySubject(ctx context.Context, subjectID s
 // repair needs subjects that skipped nodes without ever folding mastery.
 func (r *learningRepository) ListAllSkips(ctx context.Context) ([]types.LearningSkip, error) {
 	var rows []types.LearningSkip
-	err := r.db.WithContext(ctx).
+	err := r.database(ctx).
 		Order("tenant_id ASC, knowledge_base_id ASC, subject_id ASC, slug ASC").
 		Find(&rows).Error
 	return rows, err

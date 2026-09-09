@@ -82,6 +82,19 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 
 	now := time.Now()
 	direct := s.directFacts(ctx, scope)
+	// Coverage accepts the user's own declaration: a node retired via
+	// "已掌握，移除推荐" counts as covered (点亮), exactly like the zone
+	// map's counter — the two surfaces must move together or the user
+	// reads the mismatch as "stats did not sync". A read failure is
+	// conservative: the skip contribution is omitted, never invented.
+	skips := map[string]bool{}
+	if m, err := s.repo.ListSkips(ctx, scope); err == nil {
+		for slug := range m {
+			skips[slug] = true
+		}
+	} else {
+		logger.Warnf(ctx, "learning: progress skips read failed (kb %s): %v", kbID, err)
+	}
 	progress := &LearningProgress{Levels: map[string]int{}}
 	// Folder names are the human-readable labels of the rolled-up units;
 	// a missing folder (deleted between reads) degrades to the root label.
@@ -100,7 +113,7 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 		progress.TotalNodes++
 		lv := gatedAnchoredLevel(states[p.Slug], direct[p.Slug], now)
 		progress.Levels[string(lv.Level)]++
-		if lv.Level != LevelUnseen {
+		if lv.Level != LevelUnseen || skips[p.Slug] {
 			progress.LitNodes++
 		}
 		unit := unitIndex[p.FolderID]
@@ -109,7 +122,7 @@ func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgre
 			unitIndex[p.FolderID] = unit
 		}
 		unit.Total++
-		if lv.Level != LevelUnseen {
+		if lv.Level != LevelUnseen || skips[p.Slug] {
 			unit.Lit++
 		}
 	}
@@ -378,12 +391,11 @@ func (s *Service) assembleRecommend(ctx context.Context, kbID string) (*recommen
 	}
 
 	// Direct-evidence struggle: slugs this subject answered wrong at least
-	// once — the strongest remedial signal, one indexed event scan.
-	// Bug fix: bound the lookback — unbounded ListEvents silently caps at
-	// 500 rows, hiding older wrong-answer slugs from the struggle signal.
+	// once within the production lookback. Read the complete window through
+	// keyset pages; a timeline limit must not hide older wrong answers.
 	quizStruggled := map[string]bool{}
 	var history []types.LearningEvent
-	if rows, err := s.repo.ListEvents(ctx, scope, time.Now().Add(-touchLookback), 0); err != nil {
+	if rows, err := listEventWindow(ctx, s.repo, scope, time.Now().Add(-touchLookback)); err != nil {
 		logger.Warnf(ctx, "learning: recommend history read failed (kb %s): %v", kbID, err)
 	} else {
 		history = rows
@@ -444,24 +456,7 @@ func (s *Service) assembleRecommend(ctx context.Context, kbID string) (*recommen
 	// the struggle signal uses. Passive projections (topic signals,
 	// backfills) are excluded — only behaviour that required the user to
 	// face the node releases a pressure pin; quick flips record nothing.
-	lastVisit := map[string]time.Time{}
-	for _, ev := range history {
-		switch ev.Type {
-		case types.LearningEventWikiToolRead, types.LearningEventWikiDeepRead,
-			types.LearningEventAnswerCite, types.LearningEventCrossRef,
-			types.LearningEventReAsk,
-			types.LearningEventQuizCorrect, types.LearningEventQuizWrong,
-			types.LearningEventQuizUnsure:
-		default:
-			continue
-		}
-		if ev.OccurredAt.After(now) {
-			continue
-		}
-		if cur, ok := lastVisit[ev.Slug]; !ok || ev.OccurredAt.After(cur) {
-			lastVisit[ev.Slug] = ev.OccurredAt
-		}
-	}
+	lastVisit := learningLastVisits(history, now)
 	asm := &recommendAssembly{
 		scope: scope, pages: pages, edges: edges,
 		materials: materials, quizCount: quizCount, folderName: folderNames, now: now,
@@ -572,9 +567,16 @@ func (s *Service) TakeQuiz(ctx context.Context, kbID, slug string) ([]QuizQuesti
 		seen[a.QuizItemID] = true
 	}
 
+	_, _, evidenceHash, err := s.currentQuizEvidence(ctx, scope.TenantID, kbID, slug)
+	if err != nil {
+		return nil, err
+	}
+	if evidenceHash == "" {
+		return []QuizQuestion{}, nil
+	}
 	var fresh, used []QuizQuestion
 	for _, it := range items {
-		if it.Status != types.LearningQuizStatusActive {
+		if it.Status != types.LearningQuizStatusActive || it.EvidenceHash == "" || it.EvidenceHash != evidenceHash {
 			continue
 		}
 		q := QuizQuestion{ID: it.ID, Question: it.Question, Options: map[string]string{}, ChunkRefs: []string(it.ChunkRefs)}
@@ -663,7 +665,7 @@ func (s *Service) resolveSourceDocs(
 // fold are one read-modify-write, and a concurrent double-submit of the same
 // item would otherwise both read prior=0 and both earn the full weight —
 // exactly the anti-farm decay exists to prevent.
-func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error) {
+func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error) {
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return nil, err
@@ -675,7 +677,11 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	}
 	mu := s.lockNode(scope, item.Slug)
 	defer mu.Unlock()
-	return s.submitAnswerNode(ctx, scope, item, chosenKey)
+	result, err := s.submitAnswerNode(ctx, scope, item, chosenKey)
+	if err == nil && !s.quizEvidenceMatches(ctx, item) {
+		return nil, ErrQuizNotFound
+	}
+	return result, err
 }
 
 func (s *Service) submitAnswerNode(
@@ -710,10 +716,6 @@ func (s *Service) submitAnswerNode(
 		Unsure: grade.EventType == types.LearningEventQuizUnsure,
 	}
 
-	if s.prefs.collectionDisabled(ctx, s.repo, scope.SubjectID) {
-		return result, nil // opted out: verdict served, nothing stored
-	}
-
 	// The fast-feedback bracket: p_eff immediately before this answer.
 	facts := CollectDirectFacts(priorAttempts)[item.Slug]
 	var before *float64
@@ -740,7 +742,9 @@ func (s *Service) submitAnswerNode(
 		// Use the same reduction as a fresh profile read, including the last
 		// correct timestamp of repeated items used for delayed verification.
 		facts = CollectDirectFacts(append(priorAttempts, attempt))[item.Slug]
-		s.foldOneLocked(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now})
+		if err := s.foldOneLocked(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now}); err != nil {
+			return nil, err
+		}
 	}
 	// The deterministic review schedule: how many days the folded state
 	// keeps its tier before decay pulls it below the demotion gate, plus
@@ -782,7 +786,7 @@ func (s *Service) findQuizItem(ctx context.Context, scope interfaces.LearningSco
 	if err != nil || item == nil {
 		return nil
 	}
-	if item.KnowledgeBaseID != scope.KnowledgeBaseID || item.Status != types.LearningQuizStatusActive {
+	if item.KnowledgeBaseID != scope.KnowledgeBaseID || !s.quizEvidenceMatches(ctx, item) {
 		return nil
 	}
 	return item
@@ -923,7 +927,11 @@ func (s *Service) exportKBSummary(ctx context.Context, payload *ExportPayload) [
 
 // DeleteProfile removes the caller's personal learning data (the KB-shared
 // quiz bank is not personal and stays), optionally recording the opt-out
-// so a deleted profile cannot resurrect on the next question.
+// so a deleted profile cannot resurrect on the next question. The sweep,
+// the opt-out and the deletion-epoch bump commit as ONE transaction: a
+// crash between them can neither leave the opt-out unrecorded nor let a
+// background writer that captured the pre-delete epoch land its in-flight
+// result after the delete.
 func (s *Service) DeleteProfile(ctx context.Context, optOut bool) error {
 	tenantID, ok := types.TenantIDFromContext(ctx)
 	if !ok || tenantID == 0 {
@@ -939,20 +947,15 @@ func (s *Service) DeleteProfile(ctx context.Context, optOut bool) error {
 	}
 	// Subject-scoped: shared-KB rows filed under the KB owner's tenant go
 	// with everything else — a tenant predicate would leave them behind.
-	if err := s.repo.DeleteLearningDataBySubject(ctx, subject); err != nil {
+	if err := s.repo.DeleteProfileData(ctx, tenantID, subject, optOut); err != nil {
 		return err
 	}
 	s.evictFoldMu(subject)
-	if optOut {
-		if err := s.repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
-			TenantID: tenantID, SubjectID: subject, CollectDisabled: true,
-		}); err != nil {
-			return err
-		}
-		// The opt-out must hold on the very next request — never wait out
-		// the prefs cache TTL after telling the user their data is gone.
-		s.prefs.invalidate(subject)
-	}
+	// The opt-out must hold on the very next request — never wait out the
+	// prefs cache TTL after telling the user their data is gone. Dropping
+	// the entry unconditionally is correct even when optOut is false: the
+	// next read simply re-caches the fresh row.
+	s.prefs.invalidate(subject)
 	return nil
 }
 
@@ -1021,4 +1024,26 @@ func (s *Service) MasteryOverlay(ctx context.Context, kbID string, slugs []strin
 // callers treat the pages as read-only (shared pointers).
 func (s *Service) nodePages(ctx context.Context, kbID string) ([]*types.WikiPage, error) {
 	return s.pages.nodes(ctx, s.wikiRepo, kbID)
+}
+
+func learningLastVisits(history []types.LearningEvent, now time.Time) map[string]time.Time {
+	lastVisit := map[string]time.Time{}
+	for _, ev := range history {
+		switch ev.Type {
+		case types.LearningEventWikiToolRead, types.LearningEventWikiDeepRead,
+			types.LearningEventAnswerCite, types.LearningEventCrossRef,
+			types.LearningEventReAsk,
+			types.LearningEventQuizCorrect, types.LearningEventQuizWrong,
+			types.LearningEventQuizUnsure:
+		default:
+			continue
+		}
+		if ev.OccurredAt.After(now) {
+			continue
+		}
+		if cur, ok := lastVisit[ev.Slug]; !ok || ev.OccurredAt.After(cur) {
+			lastVisit[ev.Slug] = ev.OccurredAt
+		}
+	}
+	return lastVisit
 }

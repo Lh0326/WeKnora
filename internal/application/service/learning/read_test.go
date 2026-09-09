@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"context"
 	"encoding/json"
 	"math"
 	"strings"
@@ -19,7 +20,7 @@ func readFixture(t *testing.T) (*Service, *stubLearningRepo, *stubWikiRepo) {
 	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Doc"}))
 	wiki.addPage(testKB, testWikiPage("concept/decay", []string{"c2"}, nil))
 	wiki.addPage(testKB, testWikiPage("entity/weknora", nil, nil))
-	svc := NewService(repo, wiki, nil, nil, nil, nil)
+	svc := NewService(repo, wiki, &stubChunkRepo{chunks: map[string]*types.Chunk{"c1": {ID: "c1", Content: "RAG evidence"}, "c2": {ID: "c2", Content: "Decay evidence"}}}, nil, nil, nil)
 	return svc, repo, wiki
 }
 
@@ -135,12 +136,12 @@ func TestTakeQuizStripsAnswerAndPrefersFresh(t *testing.T) {
 	svc, repo, _ := readFixture(t)
 	ctx := collectorCtx(1, "alice")
 
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-fresh",
 		Question: "Fresh?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "A", Explanation: "secret", Status: types.LearningQuizStatusActive,
 	})
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-used",
 		Question: "Used?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "B", Explanation: "secret2", Status: types.LearningQuizStatusActive,
@@ -181,7 +182,7 @@ func TestSubmitAnswerGradesAndFolds(t *testing.T) {
 		CorrectKey: "B", Explanation: "because", ChunkRefs: types.RefList{"c1"},
 		Status: types.LearningQuizStatusActive,
 	}
-	_ = repo.UpsertQuizItem(ctx, item)
+	_ = storeGroundedQuiz(t, svc, repo, ctx, item)
 
 	// Wrong answer.
 	res, err := svc.SubmitAnswer(ctx, testKB, "q-1", "A")
@@ -223,7 +224,7 @@ func TestSubmitAnswerOptedOutServesVerdictButStoresNothing(t *testing.T) {
 	ctx := collectorCtx(1, "bob")
 	repo.prefs["web_user:bob"] = &types.LearningSubjectPrefs{CollectDisabled: true}
 
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-9",
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "A", Explanation: "why", Status: types.LearningQuizStatusActive,
@@ -487,8 +488,8 @@ func TestTakeQuizResolvesSourceDocs(t *testing.T) {
 	// d2 arrives as a bare id ref (no "|title"): the fallback path.
 	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1", "c2"}, []string{"d1|文档一", "d2"}))
 	chunks := &stubChunkRepo{chunks: map[string]*types.Chunk{
-		"c1": {ID: "c1", KnowledgeID: "d1"},
-		"c2": {ID: "c2", KnowledgeID: "d2"},
+		"c1": {ID: "c1", KnowledgeID: "d1", Content: "RAG evidence"},
+		"c2": {ID: "c2", KnowledgeID: "d2", Content: "Decay evidence"},
 	}}
 	docs := &stubKnowledgeRepo{docs: map[string]*types.Knowledge{
 		"d2": {ID: "d2", Title: "文档二（知识库回退）"},
@@ -496,7 +497,7 @@ func TestTakeQuizResolvesSourceDocs(t *testing.T) {
 	svc := NewService(repo, wiki, chunks, nil, nil, docs)
 	ctx := collectorCtx(1, "alice")
 
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-src",
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "A", Explanation: "why", ChunkRefs: types.RefList{"c1", "c2"},
@@ -529,7 +530,7 @@ func TestTakeQuizResolvesSourceDocs(t *testing.T) {
 func TestSubmitAnswerReturnsReviewSchedule(t *testing.T) {
 	svc, repo, _ := readFixture(t)
 	ctx := collectorCtx(1, "alice")
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-sched",
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "B", Explanation: "why", Status: types.LearningQuizStatusActive,
@@ -545,7 +546,7 @@ func TestSubmitAnswerReturnsReviewSchedule(t *testing.T) {
 
 	// A wrong answer on a fresh node sinks it to unseen: no tier to hold,
 	// so no future horizon — the schedule says "review now" (nil).
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/decay", ID: "q-sink",
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "B", Explanation: "why", Status: types.LearningQuizStatusActive,
@@ -569,7 +570,7 @@ func TestSubmitAnswerReturnsReviewSchedule(t *testing.T) {
 func TestSubmitAnswerRepeatDecayWindowed(t *testing.T) {
 	svc, repo, _ := readFixture(t)
 	ctx := collectorCtx(1, "alice")
-	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{
+	_ = storeGroundedQuiz(t, svc, repo, ctx, &types.LearningQuizItem{
 		TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", ID: "q-decay",
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "B", Explanation: "why", Status: types.LearningQuizStatusActive,
@@ -624,7 +625,7 @@ func TestSubmitAnswerConcurrentDoubleSubmit(t *testing.T) {
 		CorrectKey: "B", Explanation: "because", ChunkRefs: types.RefList{"c1"},
 		Status: types.LearningQuizStatusActive,
 	}
-	if err := repo.UpsertQuizItem(ctx, item); err != nil {
+	if err := storeGroundedQuiz(t, svc, repo, ctx, item); err != nil {
 		t.Fatal(err)
 	}
 
@@ -730,4 +731,16 @@ func TestOptOutIsSubjectGlobalForSharedKBs(t *testing.T) {
 	if !disabled.CollectDisabled {
 		t.Fatal("GetSettings must reflect the subject-scoped opt-out row")
 	}
+}
+
+// Existing endpoint tests seed actual versioned evidence instead of relying on
+// legacy empty hashes, which the production endpoint must reject.
+func storeGroundedQuiz(t *testing.T, svc *Service, repo *stubLearningRepo, ctx context.Context, item *types.LearningQuizItem) error {
+	t.Helper()
+	_, _, hash, err := svc.currentQuizEvidence(ctx, item.TenantID, item.KnowledgeBaseID, item.Slug)
+	if err != nil || hash == "" {
+		t.Fatalf("invalid quiz fixture evidence: hash=%q err=%v", hash, err)
+	}
+	item.EvidenceHash = hash
+	return repo.UpsertQuizItem(ctx, item)
 }

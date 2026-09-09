@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -27,6 +28,12 @@ func (s LearningScope) Valid() bool {
 // (edges, quiz items) plus personal attempt records. Later stages extend
 // this interface with their own reads rather than widening these methods.
 type LearningRepository interface {
+	// WithSubject serializes a complete personal operation with deletion and
+	// consent changes. The callback must use its supplied context for every
+	// repository call; errors roll the whole operation back. collect=false is
+	// reserved for explicit preferences and repairs of existing preferences.
+	WithSubject(ctx context.Context, subjectID string, expectedEpoch int64, collect bool, fn func(context.Context) error) error
+	ListEventScopes(ctx context.Context) ([]LearningScope, error)
 	// AppendEvent stores one immutable event row. IDs are minted here when
 	// empty so callers cannot forget.
 	AppendEvent(ctx context.Context, event *types.LearningEvent) error
@@ -35,6 +42,12 @@ type LearningRepository interface {
 	// limit (0 = a large default). Backing store for replay, reconcile and
 	// the timeline.
 	ListEvents(ctx context.Context, scope LearningScope, since time.Time, limit int) ([]types.LearningEvent, error)
+	// ListEventsPaged is the replay reader: keyset pagination in the
+	// canonical deterministic order (occurred_at ASC, id ASC — the id term
+	// stabilizes same-timestamp batches). Loop until a short page to fold a
+	// history until the caller's deadline; an unbounded single fetch can see a
+	// truncated suffix.
+	ListEventsPaged(ctx context.Context, scope LearningScope, afterOccurredAt time.Time, afterID string, limit int) ([]types.LearningEvent, error)
 	// GetMastery returns one folded row, or (nil, nil) when the subject has
 	// never touched the node.
 	GetMastery(ctx context.Context, scope LearningScope, slug string) (*types.MasteryState, error)
@@ -96,6 +109,15 @@ type LearningRepository interface {
 	// after the migrated state is written under the live slug, so a rename
 	// never leaves two rows describing the same node.
 	DeleteMastery(ctx context.Context, scope LearningScope, slug string) error
+	// MigrateMastery atomically moves one (subject, node) fold onto a live
+	// slug: target upsert + attempt re-tagging + source retirement commit
+	// as one transaction, so a crash mid-move can neither duplicate the
+	// person's mastery row nor strand direct-evidence attempts under the
+	// stale slug.
+	MigrateMastery(ctx context.Context, scope LearningScope, fromSlug, toSlug string, state *types.MasteryState) error
+	// MoveSkip atomically relocates one skip declaration onto a live slug,
+	// preserving the original declaration age.
+	MoveSkip(ctx context.Context, scope LearningScope, fromSlug, toSlug string, createdAt time.Time) error
 	// ListAllMastery returns every folded row across subjects and KBs. The
 	// daily reconcile pass is its only caller; the table is bounded by
 	// (people × nodes), which keeps a full scan honest at that cadence.
@@ -121,6 +143,12 @@ type LearningRepository interface {
 
 	// ListQuizItemsByKB returns every quiz item of one KB in a single query.
 	ListQuizItemsByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningQuizItem, error)
+	// StaleQuizItemsByEvidence auto-invalidates one slug's active quiz items
+	// whose frozen evidence version no longer matches the current material
+	// digest (legacy empty hashes count as unknown and go stale too). The
+	// stale status stops serving and scoring until regeneration; returns
+	// the number of rows staled.
+	StaleQuizItemsByEvidence(ctx context.Context, tenantID uint64, knowledgeBaseID, slug, currentHash string) (int64, error)
 	// ListTopicStats reads the memory subsystem's topic statistics as the
 	// channel-B mapping source, same direct-read precedent as above.
 	ListTopicStats(ctx context.Context) ([]types.MemoryTopicStat, error)
@@ -178,7 +206,37 @@ type LearningRepository interface {
 	// reconcile pass's skip-alias repair walks it exactly like ListAllMastery;
 	// a subject with skips but no folded mastery must still be visited.
 	ListAllSkips(ctx context.Context) ([]types.LearningSkip, error)
+
+	// ---- Deletion epoch fence (profile delete serialization) ----
+
+	// GetSubjectEpoch returns the subject's current deletion epoch. An absent
+	// row is epoch 0 — collection is at its first generation.
+	GetSubjectEpoch(ctx context.Context, subjectID string) (int64, error)
+	// DeleteProfileData is the atomic profile deletion: the personal-data
+	// sweep, the optional collection opt-out and the epoch bump all commit
+	// (or roll back) as one transaction, so a crash can never leave a
+	// half-deleted profile whose opt-out was never recorded.
+	DeleteProfileData(ctx context.Context, tenantID uint64, subjectID string, optOut bool) error
+	// ApplyTopicMapping stores one adjudicated topic mapping together with
+	// its optional projection event and mastery fold in a single transaction,
+	// fenced on the subject's deletion epoch: when the epoch moved past
+	// expectedEpoch the whole write is discarded with ErrLearningEpochAdvanced.
+	// The fold closure receives the current mastery row (nil when unseen) and
+	// returns the row to persist; it runs inside the transaction so the
+	// read-modify-write cycle cannot interleave a concurrent delete.
+	ApplyTopicMapping(
+		ctx context.Context, expectedEpoch int64, scope LearningScope,
+		mapping *types.MemoryWikiMap, event *types.LearningEvent,
+		fold func(existing *types.MasteryState) types.MasteryState,
+	) error
 }
+
+// ErrLearningEpochAdvanced reports that the subject's deletion epoch no
+// longer matches the value a writer captured before its work began: the
+// profile was deleted (possibly on another server) while the write was in
+// flight, and the write must be discarded instead of resurrecting deleted
+// data.
+var ErrLearningEpochAdvanced = errors.New("learning: subject epoch advanced, discarding stale write")
 
 // LearningService is the write-path entry the QA handler calls after each
 // completed answer, plus the idempotent history replay the reconcile
@@ -196,6 +254,11 @@ type LearningService interface {
 	// stayed past the deep-dwell threshold — its own event type, capped at
 	// one per node per re-ask window.
 	RecordWikiRead(ctx context.Context, kbID, slug, tier string) error
+	// RecordAgentRead lands one agent wiki_read_page call as a zero-weight
+	// timeline trace (agent_read). Tool access is activity, never the
+	// person's learning: nothing folds, nothing refreshes, and the human
+	// read's scoring window stays untouched. Own dedup window per slug.
+	RecordAgentRead(ctx context.Context, kbID, slug string) error
 	// RecordSelfAssess lands the skills-matrix self-assessment: "up" lifts
 	// the frozen logit into the mastered band (the tier gate still demands
 	// quiz proof), "down" demotes with a reason taxonomy (all / doc_gap /
@@ -647,4 +710,13 @@ type Recommendation struct {
 	// continues_*/same_section keys (the service layer translates it to a
 	// title before serving; never shipped raw). Display-only.
 	WhyRef string `json:"why_ref,omitempty"`
+}
+
+// ErrLearningCollectionDisabled rejects telemetry inside the durable consent boundary.
+var ErrLearningCollectionDisabled = errors.New("learning: collection disabled")
+
+// LearningContextCapturer is optional for integrations and test doubles. Capture
+// before starting a model/tool, never after its detached callback is scheduled.
+type LearningContextCapturer interface {
+	CaptureCollectionContext(context.Context) context.Context
 }

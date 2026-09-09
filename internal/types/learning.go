@@ -44,9 +44,17 @@ const (
 	// the tier constant WeightWikiDeepRead.
 	LearningEventWikiDeepRead = "wiki_deep_read"
 
-	// LearningEventWikiToolRead: an agent wiki_read_page call, collected
-	// opportunistically where a hook exists. May never be produced.
+	// LearningEventWikiToolRead: the person deliberately opened the node's
+	// wiki page in the browser — a human read signal. (The type name is
+	// historical: it predates the channel split from agent reads.)
 	LearningEventWikiToolRead = "wiki_tool_read"
+	// LearningEventAgentRead: an agent wiki_read_page call made while
+	// answering for the person. Zero-weight by contract — a tool access is
+	// activity trace ("the assistant consulted this page on your behalf"),
+	// never the person's own learning: it must not fold mastery, must not
+	// refresh the retention anchor, and must not consume the human read's
+	// 48-hour scoring window.
+	LearningEventAgentRead = "agent_read"
 	// LearningEventSelfAssessUp: the person self-assessed "I know this
 	// better than my tier" (skills-matrix self-assessment track). The write
 	// path lifts the frozen logit straight into the mastered band so the
@@ -81,10 +89,14 @@ const (
 
 // Quiz item lifecycle: generated items are active until a human disables
 // them; disabling keeps history (attempts stay) while removing the item from
-// serving.
+// serving. Stale is the automatic evidence-invalidated state: the page or
+// its cited chunks changed since generation, so the question may no longer
+// be answerable from the current material — serving and scoring stop until
+// the next maintenance pass re-adjudicates against the new evidence.
 const (
 	LearningQuizStatusActive   = "active"
 	LearningQuizStatusDisabled = "disabled"
+	LearningQuizStatusStale    = "stale"
 )
 
 // memory_wiki_map provenance.
@@ -165,7 +177,9 @@ func (r *RefList) Scan(value interface{}) error {
 // state can be rebuilt by replaying these rows, which is what makes
 // reconciliation, backfill and constants retuning safe operations.
 type LearningEvent struct {
-	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	// OriginalSlug preserves the first node name when canonical identity is migrated.
+	OriginalSlug string `json:"original_slug,omitempty" gorm:"type:varchar(512);not null;default:''"`
+	ID           string `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	// The scope is declared as an index on the model, not only in the
 	// migration, so near-window re-ask lookups stay index-backed on every
 	// database the model is auto-migrated onto.
@@ -197,7 +211,9 @@ func (LearningEvent) TableName() string { return "learning_events" }
 // decayed probability: both are derived at read time so a stability or
 // threshold change applies to history without a rewrite pass.
 type MasteryState struct {
-	TenantID uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;uniqueIndex:idx_mastery_states_scope,priority:1"`
+	ProjectionVersion string `json:"projection_version" gorm:"type:varchar(64);not null;default:''"`
+	ReplayHash        string `json:"replay_hash,omitempty" gorm:"type:varchar(64);not null;default:''"`
+	TenantID          uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;uniqueIndex:idx_mastery_states_scope,priority:1"`
 	// SubjectID is Principal.StorageID().
 	SubjectID string `json:"subject_id" gorm:"type:varchar(512);not null;uniqueIndex:idx_mastery_states_scope,priority:2"`
 	// KnowledgeBaseID scopes mastery to one wiki graph.
@@ -288,6 +304,13 @@ type LearningQuizItem struct {
 	Explanation string      `json:"explanation" gorm:"type:text"`
 	// ChunkRefs cites the evidence the item was generated from.
 	ChunkRefs RefList `json:"chunk_refs" gorm:"column:chunk_refs;type:jsonb"`
+	// EvidenceHash freezes the evidence version: a digest of the page
+	// content and cited chunk contents at generation time. When the
+	// maintenance pass recomputes a different digest, the item goes stale —
+	// serving and scoring stop until questions are regenerated from the
+	// new material. Empty on legacy rows means "version unknown" and is
+	// treated as stale on the first pass that can compute a digest.
+	EvidenceHash string `json:"evidence_hash" gorm:"type:varchar(64);not null;default:''"`
 	// Status is active or disabled; see the LearningQuizStatus constants.
 	Status    string    `json:"status" gorm:"type:varchar(16);not null;default:'active';index:idx_learning_quiz_items_scope,priority:4"`
 	CreatedAt time.Time `json:"created_at"`
@@ -310,6 +333,8 @@ type LearningQuizAttempt struct {
 	// and per-node stats never need the join.
 	QuizItemID string `json:"quiz_item_id" gorm:"type:varchar(36);not null;index:idx_learning_quiz_attempts_item,priority:3"`
 	Slug       string `json:"slug" gorm:"type:varchar(512);not null;index:idx_learning_quiz_attempts_scope,priority:4"`
+	// OriginalSlug preserves historical identity across canonical node renames.
+	OriginalSlug string `json:"original_slug,omitempty" gorm:"type:varchar(512);not null;default:''"`
 	// ChosenKey/IsCorrect freeze the deterministic grade result.
 	ChosenKey  string    `json:"chosen_key" gorm:"type:varchar(4);not null"`
 	IsCorrect  bool      `json:"is_correct" gorm:"not null;default:false"`
@@ -378,3 +403,42 @@ type LearningSkip struct {
 }
 
 func (LearningSkip) TableName() string { return "learning_skips" }
+
+// LearningSubjectEpoch is the deletion generation fence: one row per
+// subject, bumped inside the same transaction that deletes the profile.
+// Background write paths capture the epoch before their long-running work
+// (typically a model call) and re-check it inside the write transaction —
+// a stale epoch means the profile was deleted mid-flight and the write is
+// discarded, so an in-flight result cannot resurrect deleted data even
+// when the opt-out switch alone still reads "collecting" (e.g. the person
+// re-enabled collection right after deleting, or the check raced another
+// server's delete). Subject-scoped, not tenant-scoped, for the same reason
+// as the prefs row: shared-KB rows land under the KB owner's tenant while
+// deletion is a property of the person.
+type LearningSubjectEpoch struct {
+	// SubjectID is Principal.StorageID().
+	SubjectID string `json:"subject_id" gorm:"primaryKey;type:varchar(512)"`
+	// Epoch counts profile deletions; 0 (row absent) is the virgin state.
+	Epoch     int64     `json:"epoch" gorm:"not null;default:0"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (LearningSubjectEpoch) TableName() string { return "learning_subject_epochs" }
+
+// HumanLearningEventTypes is the explicit activity vocabulary. Background
+// projections and agent traces never count as human recency, streak or targets.
+func HumanLearningEventTypes() []string {
+	return []string{LearningEventAnswerCite, LearningEventCrossRef, LearningEventReAsk,
+		LearningEventWikiToolRead, LearningEventWikiDeepRead, LearningEventQuizCorrect,
+		LearningEventQuizWrong, LearningEventQuizUnsure, LearningEventSelfAssessUp,
+		LearningEventSelfAssessDownAll, LearningEventSelfAssessDownDocGap,
+		LearningEventSelfAssessDownDocUpdated, LearningEventSelfAssessDownQuizEasy}
+}
+func IsHumanLearningEvent(kind string) bool {
+	for _, v := range HumanLearningEventTypes() {
+		if kind == v {
+			return true
+		}
+	}
+	return false
+}

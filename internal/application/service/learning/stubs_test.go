@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 type stubLearningRepo struct {
 	interfaces.LearningRepository
 
+	txMu         sync.Mutex
 	mu           sync.Mutex
 	events       []types.LearningEvent
 	mastery      map[string]*types.MasteryState // key: tenant|subject|kb|slug
@@ -36,12 +38,19 @@ type stubLearningRepo struct {
 	// leave it alone (the resurrection guard), the KB sweep clears it.
 	backfillMarks map[string]bool
 	// skips mirrors learning_skips, keyed like mastery: tenant|subject|kb|slug.
-	skips     map[string]time.Time
-	prefsHits atomic.Int32
-	appends   atomic.Int32
+	skips      map[string]time.Time
+	prefsHits  atomic.Int32
+	appends    atomic.Int32
+	applyCalls atomic.Int32
 	// masteryUpserts counts UpsertMastery calls so no-op guarantees (the
 	// fold-drift audit must not rewrite converged state) are assertable.
 	masteryUpserts atomic.Int32
+	// epoch mirrors learning_subject_epochs: subject → deletion generation.
+	epoch map[string]int64
+	// deleteErr / applyErr are fault-injection hooks for the delete-atomicity
+	// and epoch-fence tests; nil means "never fail".
+	deleteErr func() error
+	applyErr  func() error
 }
 
 func newStubRepo() *stubLearningRepo {
@@ -49,13 +58,19 @@ func newStubRepo() *stubLearningRepo {
 		mastery:       map[string]*types.MasteryState{},
 		prefs:         map[string]*types.LearningSubjectPrefs{},
 		backfillMarks: map[string]bool{},
+		epoch:         map[string]int64{},
 	}
 }
 
 func (s *stubLearningRepo) AppendEvent(_ context.Context, e *types.LearningEvent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e.ID = "ev-" + time.Now().Format("150405.000000000")
+	// Respect a caller-provided id like the real repository does — the
+	// keyset reader's tie-break assumes unique ids, and time-minted ids
+	// can collide inside one test loop on coarse clocks.
+	if e.ID == "" {
+		e.ID = "ev-auto-" + strconv.Itoa(len(s.events)+1)
+	}
 	s.events = append(s.events, *e)
 	s.appends.Add(1)
 	return nil
@@ -75,6 +90,94 @@ func (s *stubLearningRepo) ListEvents(_ context.Context, scope interfaces.Learni
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// ListEventsPaged mirrors the keyset reader: canonical (occurred_at, id)
+// order regardless of the in-memory slice's append order.
+func (s *stubLearningRepo) ListEventsPaged(_ context.Context, scope interfaces.LearningScope, after time.Time, afterID string, limit int) ([]types.LearningEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 500
+	}
+	matches := func(e types.LearningEvent) bool {
+		if e.TenantID != scope.TenantID || e.SubjectID != scope.SubjectID || e.KnowledgeBaseID != scope.KnowledgeBaseID {
+			return false
+		}
+		if afterID == "" && after.IsZero() {
+			return true
+		}
+		if !e.OccurredAt.Equal(after) {
+			return e.OccurredAt.After(after)
+		}
+		return e.ID > afterID
+	}
+	var scoped []types.LearningEvent
+	for _, e := range s.events {
+		if matches(e) {
+			scoped = append(scoped, e)
+		}
+	}
+	sort.Slice(scoped, func(i, j int) bool {
+		if !scoped[i].OccurredAt.Equal(scoped[j].OccurredAt) {
+			return scoped[i].OccurredAt.Before(scoped[j].OccurredAt)
+		}
+		return scoped[i].ID < scoped[j].ID
+	})
+	if len(scoped) > limit {
+		scoped = scoped[:limit]
+	}
+	return scoped, nil
+}
+
+// MigrateMastery mirrors the atomic migration: upsert target, re-tag
+// attempts, retire source.
+func (s *stubLearningRepo) MigrateMastery(_ context.Context, scope interfaces.LearningScope, fromSlug, toSlug string, state *types.MasteryState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	stored := *state
+	s.mastery[s.masteryKey(scope, toSlug)] = &stored
+	s.masteryUpserts.Add(1)
+	for i := range s.quizAttempts {
+		if s.quizAttempts[i].SubjectID == scope.SubjectID &&
+			s.quizAttempts[i].KnowledgeBaseID == scope.KnowledgeBaseID &&
+			s.quizAttempts[i].Slug == fromSlug {
+			if s.quizAttempts[i].OriginalSlug == "" {
+				s.quizAttempts[i].OriginalSlug = s.quizAttempts[i].Slug
+			}
+			s.quizAttempts[i].Slug = toSlug
+		}
+	}
+	for i := range s.events {
+		e := &s.events[i]
+		if e.TenantID == scope.TenantID && e.SubjectID == scope.SubjectID && e.KnowledgeBaseID == scope.KnowledgeBaseID && e.Slug == fromSlug {
+			if e.OriginalSlug == "" {
+				e.OriginalSlug = e.Slug
+			}
+			e.Slug = toSlug
+		}
+	}
+	delete(s.mastery, s.masteryKey(scope, fromSlug))
+	s.deleted = append(s.deleted, fromSlug) // same trace DeleteMastery leaves
+	return nil
+}
+
+// MoveSkip mirrors the atomic skip relocation, preserving the age.
+func (s *stubLearningRepo) MoveSkip(_ context.Context, scope interfaces.LearningScope, fromSlug, toSlug string, createdAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := s.masteryKey(scope, fromSlug)
+	if _, ok := s.skips[key]; !ok {
+		return nil // nothing to move
+	}
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	if _, exists := s.skips[s.masteryKey(scope, toSlug)]; !exists {
+		s.skips[s.masteryKey(scope, toSlug)] = createdAt
+	}
+	delete(s.skips, key)
+	return nil
 }
 
 func (s *stubLearningRepo) masteryKey(scope interfaces.LearningScope, slug string) string {
@@ -130,6 +233,9 @@ func (s *stubLearningRepo) ListActiveDays(_ context.Context, scope interfaces.Le
 	seen := map[string]bool{}
 	var out []string
 	for _, e := range s.events {
+		if !types.IsHumanLearningEvent(e.Type) {
+			continue
+		}
 		if e.TenantID != scope.TenantID || e.SubjectID != scope.SubjectID || e.KnowledgeBaseID != scope.KnowledgeBaseID {
 			continue
 		}
@@ -228,6 +334,31 @@ func (s *stubLearningRepo) UpsertQuizItem(_ context.Context, item *types.Learnin
 	clone := *item
 	s.quizItems = append(s.quizItems, clone)
 	return nil
+}
+
+// StaleQuizItemsByEvidence mirrors the real repository: active items of the
+// slug whose frozen evidence hash differs from the current digest flip to
+// the stale status; disabled items are never touched.
+func (s *stubLearningRepo) StaleQuizItemsByEvidence(
+	_ context.Context, tenantID uint64, knowledgeBaseID, slug, currentHash string,
+) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var staled int64
+	for i := range s.quizItems {
+		it := &s.quizItems[i]
+		if it.TenantID != tenantID || it.KnowledgeBaseID != knowledgeBaseID || it.Slug != slug {
+			continue
+		}
+		if it.Status != types.LearningQuizStatusActive {
+			continue
+		}
+		if it.EvidenceHash != currentHash {
+			it.Status = types.LearningQuizStatusStale
+			staled++
+		}
+	}
+	return staled, nil
 }
 
 func (s *stubLearningRepo) ListAttempts(_ context.Context, scope interfaces.LearningScope, slug string) ([]types.LearningQuizAttempt, error) {
@@ -481,6 +612,9 @@ func (s *stubLearningRepo) ListLastActivity(_ context.Context, scope interfaces.
 	defer s.mu.Unlock()
 	out := map[string]time.Time{}
 	for _, ev := range s.events {
+		if !types.IsHumanLearningEvent(ev.Type) {
+			continue
+		}
 		if ev.TenantID == scope.TenantID && ev.SubjectID == scope.SubjectID && ev.KnowledgeBaseID == scope.KnowledgeBaseID {
 			if at := ev.OccurredAt; at.After(out[ev.Slug]) {
 				out[ev.Slug] = at
@@ -520,6 +654,12 @@ func (s *stubLearningRepo) ListAttemptsBySubject(_ context.Context, subjectID st
 func (s *stubLearningRepo) DeleteLearningDataBySubject(_ context.Context, subjectID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.deleteLearningDataBySubjectLocked(subjectID)
+}
+
+// deleteLearningDataBySubjectLocked is the sweep body shared with
+// DeleteProfileData; callers hold s.mu.
+func (s *stubLearningRepo) deleteLearningDataBySubjectLocked(subjectID string) error {
 	s.events = filterEventsBySubject(s.events, subjectID)
 	for key, row := range s.mastery {
 		if row.SubjectID == subjectID {
@@ -599,6 +739,87 @@ func (s *stubLearningRepo) UpsertSubjectPrefs(_ context.Context, prefs *types.Le
 	defer s.mu.Unlock()
 	clone := *prefs
 	s.prefs[prefs.SubjectID] = &clone
+	return nil
+}
+
+// GetSubjectEpoch mirrors the real repository: absent row = epoch 0.
+func (s *stubLearningRepo) GetSubjectEpoch(_ context.Context, subjectID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.epoch[subjectID], nil
+}
+
+// DeleteProfileData mirrors the atomic delete: sweep + optional opt-out +
+// epoch bump under one lock. The deleteErr hook lets fault-injection tests
+// fail the whole operation mid-way and assert nothing was half-applied.
+func (s *stubLearningRepo) DeleteProfileData(_ context.Context, tenantID uint64, subjectID string, optOut bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteErr != nil {
+		if err := s.deleteErr(); err != nil {
+			return err
+		}
+	}
+	if err := s.deleteLearningDataBySubjectLocked(subjectID); err != nil {
+		return err
+	}
+	if optOut {
+		clone := types.LearningSubjectPrefs{
+			TenantID: tenantID, SubjectID: subjectID, CollectDisabled: true,
+		}
+		s.prefs[subjectID] = &clone
+	}
+	s.epoch[subjectID]++
+	return nil
+}
+
+// ApplyTopicMapping mirrors the epoch-fenced transaction: a stale epoch
+// discards the whole write with ErrLearningEpochAdvanced; otherwise the
+// mapping upsert, the optional event append and the optional fold land as
+// one unit. The applyErr hook lets tests inject a generic write failure.
+func (s *stubLearningRepo) ApplyTopicMapping(
+	_ context.Context, expectedEpoch int64, scope interfaces.LearningScope,
+	mapping *types.MemoryWikiMap, event *types.LearningEvent,
+	fold func(*types.MasteryState) types.MasteryState,
+) error {
+	s.applyCalls.Add(1)
+	if mapping == nil {
+		return errors.New("learning: ApplyTopicMapping requires a mapping")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.applyErr != nil {
+		if err := s.applyErr(); err != nil {
+			return err
+		}
+	}
+	if s.epoch[scope.SubjectID] != expectedEpoch {
+		return interfaces.ErrLearningEpochAdvanced
+	}
+	if s.maps == nil {
+		s.maps = map[string]*types.MemoryWikiMap{}
+	}
+	key := mapping.NormalizedTopicKey + "→" + mapping.Slug
+	clone := *mapping
+	s.maps[key] = &clone
+	if event != nil {
+		ev := *event
+		ev.ID = "ev-auto-" + strconv.Itoa(len(s.events)+1)
+		s.events = append(s.events, ev)
+		s.appends.Add(1)
+	}
+	if fold != nil {
+		mkey := s.masteryKey(scope, mapping.Slug)
+		var existing *types.MasteryState
+		if row, ok := s.mastery[mkey]; ok {
+			clone := *row
+			existing = &clone
+		}
+		next := fold(existing)
+		stored := next
+		s.mastery[mkey] = &stored
+		s.masteryUpserts.Add(1)
+	}
 	return nil
 }
 
@@ -838,5 +1059,42 @@ func (s *stubLearningRepo) ListAllSkips(_ context.Context) ([]types.LearningSkip
 		}
 		return out[i].Slug < out[j].Slug
 	})
+	return out, nil
+}
+
+func (s *stubLearningRepo) WithSubject(ctx context.Context, subject string, epoch int64, collect bool, fn func(context.Context) error) error {
+	s.txMu.Lock()
+	defer s.txMu.Unlock()
+	current, err := s.GetSubjectEpoch(ctx, subject)
+	if err != nil {
+		return err
+	}
+	if current != epoch {
+		return interfaces.ErrLearningEpochAdvanced
+	}
+	if collect {
+		s.prefsHits.Add(1)
+		s.mu.Lock()
+		p := s.prefs[subject]
+		disabled := p != nil && p.CollectDisabled
+		s.mu.Unlock()
+		if disabled {
+			return interfaces.ErrLearningCollectionDisabled
+		}
+	}
+	return fn(ctx)
+}
+func (s *stubLearningRepo) ListEventScopes(ctx context.Context) ([]interfaces.LearningScope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := map[interfaces.LearningScope]bool{}
+	var out []interfaces.LearningScope
+	for _, e := range s.events {
+		scope := interfaces.LearningScope{TenantID: e.TenantID, SubjectID: e.SubjectID, KnowledgeBaseID: e.KnowledgeBaseID}
+		if !seen[scope] {
+			out = append(out, scope)
+			seen[scope] = true
+		}
+	}
 	return out, nil
 }

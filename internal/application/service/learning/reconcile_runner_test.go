@@ -393,6 +393,11 @@ func TestReconcileRunOnceNoRewriteOfConvergedState(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The first replay also certifies an already-correct online fold. Only
+	// subsequent replay of the same fingerprint must avoid writes.
+	if err := runner.runOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
 	// The seeding upsert itself counts; measure from here.
 	before := repo.masteryUpserts.Load()
 	if err := runner.runOnce(ctx); err != nil {
@@ -441,7 +446,6 @@ func TestReconcileMovesSkipOnlySubject(t *testing.T) {
 		t.Fatal("stale skip slug must be retired")
 	}
 }
-
 
 // TestReconcileRepairsEdges: the F2 storage-side lock. Edges whose
 // endpoints drifted with a rename follow the alias index; edges pointing

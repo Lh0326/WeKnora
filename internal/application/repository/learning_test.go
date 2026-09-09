@@ -30,6 +30,7 @@ func setupLearningTestDB(t *testing.T) *gorm.DB {
 		&types.LearningSubjectPrefs{},
 		&types.LearningBackfillMark{},
 		&types.LearningSkip{},
+		&types.LearningSubjectEpoch{},
 	))
 	return db
 }

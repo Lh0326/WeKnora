@@ -17,7 +17,7 @@ const TTL_MS = 120_000
 
 const TIER_LABEL: Record<string, string> = {
   mastered: '已验证',
-  familiar: '已熟悉',
+  familiar: '熟悉',
   touched: '已接触',
   unseen: '未覆盖',
 }
@@ -30,7 +30,8 @@ const EVENT_LABEL: Record<string, string> = {
   quiz_unsure: '校验不确定',
   wiki_deep_read: '深读',
   wiki_read: '阅读',
-  wiki_tool_read: '助手读页',
+  wiki_tool_read: '页面阅读',
+  agent_read: '助手查页',
   self_assess_up: '自评更熟',
   backfill_cite: '历史回填',
   topic_signal: '话题信号',
@@ -149,7 +150,7 @@ export function assistantLearningFieldsFor(slug: string | null): Record<string, 
   const node = slug ? cache.masteryBySlug.get(slug) : null
   if (slug) {
     fields.current_node = node
-      ? `${TIER_LABEL[node.level] || node.level}，掌握度 ${node.p_eff}%，证据 ${node.evidence} 条${node.quizHint ? '，' + node.quizHint : ''}`
+      ? `${TIER_LABEL[node.level] || node.level}，有效熟悉度 ${node.p_eff}%，证据 ${node.evidence} 条${node.quizHint ? '，' + node.quizHint : ''}`
       : '未覆盖，尚无学习记录'
   }
   return fields

@@ -218,9 +218,13 @@ func weightForType(eventType string) float64 {
 	case types.LearningEventTopicSignal:
 		return WeightTopicSignal
 	case types.LearningEventWikiToolRead:
-		// Opportunistic agent wiki reads ride the topic-signal weight: the
-		// §3.3.6 spec reuses WeightTopicSignal for this low-trust touch.
+		// The human's deliberate browser read rides the topic-signal weight:
+		// the §3.3.6 spec reuses WeightTopicSignal for this low-trust touch.
 		return WeightTopicSignal
+	case types.LearningEventAgentRead:
+		// Zero by contract: a tool access is trace, never the person's
+		// learning (channel separation, review P2-D).
+		return 0
 	case types.LearningEventQuizCorrect:
 		return WeightQuizCorrect
 	case types.LearningEventQuizWrong:

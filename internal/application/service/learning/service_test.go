@@ -106,8 +106,10 @@ func TestRecordAnswerTouchesCollectsAndFolds(t *testing.T) {
 		t.Fatalf("mastery not folded once: %+v", row)
 	}
 
-	// Second answer minutes later (inside the re-ask window): same touch is negative.
-	svc.RecordAnswerTouches(ctx, answerMessage(&types.SearchResult{ID: "c1", KnowledgeID: "d1", KnowledgeBaseID: testKB}))
+	// A different answer minutes later is a re-ask; retrying the first callback is not.
+	second := answerMessage(&types.SearchResult{ID: "c1", KnowledgeID: "d1", KnowledgeBaseID: testKB})
+	second.ID = "msg-2"
+	svc.RecordAnswerTouches(ctx, second)
 	events = repo.snapshotEvents()
 	aliceEvents := 0
 	reasks := 0
@@ -148,7 +150,7 @@ func TestRecordAnswerTouchesRespectsOptOut(t *testing.T) {
 	}
 }
 
-func TestRecordAnswerTouchesCachesPrefs(t *testing.T) {
+func TestRecordAnswerTouchesRechecksDurableConsent(t *testing.T) {
 	repo := newStubRepo()
 	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
 	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, nil))
@@ -161,8 +163,8 @@ func TestRecordAnswerTouchesCachesPrefs(t *testing.T) {
 	svc.RecordAnswerTouches(ctx, msg)
 	svc.RecordAnswerTouches(ctx, msg)
 
-	if repo.prefsHits.Load() != 1 {
-		t.Fatalf("three answers in one cache window did %d prefs reads, want 1", repo.prefsHits.Load())
+	if repo.prefsHits.Load() != 3 {
+		t.Fatalf("each answer must recheck durable consent, got %d reads, want 3", repo.prefsHits.Load())
 	}
 }
 

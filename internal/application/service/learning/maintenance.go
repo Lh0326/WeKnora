@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"time"
 
@@ -26,16 +27,19 @@ func sortedStrings(in []string) []string {
 // reconcile runner calls it on startup and once a day; every pass is
 // incremental (page watermarks, quiz deficits) and safe to re-run.
 func (s *Service) RunMaintenance(ctx context.Context) error {
+	var failures []error
 	if !learningEnabled() {
 		return nil
 	}
 	if err := s.runTopicMapping(ctx); err != nil {
 		logger.Warnf(ctx, "learning: topic mapping pass failed: %v", err)
+		failures = append(failures, err)
 	}
 	if err := s.runEdgeAndQuizPass(ctx); err != nil {
 		logger.Warnf(ctx, "learning: edge/quiz pass failed: %v", err)
+		failures = append(failures, err)
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // runTopicMapping projects memory topics onto wiki nodes (channel B). The
@@ -92,6 +96,11 @@ func (s *Service) runTopicMapping(ctx context.Context) error {
 		if s.prefs.collectionDisabled(ctx, s.repo, key.subject) {
 			continue
 		}
+		epoch, err := s.repo.GetSubjectEpoch(ctx, key.subject)
+		if err != nil {
+			return err
+		}
+		scopeCtx := context.WithValue(ctx, types.LearningEpochContextKey, capturedLearningEpoch{subject: key.subject, epoch: epoch})
 		for kbID := range kbsByScope[key] {
 			kb, err := s.kbRepo.GetKnowledgeBaseByID(ctx, kbID)
 			if err != nil || kb == nil {
@@ -126,7 +135,7 @@ func (s *Service) runTopicMapping(ctx context.Context) error {
 			}
 			// Tenant-scoped model channel: the background context carries no
 			// tenant, so inject the scope's before any LLM adjudication.
-			tenantCtx := context.WithValue(ctx, types.TenantIDContextKey, key.tenant)
+			tenantCtx := context.WithValue(scopeCtx, types.TenantIDContextKey, key.tenant)
 			s.mapTopicsForScope(tenantCtx, key.tenant, key.subject, kbID, modelID, byScope[key], nodes, pagesBySlug)
 		}
 	}
@@ -174,7 +183,7 @@ func (s *Service) mapTopicsForScope(
 		return
 	}
 
-	prior, priorErr := s.repo.ListEvents(ctx, scope, now.Add(-topicSignalWindow), 0)
+	prior, priorErr := listEventWindow(ctx, s.repo, scope, now.Add(-topicSignalWindow))
 	if priorErr != nil {
 		logger.Warnf(ctx, "learning: topic-signal dedup read failed, skipping batch: %v", priorErr)
 		return // conservative: skip rather than risk duplicate signals
@@ -184,6 +193,19 @@ func (s *Service) mapTopicsForScope(
 		if ev.Type == types.LearningEventTopicSignal {
 			recentSignal[ev.Slug] = true
 		}
+	}
+
+	// The deletion-epoch fence: every write below carries the epoch this
+	// pass observed BEFORE the model calls. A profile deleted mid-flight
+	// (this tab, another server) bumps the epoch, and ApplyTopicMapping
+	// discards the whole mapping+event+fold write with
+	// ErrLearningEpochAdvanced — the opt-out switch alone is not enough,
+	// because the person may have re-enabled collection right after
+	// deleting, which must not un-delete the in-flight result.
+	epoch, err := s.operationEpoch(ctx, subject)
+	if err != nil {
+		logger.Warnf(ctx, "learning: subject epoch read failed, skipping batch (kb %s): %v", kbID, err)
+		return // conservative: skip rather than risk resurrection
 	}
 
 	for start := 0; start < len(withCandidates); start += topicBatchSize {
@@ -214,29 +236,53 @@ func (s *Service) mapTopicsForScope(
 					break
 				}
 			}
-			if err := s.repo.UpsertTopicMap(ctx, &types.MemoryWikiMap{
+			mapping := &types.MemoryWikiMap{
 				TenantID: tenant, SubjectID: subject, KnowledgeBaseID: kbID,
 				NormalizedTopicKey: topicKey, Slug: verdict.Slug,
 				TopicLabel: label, Confidence: verdict.Confidence,
 				DecidedBy: types.LearningMapDecidedByLLM,
-			}); err != nil {
-				logger.Warnf(ctx, "learning: topic map upsert failed (%s→%s): %v", topicKey, verdict.Slug, err)
+			}
+			// Several topics converging on one node read as one
+			// consolidation, not as farming: the projection event and its
+			// fold ride only when this slug has no signal in the window.
+			var event *types.LearningEvent
+			var fold func(*types.MasteryState) types.MasteryState
+			if !recentSignal[verdict.Slug] {
+				event = &types.LearningEvent{
+					TenantID: tenant, SubjectID: subject, KnowledgeBaseID: kbID,
+					Slug: verdict.Slug, Type: types.LearningEventTopicSignal,
+					Weight: WeightTopicSignal, OccurredAt: now,
+				}
+				fold = func(existing *types.MasteryState) types.MasteryState {
+					if existing == nil {
+						existing = &types.MasteryState{
+							TenantID:        scope.TenantID,
+							SubjectID:       scope.SubjectID,
+							KnowledgeBaseID: scope.KnowledgeBaseID,
+							Slug:            verdict.Slug,
+						}
+					}
+					state := FoldEvent(StateFromModel(existing),
+						Event{Type: types.LearningEventTopicSignal, Weight: WeightTopicSignal, OccurredAt: now})
+					state.ApplyTo(existing)
+					return *existing
+				}
+			}
+			// Hold the in-process node lock across the transaction so the
+			// fold cannot interleave a synchronous fold on the same node
+			// (the DB transaction carries the cross-instance guarantee).
+			err := s.repo.ApplyTopicMapping(ctx, epoch, scope, mapping, event, fold)
+			switch {
+			case errors.Is(err, interfaces.ErrLearningEpochAdvanced):
+				// The profile was deleted while the model was deciding —
+				// abort the whole pass, every remaining verdict is stale.
+				logger.Warnf(ctx, "learning: topic mapping discarded, profile deleted mid-flight (subject %s)", subject)
+				return
+			case err != nil:
+				logger.Warnf(ctx, "learning: topic map apply failed (%s→%s): %v", topicKey, verdict.Slug, err)
 				continue
 			}
-			// The projection event: at most one topic_signal per slug per
-			// window, so several topics converging on one node read as one
-			// consolidation, not as farming.
-			if recentSignal[verdict.Slug] {
-				continue
-			}
-			event := &types.LearningEvent{
-				TenantID: tenant, SubjectID: subject, KnowledgeBaseID: kbID,
-				Slug: verdict.Slug, Type: types.LearningEventTopicSignal,
-				Weight: WeightTopicSignal, OccurredAt: now,
-			}
-			if err := s.repo.AppendEvent(ctx, event); err == nil {
-				s.foldOne(ctx, scope, verdict.Slug,
-					Event{Type: types.LearningEventTopicSignal, Weight: WeightTopicSignal, OccurredAt: now})
+			if event != nil {
 				recentSignal[verdict.Slug] = true
 			}
 		}
@@ -257,6 +303,7 @@ func (s *Service) topicCollectionDisabled(ctx context.Context, subject string) b
 // the gated passes. Structure mirrors the reconcile pass: read pages once,
 // group per KB, decide, write.
 func (s *Service) runEdgeAndQuizPass(ctx context.Context) error {
+	var failures []error
 	for _, kbID := range s.distinctKnownKBs(ctx) {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -280,12 +327,14 @@ func (s *Service) runEdgeAndQuizPass(ctx context.Context) error {
 		kbCtx := context.WithValue(ctx, types.TenantIDContextKey, kb.TenantID)
 		if err := s.runEdgePass(kbCtx, kb, modelID); err != nil {
 			logger.Warnf(ctx, "learning: edge pass failed (kb %s): %v", kbID, err)
+			failures = append(failures, err)
 		}
 		if err := s.runQuizPass(kbCtx, kb, modelID); err != nil {
 			logger.Warnf(ctx, "learning: quiz pass failed (kb %s): %v", kbID, err)
+			failures = append(failures, err)
 		}
 	}
-	return nil
+	return errors.Join(failures...)
 }
 
 // runEdgePass generates, adjudicates and stores prerequisite edges for one KB.
@@ -404,94 +453,99 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 	if err != nil {
 		return err
 	}
-	// One KB-wide inventory fetch instead of a ListQuizItems round-trip per
-	// page: the pass only needs each slug's active count for the deficit.
-	// A read failure aborts this KB's pass (retried next round via the
-	// deficit watermark) rather than generating against a blind baseline.
-	itemsBySlug := map[string]int{}
-	questionsBySlug := map[string]map[string]bool{}
 	allItems, err := s.repo.ListQuizItemsByKB(ctx, kb.TenantID, kb.ID)
 	if err != nil {
-		logger.Warnf(ctx, "learning: quiz inventory read failed (kb %s): %v", kb.ID, err)
 		return err
 	}
-	for _, it := range allItems {
-		if it.Status == types.LearningQuizStatusActive {
-			itemsBySlug[it.Slug]++
-			if questionsBySlug[it.Slug] == nil {
-				questionsBySlug[it.Slug] = map[string]bool{}
-			}
-			questionsBySlug[it.Slug][normalizedQuizQuestion(it.Question)] = true
+	bySlug := map[string]*types.WikiPage{}
+	banks := map[string][]types.LearningQuizItem{}
+	for _, p := range pages {
+		if p != nil && p.Slug != "" {
+			bySlug[p.Slug] = p
 		}
 	}
-	for _, page := range pages {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	for _, it := range allItems {
+		banks[it.Slug] = append(banks[it.Slug], it)
+		if _, ok := bySlug[it.Slug]; !ok {
+			bySlug[it.Slug] = nil
 		}
-		if page == nil || page.Slug == "" {
-			continue
+	}
+	slugs := make([]string, 0, len(bySlug))
+	for slug := range bySlug {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	for _, slug := range slugs {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		active := itemsBySlug[page.Slug]
-		need := quizDeficit(page, active)
-		if need == 0 || len(page.ChunkRefs) == 0 {
-			continue
-		}
-
-		ids := append([]string{}, page.ChunkRefs...)
-		if len(ids) > quizEvidenceChunkCap {
-			ids = ids[:quizEvidenceChunkCap]
-		}
-		chunks, err := s.chunkRepo.ListChunksByID(ctx, kb.TenantID, ids)
+		page := bySlug[slug]
+		excerpts, hash, err := s.pageQuizEvidence(ctx, kb.TenantID, page)
 		if err != nil {
-			logger.Warnf(ctx, "learning: quiz evidence read failed (slug %s): %v", page.Slug, err)
+			return err
+		} // unknown evidence is suspended by serving/grading checks
+		staleHash := hash
+		if staleHash == "" {
+			staleHash = "unavailable"
+		} // also invalidates legacy empty hashes
+		if _, err := s.repo.StaleQuizItemsByEvidence(ctx, kb.TenantID, kb.ID, slug, staleHash); err != nil {
+			return err
+		}
+		if hash == "" {
 			continue
 		}
-		excerpts := map[string]string{}
-		for _, c := range chunks {
-			if c != nil && c.Content != "" {
-				excerpts[c.ID] = c.Content
+		active := 0
+		questions := map[string]bool{}
+		for _, it := range banks[slug] {
+			if it.Status == types.LearningQuizStatusDisabled {
+				questions[normalizedQuizQuestion(it.Question)] = true
+			}
+			if it.Status == types.LearningQuizStatusActive && it.EvidenceHash == hash {
+				active++
+				questions[normalizedQuizQuestion(it.Question)] = true
 			}
 		}
-		if len(excerpts) == 0 {
-			continue // no evidence, no questions — refusing beats inventing
-		}
-
-		user := quizUserPrompt(page, need, excerpts)
-		var resp quizResponse
-		if err := s.callLearningJSON(ctx, modelID, agent.LearningQuizPrompt, user,
-			quizSchema, learningQuizBudget, learningQuizRetry, &resp); err != nil {
+		need := quizDeficit(page, active)
+		if need == 0 {
 			continue
 		}
-		stored := 0
-		if questionsBySlug[page.Slug] == nil {
-			questionsBySlug[page.Slug] = map[string]bool{}
+		var resp quizResponse
+		if err := s.callLearningJSON(ctx, modelID, agent.LearningQuizPrompt, quizUserPrompt(page, need, excerpts), quizSchema, learningQuizBudget, learningQuizRetry, &resp); err != nil {
+			continue
 		}
-		// Validate against the actual evidence supplied, which can be a
-		// strict subset of page.ChunkRefs after caps or missing chunks.
+		// A model response belongs to the snapshot it saw, never to a later edit.
+		_, _, latest, err := s.currentQuizEvidence(ctx, kb.TenantID, kb.ID, slug)
+		if err != nil {
+			return err
+		}
+		if latest != hash {
+			continue
+		}
 		evidencePage := *page
 		evidencePage.ChunkRefs = nil
 		for id := range excerpts {
 			evidencePage.ChunkRefs = append(evidencePage.ChunkRefs, id)
 		}
+		stored := 0
 		for _, draft := range resp.Questions {
 			if stored >= need {
 				break
 			}
-			questionKey := normalizedQuizQuestion(draft.Question)
-			if questionsBySlug[page.Slug][questionKey] {
+			key := normalizedQuizQuestion(draft.Question)
+			if questions[key] {
 				continue
 			}
 			item := validateQuizDraft(draft, &evidencePage)
 			if item == nil {
-				continue // ungrounded or malformed: dropped whole, never rescued
-			}
-			item.TenantID = kb.TenantID
-			if err := s.repo.UpsertQuizItem(ctx, item); err != nil {
-				logger.Warnf(ctx, "learning: quiz upsert failed (slug %s): %v", page.Slug, err)
 				continue
 			}
+			item.TenantID = kb.TenantID
+			item.EvidenceHash = hash
+			if err := s.repo.UpsertQuizItem(ctx, item); err != nil {
+				return err
+			}
 			stored++
-			questionsBySlug[page.Slug][questionKey] = true
+			questions[key] = true
 		}
 	}
 	return nil

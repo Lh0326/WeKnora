@@ -1,6 +1,8 @@
 package learning
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strconv"
 	"strings"
@@ -84,6 +86,38 @@ func validateQuizDraft(d quizDraft, page *types.WikiPage) *types.LearningQuizIte
 		ChunkRefs:       append(types.RefList{}, d.ChunkRefs...),
 		Status:          types.LearningQuizStatusActive,
 	}
+}
+
+// quizEvidenceHash freezes the evidence version a question bank entry was
+// adjudicated against: a digest of the page content plus the cited chunk
+// contents, chunk ids sorted so the hash is stable regardless of map or
+// fetch order. Any material edit — page rewrite, chunk re-chunk, chunk
+// content fix — changes the digest, which is exactly what the stale-out
+// compares on every maintenance pass.
+func quizEvidenceHash(page *types.WikiPage, excerpts map[string]string) string {
+	h := sha256.New()
+	h.Write([]byte("quiz-evidence-v2"))
+	h.Write([]byte{0})
+	h.Write([]byte(page.Title))
+	h.Write([]byte{0})
+	h.Write([]byte(page.PageType))
+	h.Write([]byte{0})
+	h.Write([]byte(page.Slug))
+	h.Write([]byte{0})
+	h.Write([]byte(page.Content))
+	h.Write([]byte{0})
+	ids := make([]string, 0, len(excerpts))
+	for id := range excerpts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		h.Write([]byte(id))
+		h.Write([]byte{0})
+		h.Write([]byte(excerpts[id]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // quizDeficit returns how many more active items a page needs.

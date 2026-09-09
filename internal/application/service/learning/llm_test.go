@@ -14,19 +14,26 @@ import (
 
 // fakeChatModel implements chat.Chat with a scripted response sequence and
 // a call counter — the same shape as memory's stubChatModel, minus the
-// parts the learning paths never touch.
+// parts the learning paths never touch. onCall, when set, runs inside Chat
+// before the response is returned, which is how tests simulate "the world
+// changed while the model was deciding" (e.g. the profile was deleted
+// mid-adjudication).
 type fakeChatModel struct {
 	calls     atomic.Int32
 	responses []*types.ChatResponse
 	errs      []error
 	optsSeen  []chat.ChatOptions
 	msgsSeen  []chat.Message
+	onCall    func()
 }
 
 func (f *fakeChatModel) Chat(_ context.Context, msgs []chat.Message, opts *chat.ChatOptions) (*types.ChatResponse, error) {
 	i := int(f.calls.Add(1)) - 1
 	f.optsSeen = append(f.optsSeen, *opts)
 	f.msgsSeen = append(f.msgsSeen, msgs...)
+	if f.onCall != nil {
+		f.onCall()
+	}
 	if i < len(f.errs) && f.errs[i] != nil {
 		return nil, f.errs[i]
 	}

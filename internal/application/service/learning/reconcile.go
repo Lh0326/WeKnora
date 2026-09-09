@@ -1,6 +1,9 @@
 package learning
 
-import "sort"
+import (
+	"github.com/Tencent/WeKnora/internal/types"
+	"sort"
+)
 
 // SlugMigration is one deterministic rename repair: the mastery fold (and
 // the events it came from) moves from a slug that no longer resolves to the
@@ -13,74 +16,85 @@ type SlugMigration struct {
 	EventCount int
 }
 
-// ReconcileSlug repairs slug drift after wiki pages are renamed or merged.
-// aliasIndex maps a stale slug to the live slug that now owns it (built
-// from the live pages' Aliases). For every stale slug that has folded state:
-//
-//   - with a live target that has no state yet, the state moves as-is —
-//     identical numbers, hence an unchanged p_eff at any read time;
-//   - with a live target that already has state, the merge is a full event
-//     replay (both event lists folded together, in occurred_at order), not
-//     a logit addition — replay respects the clamp and the counters, an
-//     addition would not;
-//   - with no alias entry, nothing is emitted: the row stays put for the
-//     next reconciliation round, because guessing a target would be worse
-//     than waiting.
-//
-// The function is pure: states and events are handed in, migrations are
-// handed back, and the persistence order (write target, then delete source)
-// is the caller's single transaction.
+// ReconcileSlug groups every source by final target and computes one shared
+// replay result for each group. The caller commits all migrations inside a
+// subject transaction; a single-source legacy state without events is preserved.
 func ReconcileSlug(states map[string]FoldState, eventsBySlug map[string][]Event, aliasIndex map[string]string) []SlugMigration {
-	var migrations []SlugMigration
-	for from, state := range states {
-		to, ok := aliasIndex[from]
-		if !ok || to == from || to == "" {
-			continue
-		}
-
-		fromEvents := eventsBySlug[from]
-		toEvents := eventsBySlug[to]
-		_, toHasState := states[to]
-
-		switch {
-		case !toHasState:
-			// Pure move: the fold already is the replay of fromEvents.
-			migrations = append(migrations, SlugMigration{
-				FromSlug:   from,
-				ToSlug:     to,
-				State:      state,
-				EventCount: len(fromEvents),
-			})
-		default:
-			// Merge by replaying both event lists together in time order.
-			// Zero-weight events (deduped re-reads, unsure answers) join the
-			// EventCount but never the fold — the write path skips them, and
-			// the merge must land on exactly the state a clean sequential
-			// history would have folded.
-			merged := make([]Event, 0, len(fromEvents)+len(toEvents))
-			merged = append(merged, fromEvents...)
-			merged = append(merged, toEvents...)
-			sort.SliceStable(merged, func(i, j int) bool {
-				return merged[i].OccurredAt.Before(merged[j].OccurredAt)
-			})
-			folded := FoldState{}
-			for _, e := range merged {
-				if e.Weight != 0 {
-					folded = FoldEvent(folded, e)
-				}
-			}
-			migrations = append(migrations, SlugMigration{
-				FromSlug:   from,
-				ToSlug:     to,
-				State:      folded,
-				EventCount: len(merged),
-			})
+	groups := map[string][]string{}
+	for from := range states {
+		to := aliasIndex[from]
+		if to != "" && to != from {
+			groups[to] = append(groups[to], from)
 		}
 	}
-
-	// Deterministic output order keeps reconciliation diffs reviewable.
-	sort.Slice(migrations, func(i, j int) bool {
-		return migrations[i].FromSlug < migrations[j].FromSlug
-	})
+	var migrations []SlugMigration
+	for to, sources := range groups {
+		sort.Strings(sources)
+		merged := append([]Event{}, eventsBySlug[to]...)
+		for _, from := range sources {
+			merged = append(merged, eventsBySlug[from]...)
+		}
+		sort.SliceStable(merged, func(i, j int) bool { return eventLess(merged[i], merged[j]) })
+		seen := map[string]bool{}
+		var folded FoldState
+		count := 0
+		for _, e := range merged {
+			if e.ID != "" && seen[e.ID] {
+				continue
+			}
+			if e.ID != "" {
+				seen[e.ID] = true
+			}
+			count++
+			folded = FoldEvent(folded, e)
+		}
+		// Preserve a legacy single-source state if its event history is unavailable.
+		if len(merged) == 0 && len(sources) == 1 {
+			if _, exists := states[to]; !exists {
+				folded = states[sources[0]]
+			}
+		}
+		for _, from := range sources {
+			migrations = append(migrations, SlugMigration{FromSlug: from, ToSlug: to, State: folded, EventCount: count})
+		}
+	}
+	sort.Slice(migrations, func(i, j int) bool { return migrations[i].FromSlug < migrations[j].FromSlug })
 	return migrations
+}
+
+func eventLess(a, b Event) bool {
+	if !a.OccurredAt.Equal(b.OccurredAt) {
+		return a.OccurredAt.Before(b.OccurredAt)
+	}
+	return a.ID < b.ID
+}
+
+// canonicalAliasIndex never aliases an existing live node and rejects aliases
+// claimed by two different targets instead of letting iteration order decide.
+func canonicalAliasIndex(pages []*types.WikiPage) (map[string]bool, map[string]string) {
+	live := map[string]bool{}
+	aliases := map[string]string{}
+	ambiguous := map[string]bool{}
+	for _, p := range pages {
+		if p != nil && p.Slug != "" {
+			live[p.Slug] = true
+		}
+	}
+	for _, p := range pages {
+		if p == nil || p.Slug == "" {
+			continue
+		}
+		for _, key := range aliasKeysForPage(p) {
+			if live[key] || ambiguous[key] {
+				continue
+			}
+			if target, ok := aliases[key]; ok && target != p.Slug {
+				delete(aliases, key)
+				ambiguous[key] = true
+				continue
+			}
+			aliases[key] = p.Slug
+		}
+	}
+	return live, aliases
 }

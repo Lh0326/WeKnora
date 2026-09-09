@@ -2,8 +2,10 @@ package learning
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tencent/WeKnora/internal/agent"
 	"github.com/Tencent/WeKnora/internal/types"
@@ -89,6 +91,8 @@ func TestMaintenanceEdgesAndQuizzesHappyPath(t *testing.T) {
 		{Content: `{"questions":[{"question":"Q3?","options":{"A":"a","B":"b","C":"c","D":"d"},"correct_key":"C","explanation":"ok","chunk_refs":["c2"]}]}`, FinishReason: "stop"},
 	}
 
+	// Deterministic slug order is decay, then rag.
+	fake.responses[1], fake.responses[2] = fake.responses[2], fake.responses[1]
 	if err := svc.RunMaintenance(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -114,17 +118,25 @@ func TestMaintenanceEdgesAndQuizzesHappyPath(t *testing.T) {
 	}
 }
 
-// TestMaintenanceQuizCapRespected: a page already at the cap generates
-// nothing — no model call is even made for it.
+// TestMaintenanceQuizCapRespected: a page already at the cap — with items
+// bound to the CURRENT evidence version — generates nothing; no model call
+// is even made for it. (Unversioned or drifted items go stale and open
+// slots; that contract has its own test.)
 func TestMaintenanceQuizCapRespected(t *testing.T) {
 	svc, repo, _, _, fake := maintenanceFixture(t)
 	t.Setenv("LEARNING_ENABLE", "true")
 
-	// Fill concept/rag to the cap.
+	// Fill concept/rag to the cap, bound to the fixture's current evidence.
+	hash := quizEvidenceHash(
+		&types.WikiPage{Slug: "concept/rag", PageType: "concept", Title: "RAG", KnowledgeBaseID: testKB,
+			Content: "RAG combines retrieval and generation."},
+		map[string]string{"c1": "RAG evidence one"},
+	)
 	for i := 0; i < QuizItemsPerSlug; i++ {
 		if err := repo.UpsertQuizItem(t.Context(), &types.LearningQuizItem{
 			TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag",
 			Question: "filled", Status: types.LearningQuizStatusActive,
+			EvidenceHash: hash,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -439,5 +451,103 @@ func TestMaintenanceEdgeBatchRejectsSameBatchCycle(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("same-batch reverse edge must be rejected: %d prerequisite edges stored, want 1", count)
+	}
+}
+
+// TestTopicMappingDiscardedWhenProfileDeletedMidFlight（评审 P1-A 事务边界
+// 回归）：模型裁决进行期间用户删除了画像。停采开关是关不掉这条在途写入
+// 的——本用例刻意以 optOut=false 删除（开关仍读"采集中"），证明拦截来自
+// 删除代际而非开关：捕获的 epoch 已过期，整笔映射+事件+折叠写入被丢弃，
+// 删除的画像不因在途模型返回而复活。
+func TestTopicMappingDiscardedWhenProfileDeletedMidFlight(t *testing.T) {
+	svc, repo, _, _, fake := maintenanceFixture(t)
+	t.Setenv("LEARNING_ENABLE", "true")
+	repo.mu.Lock()
+	repo.topicStats = append(repo.topicStats, types.MemoryTopicStat{
+		TenantID: 1, SubjectID: "web_user:alice", Topic: "RAG 检索", NormalizedKey: "rag",
+	})
+	repo.affinity = append(repo.affinity, types.MemoryDocAffinity{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+	})
+	repo.mu.Unlock()
+	fake.responses = []*types.ChatResponse{{
+		Content:      `{"maps":{"rag":{"slug":"concept/rag","confidence":0.9}}}`,
+		FinishReason: "stop",
+	}}
+	// The delete lands WHILE the model is deciding — and crucially with
+	// optOut=false, so the collection switch reads "collecting" again the
+	// moment the delete commits. Only the epoch fence can stop the write.
+	// (Fire on the first call only — that one is the topic adjudication;
+	// later calls are the KB-shared edge/quiz passes.)
+	deleted := false
+	fake.onCall = func() {
+		if deleted {
+			return
+		}
+		deleted = true
+		if err := repo.DeleteProfileData(t.Context(), 1, "web_user:alice", false); err != nil {
+			t.Errorf("mid-flight delete failed: %v", err)
+		}
+	}
+
+	if err := svc.RunMaintenance(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+	if len(repo.maps) != 0 {
+		t.Fatalf("in-flight mapping resurrected the deleted profile: %+v", repo.maps)
+	}
+	for _, ev := range repo.events {
+		if ev.SubjectID == "web_user:alice" && ev.Type == types.LearningEventTopicSignal {
+			t.Fatalf("in-flight topic_signal resurrected the deleted profile: %+v", ev)
+		}
+	}
+	if row := repo.mastery["1|web_user:alice|"+testKB+"|concept/rag"]; row != nil && row.EvidenceCount > 0 {
+		t.Fatalf("in-flight fold resurrected mastery evidence: %+v", row)
+	}
+	epoch := repo.epoch["web_user:alice"]
+	if epoch != 1 {
+		t.Fatalf("mid-flight delete must bump the epoch, got %d", epoch)
+	}
+}
+
+// TestDeleteProfileAtomicInService：DeleteProfile 走原子删除（sweep+停采+
+// 代际一笔事务），失败时服务层不吞错误、不留半删状态。
+func TestDeleteProfileAtomicInService(t *testing.T) {
+	svc, repo, _, _, _ := maintenanceFixture(t)
+	ctx := collectorCtx(1, "alice")
+	_ = repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: 1, SubjectID: "web_user:alice", KnowledgeBaseID: testKB,
+		Slug: "concept/rag", Type: types.LearningEventAnswerCite, OccurredAt: time.Now(),
+	})
+
+	// Fault injection: the atomic delete fails — nothing may be removed.
+	repo.mu.Lock()
+	repo.deleteErr = func() error { return errors.New("injected delete failure") }
+	repo.mu.Unlock()
+	if err := svc.DeleteProfile(ctx, true); err == nil {
+		t.Fatal("delete must surface the injected failure")
+	}
+	if got := len(repo.snapshotEvents()); got != 1 {
+		t.Fatalf("failed delete must not remove events, got %d", got)
+	}
+	if prefs, _ := repo.GetSubjectPrefs(ctx, "web_user:alice"); prefs != nil && prefs.CollectDisabled {
+		t.Fatal("failed delete must not record the opt-out")
+	}
+
+	// Recovery: the same call succeeds atomically after the fault clears.
+	repo.mu.Lock()
+	repo.deleteErr = nil
+	repo.mu.Unlock()
+	if err := svc.DeleteProfile(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(repo.snapshotEvents()); got != 0 {
+		t.Fatalf("events must be swept, got %d", got)
+	}
+	prefs, _ := repo.GetSubjectPrefs(ctx, "web_user:alice")
+	if prefs == nil || !prefs.CollectDisabled {
+		t.Fatal("opt-out must land with the successful delete")
 	}
 }

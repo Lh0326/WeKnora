@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"errors"
 	"math"
 	"sort"
 	"time"
@@ -62,6 +63,7 @@ func (s *Service) RunBackfill(ctx context.Context) error {
 		byScope[key] = append(byScope[key], row)
 	}
 
+	var failures []error
 	appended := 0
 	for key, rows := range byScope {
 		if ctx.Err() != nil {
@@ -69,93 +71,112 @@ func (s *Service) RunBackfill(ctx context.Context) error {
 		}
 		scope := interfaces.LearningScope{TenantID: key.tenant, SubjectID: key.subject, KnowledgeBaseID: key.kb}
 
-		// Orphan guard: a deleted KB's affinity rows linger (memory
-		// subsystem scope) and its wiki_pages may too, so without this
-		// check the backfill would resurrect the learning data the orphan
-		// sweep just removed. kbRepo is nil only in narrow test fixtures.
-		if s.kbRepo != nil {
-			if kb, err := s.kbRepo.GetKnowledgeBaseByID(ctx, key.kb); err != nil || kb == nil {
-				continue
+		epoch, err := s.repo.GetSubjectEpoch(ctx, key.subject)
+		if err != nil {
+			return err
+		}
+		// Historical memory is never replayed after this person deleted their profile.
+		if epoch > 0 {
+			continue
+		}
+		appendedBefore := appended
+		err = s.repo.WithSubject(ctx, key.subject, epoch, true, func(ctx context.Context) error {
+
+			// Orphan guard: a deleted KB's affinity rows linger (memory
+			// subsystem scope) and its wiki_pages may too, so without this
+			// check the backfill would resurrect the learning data the orphan
+			// sweep just removed. kbRepo is nil only in narrow test fixtures.
+			if s.kbRepo != nil {
+				if kb, err := s.kbRepo.GetKnowledgeBaseByID(ctx, key.kb); err != nil || kb == nil {
+					return nil
+				}
 			}
-		}
 
-		if s.prefs.collectionDisabled(ctx, s.repo, key.subject) {
-			continue
-		}
+			index, err := s.pages.index(ctx, s.wikiRepo, key.kb)
+			if err != nil {
+				logger.Warnf(ctx, "learning: backfill page index failed (kb %s): %v", key.kb, err)
+				return nil
+			}
+			if index.empty() {
+				return nil
+			}
 
-		index, err := s.pages.index(ctx, s.wikiRepo, key.kb)
-		if err != nil {
-			logger.Warnf(ctx, "learning: backfill page index failed (kb %s): %v", key.kb, err)
-			continue
-		}
-		if index.empty() {
-			continue
-		}
+			done, err := s.repo.BackfillDone(ctx, scope)
+			if err != nil {
+				logger.Warnf(ctx, "learning: backfill idempotency lookup failed (kb %s): %v", key.kb, err)
+				return nil
+			}
+			if done {
+				return nil
+			}
+			// Mark first: a mark without events can only under-light the scope,
+			// while events without a mark would fold twice on the next run.
+			if err := s.repo.MarkBackfillDone(ctx, scope); err != nil {
+				logger.Warnf(ctx, "learning: backfill mark write failed (kb %s): %v", key.kb, err)
+				return nil
+			}
 
-		done, err := s.repo.BackfillDone(ctx, scope)
-		if err != nil {
-			logger.Warnf(ctx, "learning: backfill idempotency lookup failed (kb %s): %v", key.kb, err)
-			continue
-		}
-		if done {
-			continue
-		}
-		// Mark first: a mark without events can only under-light the scope,
-		// while events without a mark would fold twice on the next run.
-		if err := s.repo.MarkBackfillDone(ctx, scope); err != nil {
-			logger.Warnf(ctx, "learning: backfill mark write failed (kb %s): %v", key.kb, err)
-			continue
-		}
+			// Aggregate: one doc's affinity lights every node its pages cite.
+			agg := map[string]*backfillAggregate{}
+			for _, row := range rows {
+				cites := kbCitations{docIDs: map[string]bool{row.KnowledgeID: true}}
+				for _, slug := range index.touchedSlugs(cites) {
+					a := agg[slug]
+					if a == nil {
+						a = &backfillAggregate{}
+						agg[slug] = a
+					}
+					a.hits++
+					if row.LastUsedAt.After(a.lastUsed) {
+						a.lastUsed = row.LastUsedAt
+					}
+				}
+			}
 
-		// Aggregate: one doc's affinity lights every node its pages cite.
-		agg := map[string]*backfillAggregate{}
-		for _, row := range rows {
-			cites := kbCitations{docIDs: map[string]bool{row.KnowledgeID: true}}
-			for _, slug := range index.touchedSlugs(cites) {
+			slugs := make([]string, 0, len(agg))
+			for slug := range agg {
+				slugs = append(slugs, slug)
+			}
+			sort.Strings(slugs)
+
+			for _, slug := range slugs {
 				a := agg[slug]
-				if a == nil {
-					a = &backfillAggregate{}
-					agg[slug] = a
+				occurredAt := a.lastUsed
+				if occurredAt.IsZero() {
+					occurredAt = time.Now()
 				}
-				a.hits++
-				if row.LastUsedAt.After(a.lastUsed) {
-					a.lastUsed = row.LastUsedAt
+				weight := WeightAnswerCite * BackfillDiscount * (math.Min(float64(a.hits), backfillMaxHits) / backfillMaxHits)
+				event := &types.LearningEvent{
+					TenantID:        key.tenant,
+					SubjectID:       key.subject,
+					KnowledgeBaseID: key.kb,
+					Slug:            slug,
+					Type:            types.LearningEventBackfillCite,
+					Weight:          weight,
+					OccurredAt:      occurredAt,
 				}
+				if err := s.repo.AppendEvent(ctx, event); err != nil {
+					logger.Warnf(ctx, "learning: backfill append failed (slug %s): %v", slug, err)
+					return err
+				}
+				if err := s.foldOne(ctx, scope, slug, Event{Type: types.LearningEventBackfillCite, Weight: weight, OccurredAt: occurredAt}); err != nil {
+					return err
+				}
+				appended++
+			}
+			return nil
+		})
+		if err != nil {
+			appended = appendedBefore
+			logger.Warnf(ctx, "learning: backfill transaction aborted: %v", err)
+			if !errors.Is(err, interfaces.ErrLearningEpochAdvanced) && !errors.Is(err, interfaces.ErrLearningCollectionDisabled) {
+				failures = append(failures, err)
 			}
 		}
 
-		slugs := make([]string, 0, len(agg))
-		for slug := range agg {
-			slugs = append(slugs, slug)
-		}
-		sort.Strings(slugs)
-
-		for _, slug := range slugs {
-			a := agg[slug]
-			occurredAt := a.lastUsed
-			if occurredAt.IsZero() {
-				occurredAt = time.Now()
-			}
-			weight := WeightAnswerCite * BackfillDiscount * (math.Min(float64(a.hits), backfillMaxHits) / backfillMaxHits)
-			event := &types.LearningEvent{
-				TenantID:        key.tenant,
-				SubjectID:       key.subject,
-				KnowledgeBaseID: key.kb,
-				Slug:            slug,
-				Type:            types.LearningEventBackfillCite,
-				Weight:          weight,
-				OccurredAt:      occurredAt,
-			}
-			if err := s.repo.AppendEvent(ctx, event); err != nil {
-				logger.Warnf(ctx, "learning: backfill append failed (slug %s): %v", slug, err)
-				continue
-			}
-			s.foldOne(ctx, scope, slug, Event{Type: types.LearningEventBackfillCite, Weight: weight, OccurredAt: occurredAt})
-			appended++
-		}
 	}
 	if appended > 0 {
 		logger.Infof(ctx, "learning: backfill appended %d events across %d scopes", appended, len(byScope))
 	}
-	return nil
+	return errors.Join(failures...)
 }

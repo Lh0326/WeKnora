@@ -83,7 +83,12 @@ func (s *Service) ZoneMap(ctx context.Context, kbID string) (*interfaces.ZoneMap
 		}
 		faded := lv.Level == LevelUnseen && state.EvidenceCount > 0
 		_, skipped := asm.in.Skips[slug]
-		if lv.Level != LevelUnseen && !faded && !skipped {
+		// Coverage counts the person as past a node when they have lit it
+		// OR retired it by declaration ("已掌握，移除推荐" is a coverage
+		// claim): the counter reads (已点亮)/(总数), so a skip must raise
+		// coverage, never erase it — the old !skipped exclusion made a
+		// 1/1 zone read 0/1 the moment the user declared mastery.
+		if skipped || (lv.Level != LevelUnseen && !faded) {
 			get(zoneOf[slug]).lit++
 		}
 		get(zoneOf[slug]).total++
