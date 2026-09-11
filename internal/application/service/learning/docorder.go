@@ -46,11 +46,11 @@ const (
 // recommender consumes Rank for ordering and Section/DocID for the
 // continuity bonus.
 type NodeMaterial struct {
-	Rank    int
-	DocID   string
+	Rank     int
+	DocID    string
 	DocTitle string
-	Section string
-	ChunkIx int
+	Section  string
+	ChunkIx  int
 }
 
 // docOrderCache caches slug → NodeMaterial per (tenant, KB). Pattern follows

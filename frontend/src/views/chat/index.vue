@@ -77,7 +77,7 @@
                     :key="session.id || `${session.role}-${session.created_at}-${index}`" class="msg-item-wrapper">
 
                     <div v-if="session.role == 'user'">
-                        <usermsg :content="session.content" :mentioned_items="session.mentioned_items"
+                        <usermsg :content="visibleUserQuery(session.content)" :mentioned_items="session.mentioned_items"
                             :images="session.images" :attachments="session.attachments" :embeddedMode="embeddedMode"
                             :session-id="session_id">
                         </usermsg>
@@ -157,7 +157,7 @@ import {
     getMessageSuggestions,
     recordMessageSuggestionEvent,
 } from '@/api/message-suggestion';
-import { buildQueryWithHostContext } from '@/utils/embedContext';
+import { buildQueryWithHostContext, visibleUserQuery } from '@/utils/embedContext';
 import { provideChatReferencesDrawer } from '@/composables/useChatReferencesDrawer';
 import { provideChatAttachmentPreviewDrawer } from '@/composables/useChatAttachmentPreviewDrawer';
 
@@ -197,7 +197,7 @@ const uiStore = useUIStore();
 const { navigateToKnowledgeBaseList } = useKnowledgeBaseCreationNavigation();
 const { t } = useI18n();
 const { firstQuery, firstMentionedItems, firstModelId, firstImageFiles, firstAttachmentFiles } = storeToRefs(usemenuStore);
-const { onChunk, error, startStream, stopStream, lastStreamRequest } = useStream();
+const { onChunk, error, isStreaming, startStream, stopStream, lastStreamRequest } = useStream();
 /** Snapshot of the in-flight HTTP request for attaching to the next assistant message. */
 const pendingStreamDebug = ref(null);
 
@@ -259,6 +259,11 @@ const currentAssistantMessageId = ref(''); // 当前正在生成的 assistant me
 // continue-stream always fails even though the answer is coming — recover by polling
 // instead of erroring. Web/api replies are left on the original error path.
 const isAttachingImStream = ref(false);
+// 恢复网页端回复的流时的标记：这类 404（后端重启/流过期，事件缓冲已不存在）
+// 是永久状态，重试永远失败——不能每次打开会话都弹一次"流式连接失败"。
+const isResumingInterruptedReply = ref(false);
+// 本次恢复针对的未完成消息（错误分支要把它本地标记为已结束）。
+const interruptedResumeTarget = ref(null);
 let recoverPollTimer = null;
 // True while polling to recover an in-flight IM reply we couldn't stream. Drives
 // the same "generating" typing indicator the normal reply path shows, so the wait
@@ -568,7 +573,9 @@ const {
             }
         }
         const lastMessage = messagesList[messagesList.length - 1];
-        if (lastMessage && !lastMessage.is_completed) {
+        // Initial history can return after the user has already sent a query.
+        // Do not replay that turn over its active POST stream.
+        if (lastMessage && !lastMessage.is_completed && !isStreaming.value) {
             isReplying.value = true;
             if (lastMessage.role === 'assistant') {
                 currentAssistantMessageId.value = lastMessage.id;
@@ -580,6 +587,8 @@ const {
             // coming. Web/api replies keep the original behaviour (a real failure to
             // resume the stream still surfaces as an error) — we don't touch them.
             isAttachingImStream.value = lastMessage.channel === 'im';
+            isResumingInterruptedReply.value = lastMessage.channel !== 'im';
+            interruptedResumeTarget.value = lastMessage;
             await startStream({
                 session_id: session_id.value,
                 query: lastMessage.id,
@@ -587,8 +596,12 @@ const {
                 url: '/api/v1/sessions/continue-stream',
             });
             // On success the stream resumed normally; on failure the error watcher
-            // already took over (quiet recovery for IM), so only clear the flag here.
-            if (!error.value) isAttachingImStream.value = false;
+            // already took over (quiet recovery for IM / interrupted-reply ending
+            // for web), so only clear the flags here.
+            if (!error.value) {
+                isAttachingImStream.value = false;
+                isResumingInterruptedReply.value = false;
+            }
         }
     },
     onAgentQuery: (data, existingMessage) => {
@@ -790,9 +803,7 @@ const sendMsg = async (value, modelId = '', mentionedItems = [], imageFiles = []
     scrollToBottom(true);
 
     // Get agent mode status from settings store (prefer selectedAgentId for builtins)
-    const agentEnabled = props.embeddedMode
-        ? (props.agentId && props.agentId !== 'builtin-quick-answer')
-        : useSettingsStoreInstance.isAgentStreamMode;
+    const agentEnabled = isAgentStreamSession();
 
     // Get web search status from settings store
     const webSearchEnabled = props.embeddedMode ? false : useSettingsStoreInstance.isWebSearchEnabled;
@@ -910,6 +921,25 @@ watch(error, (newError) => {
         recoverIncompleteMessage();
         return;
     }
+    // 恢复一条网页端未完成回复时流已不存在（HTTP 404：服务重启时生成中断、
+    // 事件缓冲过期或从未建立）。这是永久状态：重试与刷新都不会让这条回复
+    // 复活。本地结束该轮并给可操作的软提示，代替每次进会话都弹的致命错误。
+    if (isResumingInterruptedReply.value && /HTTP 404/.test(newError)) {
+        isResumingInterruptedReply.value = false;
+        error.value = null;
+        isReplying.value = false;
+        loading.value = false;
+        currentAssistantMessageId.value = '';
+        const target = interruptedResumeTarget.value;
+        interruptedResumeTarget.value = null;
+        if (target) {
+            // 本地标记完成：本次页面访问不再把它当作待恢复消息（下次进入会
+            // 静默重走一次 404 分支，无弹窗）。
+            target.is_completed = true;
+        }
+        MessagePlugin.warning(t('error.streamInterrupted'));
+        return;
+    }
     MessagePlugin.error(newError);
     isReplying.value = false;
     loading.value = false;
@@ -957,6 +987,9 @@ const handleSessionMutation = (event) => {
 };
 
 onBeforeMount(async () => {
+    // An embedded assistant owns its agent and KB via props. Opening it must
+    // not overwrite the main chat's persisted agent/knowledge-base selection.
+    if (props.embeddedMode) return;
     // 若从智能体列表点击共享智能体进入，URL 带 agent_id 与 source_tenant_id，同步到 store
     const agentIdFromQuery = props.agentId || (route.query.agent_id && String(route.query.agent_id));
     const sourceTenantIdFromQuery = route.query.source_tenant_id && String(route.query.source_tenant_id);

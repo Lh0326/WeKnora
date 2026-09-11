@@ -17,9 +17,9 @@ func TestBuildDocOrderRanksBySourcePosition(t *testing.T) {
 	doc1 := time.Now().Add(-48 * time.Hour)
 	doc2 := doc1.Add(time.Hour)
 	chunks := &stubChunkRepo{chunks: map[string]*types.Chunk{
-		"c-ch1": {ID: "c-ch1", KnowledgeID: "doc1", ChunkIndex: 2, StartAt: 1000},
+		"c-ch1":  {ID: "c-ch1", KnowledgeID: "doc1", ChunkIndex: 2, StartAt: 1000},
 		"c-ch1b": {ID: "c-ch1b", KnowledgeID: "doc1", ChunkIndex: 3, StartAt: 1500},
-		"c-ch2": {ID: "c-ch2", KnowledgeID: "doc1", ChunkIndex: 30, StartAt: 30000},
+		"c-ch2":  {ID: "c-ch2", KnowledgeID: "doc1", ChunkIndex: 30, StartAt: 30000},
 		"c-doc2": {ID: "c-doc2", KnowledgeID: "doc2", ChunkIndex: 0, StartAt: 0},
 	}}
 	docs := &stubKnowledgeRepo{docs: map[string]*types.Knowledge{
@@ -92,7 +92,6 @@ func TestDocOrderRanksCacheAndTTL(t *testing.T) {
 	}
 }
 
-
 // TestBuildDocOrderResistsForwardMentions: the aggregation is "substantive
 // home", not "first mention". A chapter-5 concept cited once in the
 // chapter-1 overview (forward reference) and three times in chapter 5 must
@@ -101,12 +100,12 @@ func TestDocOrderRanksCacheAndTTL(t *testing.T) {
 func TestBuildDocOrderResistsForwardMentions(t *testing.T) {
 	doc1 := time.Now().Add(-24 * time.Hour)
 	chunks := &stubChunkRepo{chunks: map[string]*types.Chunk{
-		"c-ov":  {ID: "c-ov", KnowledgeID: "d1", ChunkIndex: 2},  // overview mention
-		"c-5a":  {ID: "c-5a", KnowledgeID: "d1", ChunkIndex: 40}, // substantive
-		"c-5b":  {ID: "c-5b", KnowledgeID: "d1", ChunkIndex: 42},
-		"c-5c":  {ID: "c-5c", KnowledgeID: "d1", ChunkIndex: 44},
-		"c-1":   {ID: "c-1", KnowledgeID: "d1", ChunkIndex: 3},
-		"c-1b":  {ID: "c-1b", KnowledgeID: "d1", ChunkIndex: 4},
+		"c-ov": {ID: "c-ov", KnowledgeID: "d1", ChunkIndex: 2},  // overview mention
+		"c-5a": {ID: "c-5a", KnowledgeID: "d1", ChunkIndex: 40}, // substantive
+		"c-5b": {ID: "c-5b", KnowledgeID: "d1", ChunkIndex: 42},
+		"c-5c": {ID: "c-5c", KnowledgeID: "d1", ChunkIndex: 44},
+		"c-1":  {ID: "c-1", KnowledgeID: "d1", ChunkIndex: 3},
+		"c-1b": {ID: "c-1b", KnowledgeID: "d1", ChunkIndex: 4},
 	}}
 	docs := &stubKnowledgeRepo{docs: map[string]*types.Knowledge{
 		"d1": {ID: "d1", CreatedAt: doc1},

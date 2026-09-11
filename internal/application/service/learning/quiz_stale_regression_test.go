@@ -1,6 +1,7 @@
 package learning
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/Tencent/WeKnora/internal/types"
@@ -36,7 +37,9 @@ func TestQuizEvidenceStaleOutAndRegeneration(t *testing.T) {
 		Status: types.LearningQuizStatusActive, EvidenceHash: currentHash,
 	}
 	for i := 0; i < QuizItemsPerSlug; i++ {
-		if err := repo.UpsertQuizItem(t.Context(), seeded); err != nil {
+		clone := *seeded
+		clone.ID = fmt.Sprintf("seeded-%d", i)
+		if err := repo.UpsertQuizItem(t.Context(), &clone); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -88,7 +91,8 @@ func TestQuizEvidenceStaleOutAndRegeneration(t *testing.T) {
 		switch it.Status {
 		case types.LearningQuizStatusStale:
 			staledIDs = append(staledIDs, it.ID)
-		case types.LearningQuizStatusActive:
+		case types.LearningQuizStatusDraft:
+			// Stage 2: regenerated items enter as LLM drafts.
 			freshItems = append(freshItems, it)
 		}
 	}
@@ -177,7 +181,7 @@ func TestStaleQuizNotServedOrScored(t *testing.T) {
 			t.Fatal("stale item must not be served by TakeQuiz")
 		}
 	}
-	if _, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A"); err == nil {
+	if _, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A", ""); err == nil {
 		t.Fatal("stale item must not be scoreable via SubmitAnswer")
 	}
 }

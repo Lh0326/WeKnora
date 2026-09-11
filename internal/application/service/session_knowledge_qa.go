@@ -1036,11 +1036,7 @@ func buildFallbackMessages(chatManage *types.ChatManage, promptContent string) [
 	// End on the user's actual question so generation is prompted by a user
 	// turn (the query is also embedded in the system instruction above, but a
 	// trailing user message keeps the chat shape valid for all providers).
-	query := chatManage.Query
-	if rq := strings.TrimSpace(chatManage.RewriteQuery); rq != "" {
-		query = rq
-	}
-	userMsg := chat.Message{Role: "user", Content: query}
+	userMsg := chat.Message{Role: "user", Content: chatManage.AnswerQuery()}
 	if chatManage.ChatModelSupportsVision && len(chatManage.Images) > 0 {
 		userMsg.Images = chatManage.Images
 	}

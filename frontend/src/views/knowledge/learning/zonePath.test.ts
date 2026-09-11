@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildZonePaths, circledNum, type ZonePathSourceNode } from './zonePath.ts'
+import { buildZonePaths, circledNum, pathOrderOf, type ZonePathSourceNode } from './zonePath.ts'
 
 function mk(slug: string, folder: string, rank?: number, title?: string, level = 'unseen', pEff = 0, extra: Partial<ZonePathSourceNode> = {}): ZonePathSourceNode {
   return { slug, folder_id: folder, doc_rank: rank, title, level, p_eff: pEff, ...extra }
@@ -63,5 +63,24 @@ describe('circledNum', () => {
     assert.equal(circledNum(20), '⑳')
     assert.equal(circledNum(21), '21.')
     assert.equal(circledNum(0), '0.')
+  })
+})
+
+describe('pathOrderOf', () => {
+  it('returns the stop number the collapsed cursor and the expanded path share', () => {
+    const paths = buildZonePaths([
+      mk('concept/c', 'fa', 3, '第三'),
+      mk('concept/a', 'fa', 1, '第一'),
+      mk('concept/b', 'fa', 2, '第二'),
+    ])
+    assert.equal(pathOrderOf(paths, 'fa', 'concept/b'), 2)
+    assert.equal(pathOrderOf(paths, 'fa', 'concept/a'), 1)
+  })
+
+  it('returns 0 for a slug off the path or an unknown module (render no number, never a wrong one)', () => {
+    const paths = buildZonePaths([mk('concept/a', 'fa', 1, '第一')])
+    assert.equal(pathOrderOf(paths, 'fa', 'concept/ghost'), 0)
+    assert.equal(pathOrderOf(paths, 'nope', 'concept/a'), 0)
+    assert.equal(pathOrderOf(paths, 'fa', ''), 0)
   })
 })

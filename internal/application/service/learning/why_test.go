@@ -74,7 +74,7 @@ func TestRecommendContinuityChannel(t *testing.T) {
 
 	recs := recommendNodes(recommendInput{
 		Pages: pages, Edges: edges, Material: material, Recent: recent,
-		States:     map[string]FoldState{"concept/just-learned": familiar},
+		States: map[string]FoldState{"concept/just-learned": familiar},
 		DirectFacts: map[string][]DirectQuizFact{
 			"concept/just-learned": {{ItemID: "q1", FirstCorrectAt: now.Add(-2 * time.Hour)}},
 		},
@@ -107,7 +107,7 @@ func TestRecommendContinuityChannel(t *testing.T) {
 	stale := recommendNodes(recommendInput{
 		Pages: pages, Edges: edges, Material: material,
 		Recent: []RecentNode{{Slug: "concept/just-learned", At: now.Add(-30 * time.Hour)}},
-		States:     map[string]FoldState{"concept/just-learned": familiar},
+		States: map[string]FoldState{"concept/just-learned": familiar},
 		DirectFacts: map[string][]DirectQuizFact{
 			"concept/just-learned": {{ItemID: "q1", FirstCorrectAt: now.Add(-30 * time.Hour)}},
 		},

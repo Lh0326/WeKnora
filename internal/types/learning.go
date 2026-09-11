@@ -11,6 +11,9 @@ import (
 // so that a later constants change can never rewrite history: replaying the
 // events must always reproduce the state that was visible at the time.
 const (
+	LearningEventNodeRead   = "node_read"
+	LearningEventNodeKnown  = "node_known"
+	LearningEventNodeReview = "node_review"
 	// LearningEventAnswerCite: the answer cited a chunk/document that this
 	// node's ChunkRefs/SourceRefs also cover. The workhorse positive signal.
 	LearningEventAnswerCite = "answer_cite"
@@ -144,6 +147,39 @@ func (o *QuizOptions) Scan(value interface{}) error {
 // are a subset of the page's own ChunkRefs.
 type RefList []string
 
+// JSONColumn is a raw JSON payload column (form definitions, check lists,
+// answer maps) kept verbatim; the service layer unmarshals what it needs.
+type JSONColumn []byte
+
+func (j JSONColumn) Value() (driver.Value, error) {
+	if j == nil {
+		return json.Marshal([]byte{})
+	}
+	return string(j), nil
+}
+
+func (j *JSONColumn) Scan(src interface{}) error {
+	switch v := src.(type) {
+	case []byte:
+		*j = append((*j)[0:0], v...)
+	case string:
+		*j = JSONColumn(v)
+	}
+	return nil
+}
+
+func (j JSONColumn) MarshalJSON() ([]byte, error) {
+	if len(j) == 0 {
+		return []byte("null"), nil
+	}
+	return j, nil
+}
+
+func (j *JSONColumn) UnmarshalJSON(data []byte) error {
+	*j = append((*j)[0:0], data...)
+	return nil
+}
+
 func (r RefList) Value() (driver.Value, error) {
 	if r == nil {
 		return json.Marshal([]string{})
@@ -177,6 +213,8 @@ func (r *RefList) Scan(value interface{}) error {
 // state can be rebuilt by replaying these rows, which is what makes
 // reconciliation, backfill and constants retuning safe operations.
 type LearningEvent struct {
+	ReviewData     JSONColumn `json:"review_data,omitempty" gorm:"type:jsonb"`
+	ContentVersion string     `json:"content_version,omitempty" gorm:"type:varchar(64);not null;default:''"`
 	// OriginalSlug preserves the first node name when canonical identity is migrated.
 	OriginalSlug string `json:"original_slug,omitempty" gorm:"type:varchar(512);not null;default:''"`
 	ID           string `json:"id" gorm:"primaryKey;type:varchar(36)"`
@@ -290,6 +328,9 @@ func (LearningEdge) TableName() string { return "learning_edges" }
 // node. Grounding is enforced at generation time: ChunkRefs must be a subset
 // of the page's own ChunkRefs, which is what keeps quiz evidence honest.
 type LearningQuizItem struct {
+	// Frozen verification metadata; empty legacy values cannot certify new objectives.
+	ObjectiveVersion string `json:"objective_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+
 	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	// TenantID/KnowledgeBaseID scope the item to one wiki graph; the item is
 	// shared personal-data-free inventory, so deletes never touch it.
@@ -311,7 +352,45 @@ type LearningQuizItem struct {
 	// new material. Empty on legacy rows means "version unknown" and is
 	// treated as stale on the first pass that can compute a digest.
 	EvidenceHash string `json:"evidence_hash" gorm:"type:varchar(64);not null;default:''"`
-	// Status is active or disabled; see the LearningQuizStatus constants.
+	// ObjectiveID links the item to the observable learning objective it
+	// verifies (stage-1 evidence separation). Empty on legacy items.
+	ObjectiveID string `json:"objective_id" gorm:"type:varchar(36);not null;default:''"`
+	// FamilyID is the item-family identity: items sharing an answer
+	// memory, reasoning pattern or core scenario. Independence of evidence
+	// is judged per FAMILY, not per item id — a reworded clone carries the
+	// same family and never counts as new independent coverage. Empty on
+	// legacy items (their attempts degrade to legacy_unverified).
+	FamilyID string `json:"family_id" gorm:"type:varchar(64);not null;default:''"`
+	// ContentVersion freezes the item content's version lineage; a
+	// semantic change bumps it, a typographical fix may keep it (the
+	// reviewer decides and records ChangeKind).
+	ContentVersion string `json:"content_version" gorm:"type:varchar(64);not null;default:''"`
+	// RubricVersion/ScorerVersion freeze the grading rule identity at
+	// publish time; GradeQuiz is scorer "mcq-exact-v1".
+	RubricVersion string `json:"rubric_version" gorm:"type:varchar(64);not null;default:''"`
+	ScorerVersion string `json:"scorer_version" gorm:"type:varchar(64);not null;default:''"`
+	// AssistanceMode is the condition the item is valid under:
+	// closed_book (default for concept MCQs), open_book (doc-assisted
+	// application). Attempts under a different mode never mix into the
+	// same strict evidence.
+	AssistanceMode string `json:"assistance_mode" gorm:"type:varchar(16);not null;default:'closed_book'"`
+	// FamilyFingerprint is the deterministic clone detector: a digest of
+	// the objective plus the NORMALIZED correct-answer text. A reworded
+	// stem or reshuffled options keep the answer text and therefore the
+	// fingerprint — clones inherit the existing family instead of
+	// founding a new one.
+	FamilyFingerprint string `json:"family_fingerprint" gorm:"type:varchar(64);not null;default:''"`
+	// Reviewer/PublishedAt/ReviewNote/ChangeKind are the human review
+	// audit record. LLM drafts carry empty Reviewer; ONLY the review API
+	// (an authenticated human principal) stamps them. ChangeKind records
+	// typographic vs semantic on re-review.
+	Reviewer    string     `json:"reviewer" gorm:"type:varchar(512);not null;default:''"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	ReviewNote  string     `json:"review_note" gorm:"type:text"`
+	ChangeKind  string     `json:"change_kind" gorm:"type:varchar(16);not null;default:''"`
+	// Status: draft (LLM draft, practice only), active (legacy serving,
+	// strict-equivalent only when it also carries family+review),
+	// published (human-reviewed, strict verification), disabled, stale.
 	Status    string    `json:"status" gorm:"type:varchar(16);not null;default:'active';index:idx_learning_quiz_items_scope,priority:4"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -319,10 +398,43 @@ type LearningQuizItem struct {
 
 func (LearningQuizItem) TableName() string { return "learning_quiz_items" }
 
+// Item/task lifecycle statuses (stage 2). draft = LLM-authored practice
+// material that can never promote the strict profile; published = passed
+// human content review; active is the pre-review-era serving status kept
+// for compatibility — its attempts only count strictly when the row also
+// carries family metadata and a review record.
+const (
+	LearningQuizStatusDraft     = "draft"
+	LearningQuizStatusPublished = "published"
+)
+
+// Assistance modes. closed_book and open_book are DESIGNED conditions
+// (which one applies is part of the item/task definition); assistant_helped
+// is a trial-level declaration that never counts as strict evidence.
+const (
+	AssistanceClosedBook    = "closed_book"
+	AssistanceOpenBook      = "open_book"
+	AssistanceAssistantHelp = "assistant_helped"
+)
+
+// GradeQuiz's scorer identity, frozen on attempts for traceability.
+const MCQScorerVersion = "mcq-exact-v1"
+
+// Task scorer identity: every critical check is an exact field match
+// against the frozen answer key — no free-text grading, no keyword
+// matching, no vector similarity anywhere in this chain.
+const TaskScorerVersion = "task-checks-exact-v1"
+
 // LearningQuizAttempt is the personal answer record. It is subject-scoped
 // personal data, so it is included in profile delete/export while the
 // KB-shared items are not.
 type LearningQuizAttempt struct {
+	// Frozen verification metadata; empty legacy values cannot certify new objectives.
+	ContractVersion    string `json:"contract_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	RubricVersion      string `json:"rubric_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	ScorerVersion      string `json:"scorer_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	ItemContentVersion string `json:"item_content_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+
 	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	// TenantID/SubjectID/KnowledgeBaseID scope the attempt to one person in
 	// one workspace in one wiki graph.
@@ -335,6 +447,31 @@ type LearningQuizAttempt struct {
 	Slug       string `json:"slug" gorm:"type:varchar(512);not null;index:idx_learning_quiz_attempts_scope,priority:4"`
 	// OriginalSlug preserves historical identity across canonical node renames.
 	OriginalSlug string `json:"original_slug,omitempty" gorm:"type:varchar(512);not null;default:''"`
+	// ObjectiveID/FamilyID freeze the item's objective and family linkage
+	// AT ANSWER TIME (server-side, from the item row): objective evidence
+	// is derived from these frozen fields, so later item edits never
+	// rewrite what a historical attempt verified. Empty values mark
+	// legacy attempts taken before the linkage existed — they surface as
+	// legacy_unverified and never silently promote.
+	ObjectiveID string `json:"objective_id,omitempty" gorm:"type:varchar(36);not null;default:''"`
+	FamilyID    string `json:"family_id,omitempty" gorm:"type:varchar(64);not null;default:''"`
+	// ContentVersion freezes the objective's content version at answer
+	// time; a later semantic change makes the passing evidence stale.
+	ContentVersion string `json:"content_version,omitempty" gorm:"type:varchar(64);not null;default:''"`
+	// AssistanceMode freezes the trial condition (the item's designed
+	// mode, or assistant_helped when the user declared it). Modes never
+	// mix into one strict evidence stream.
+	AssistanceMode string `json:"assistance_mode,omitempty" gorm:"type:varchar(16);not null;default:''"`
+	// ItemStatus freezes the item's lifecycle status at answer time:
+	// strict evidence requires published (or reviewed active) — draft
+	// practice attempts stay visible but never promote.
+	ItemStatus string `json:"item_status,omitempty" gorm:"type:varchar(16);not null;default:''"`
+	// Eligible + GradeReason freeze the server's verdict on whether this
+	// attempt can ever count as strict evidence, and why (practice_draft,
+	// practice_legacy, feedback_retry, assistance_not_strict,
+	// eligible_independent). Client input cannot set these.
+	Eligible    bool   `json:"eligible" gorm:"not null;default:false"`
+	GradeReason string `json:"grade_reason,omitempty" gorm:"type:varchar(32);not null;default:''"`
 	// ChosenKey/IsCorrect freeze the deterministic grade result.
 	ChosenKey  string    `json:"chosen_key" gorm:"type:varchar(4);not null"`
 	IsCorrect  bool      `json:"is_correct" gorm:"not null;default:false"`
@@ -425,10 +562,206 @@ type LearningSubjectEpoch struct {
 
 func (LearningSubjectEpoch) TableName() string { return "learning_subject_epochs" }
 
+// ---- Stage 1: observable objectives and verification contracts ----
+
+// Objective lifecycle: draft while being authored, published when its
+// content is approved (stage 2 builds the review chain; stage 1 persists
+// the vocabulary), retired when it no longer applies. Only published
+// objectives participate in strict verification derivation.
+const (
+	LearningObjectiveStatusDraft     = "draft"
+	LearningObjectiveStatusPublished = "published"
+	LearningObjectiveStatusRetired   = "retired"
+)
+
+// Verification contract vocabulary (01 §5.3). The contract is a frozen,
+// versioned rule — code deterministic, no runtime model judgement.
+const (
+	// ObjectiveContractConceptTwoFamily: a concept objective is verified
+	// when at least two DIFFERENT eligible item families carry an
+	// independent passing attempt. One family pass reads partial.
+	ObjectiveContractConceptTwoFamily = "concept_two_family"
+	// ObjectiveContractTaskChecks: an operational objective is verified
+	// when one pre-decomposed structured task passes ALL of its named
+	// critical checks. Check scoring is defined per task before publish
+	// (stage 2); stage 1 persists the schema and honestly derives
+	// unverified until task results exist.
+	ObjectiveContractTaskChecks = "task_checks"
+	// ObjectiveContractVersion freezes the contract semantics this
+	// projection interprets; a change in interpretation bumps it.
+	ObjectiveContractVersion = "objective-contract-v1"
+)
+
+// Objective evidence states (01 §5.4). States describe EVIDENCE, never a
+// psychological mastery percentage; unknown stays unknown (no sigmoid(0)).
+const (
+	ObjectiveStateUnverified  = "unverified"
+	ObjectiveStatePartial     = "partial"
+	ObjectiveStateVerified    = "verified"
+	ObjectiveStateConflicting = "conflicting"
+	ObjectiveStateStale       = "stale_content"
+)
+
+// Evidence source markers for the objective projection. Legacy attempts
+// (pre-objective rows without family metadata) are visible and exportable
+// but never silently promote to strict verification.
+const (
+	ObjectiveSourceQuiz   = "quiz"
+	ObjectiveSourceLegacy = "legacy_unverified"
+)
+
+// ObjectiveProjectionVersion identifies the derivation rule set; replays
+// record it alongside the result so "replayed under old rules" and
+// "re-projected under new rules" stay distinguishable.
+const ObjectiveProjectionVersion = "objective-projection-v2"
+
+// LearningObjective is one observable learning goal under a wiki node:
+// "can do X under condition Y", the unit strict verification reasons about.
+// Nodes keep their page identity; objectives add the measurable layer.
+type LearningObjective struct {
+	// Frozen verification metadata; empty legacy values cannot certify new objectives.
+	EvidenceHash string `json:"evidence_hash,omitempty" gorm:"type:varchar(128);not null;default:''"`
+
+	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	// TenantID/KnowledgeBaseID scope the objective to one wiki graph. The
+	// definition is KB-shared personal-data-free inventory.
+	TenantID        uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;index:idx_learning_objectives_scope,priority:1"`
+	KnowledgeBaseID string `json:"knowledge_base_id" gorm:"type:varchar(36);not null;index:idx_learning_objectives_scope,priority:2"`
+	// Slug is the wiki node the objective belongs to.
+	Slug string `json:"slug" gorm:"type:varchar(512);not null;index:idx_learning_objectives_scope,priority:3"`
+	// Title is the short human label; Behavior states the observable
+	// behavior ("can choose a retrieval strategy under given constraints").
+	Title    string `json:"title" gorm:"type:varchar(255);not null"`
+	Behavior string `json:"behavior" gorm:"type:text;not null"`
+	// CapabilityType classifies the ability (concept discrimination,
+	// operational application, diagnostic analysis) — it decides the
+	// sensible assistance mode and contract shape.
+	CapabilityType string `json:"capability_type" gorm:"type:varchar(32);not null;default:'concept'"`
+	// ContractType selects the frozen verification contract; Params
+	// carries its parameters (e.g. required family count, named critical
+	// checks) as JSON.
+	ContractType    string  `json:"contract_type" gorm:"type:varchar(32);not null;default:'concept_two_family'"`
+	ContractParams  RefList `json:"contract_params" gorm:"column:contract_params;type:jsonb"`
+	ContractVersion string  `json:"contract_version" gorm:"type:varchar(64);not null;default:''"`
+	// SourceRefs anchors the objective to source material (page anchors,
+	// chunk ids) so content review can trace it.
+	SourceRefs RefList `json:"source_refs" gorm:"column:source_refs;type:jsonb"`
+	// ContentVersion freezes the objective's DEFINITION version. A pass
+	// recorded under a different version is preserved as history but no
+	// longer satisfies the current contract without re-verification
+	// (stale_content), and typographical re-publishes may keep the version.
+	ContentVersion string `json:"content_version" gorm:"type:varchar(64);not null;default:''"`
+	// Review audit (stage 2): reviewer identity, publish time, note and
+	// change kind — same discipline as quiz items and tasks.
+	Reviewer    string     `json:"reviewer" gorm:"type:varchar(512);not null;default:''"`
+	PublishedAt *time.Time `json:"published_at,omitempty"`
+	ReviewNote  string     `json:"review_note" gorm:"type:text"`
+	ChangeKind  string     `json:"change_kind" gorm:"type:varchar(16);not null;default:''"`
+	// Status is draft/published/retired; see the constants.
+	Status string `json:"status" gorm:"type:varchar(16);not null;default:'draft'"`
+	// PrereqObjectiveID optionally names another objective that should be
+	// verified first (guidance-layer use only; never blocks reading).
+	PrereqObjectiveID string    `json:"prereq_objective_id" gorm:"type:varchar(36);not null;default:''"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+}
+
+func (LearningObjective) TableName() string { return "learning_objectives" }
+
+// LearningTask is one structured application task (01 §5.3 contract B):
+// a scenario, a set of form fields the learner fills, and a frozen
+// answer key of critical checks — every check is an EXACT field match,
+// graded server-side. The answer key never leaves the server: the take
+// payload carries scenario + field definitions only. Free-text answers
+// are not graded by keywords or similarity — tasks are selections by
+// construction.
+type LearningTask struct {
+	// Frozen verification metadata; empty legacy values cannot certify new objectives.
+	ObjectiveVersion string `json:"objective_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	EvidenceHash     string `json:"evidence_hash,omitempty" gorm:"type:varchar(128);not null;default:''"`
+
+	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	// TenantID/KnowledgeBaseID scope the task; KB-shared inventory.
+	TenantID        uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;index:idx_learning_tasks_scope,priority:1"`
+	KnowledgeBaseID string `json:"knowledge_base_id" gorm:"type:varchar(36);not null;index:idx_learning_tasks_scope,priority:2"`
+	// Slug is the node the task applies to; ObjectiveID the objective it
+	// verifies (contract task_checks).
+	Slug string `json:"slug" gorm:"type:varchar(512);not null;index:idx_learning_tasks_scope,priority:3"`
+	// FamilyID groups task variants; one passed task satisfies contract B.
+	ObjectiveID string `json:"objective_id" gorm:"type:varchar(36);not null;default:''"`
+	FamilyID    string `json:"family_id" gorm:"type:varchar(64);not null;default:''"`
+	// Title/Scenario describe the applied situation.
+	Title    string `json:"title" gorm:"type:varchar(255);not null"`
+	Scenario string `json:"scenario" gorm:"type:text;not null"`
+	// Fields is the form definition: [{id,label,type:"select",options:[…]}].
+	Fields JSONColumn `json:"fields" gorm:"column:fields;type:jsonb"`
+	// AnswerKey maps field id → correct value (server-only).
+	AnswerKey map[string]string `json:"-" gorm:"column:answer_key;type:jsonb;serializer:json"`
+	// CriticalChecks names the fields that must ALL match: [{id,description}].
+	CriticalChecks JSONColumn `json:"critical_checks" gorm:"column:critical_checks;type:jsonb"`
+	// SourceRefs anchors the task to source material.
+	SourceRefs JSONColumn `json:"source_refs" gorm:"column:source_refs;type:jsonb"`
+	// Versioning + review audit, same semantics as quiz items. Tasks are
+	// open_book by design (doc-assisted application).
+	ContentVersion string     `json:"content_version" gorm:"type:varchar(64);not null;default:''"`
+	RubricVersion  string     `json:"rubric_version" gorm:"type:varchar(64);not null;default:''"`
+	ScorerVersion  string     `json:"scorer_version" gorm:"type:varchar(64);not null;default:''"`
+	AssistanceMode string     `json:"assistance_mode" gorm:"type:varchar(16);not null;default:'open_book'"`
+	Reviewer       string     `json:"reviewer" gorm:"type:varchar(512);not null;default:''"`
+	PublishedAt    *time.Time `json:"published_at,omitempty"`
+	ReviewNote     string     `json:"review_note" gorm:"type:text"`
+	ChangeKind     string     `json:"change_kind" gorm:"type:varchar(16);not null;default:''"`
+	Status         string     `json:"status" gorm:"type:varchar(16);not null;default:'draft';index:idx_learning_tasks_scope,priority:4"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+func (LearningTask) TableName() string { return "learning_tasks" }
+
+// LearningTaskAttempt is one graded task submission: the learner's
+// answers, the per-check verdicts, and the frozen trial conditions.
+// Personal data — profile delete/export include it.
+type LearningTaskAttempt struct {
+	// Frozen verification metadata; empty legacy values cannot certify new objectives.
+	ObjectiveVersion string `json:"objective_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	ContractVersion  string `json:"contract_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	RubricVersion    string `json:"rubric_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+	ScorerVersion    string `json:"scorer_version,omitempty" gorm:"type:varchar(128);not null;default:''"`
+
+	ID string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	// TenantID/SubjectID/KnowledgeBaseID scope the attempt to one person.
+	TenantID        uint64 `json:"tenant_id" gorm:"column:tenant_id;not null;index:idx_learning_task_attempts_scope,priority:1"`
+	SubjectID       string `json:"subject_id" gorm:"type:varchar(512);not null;index:idx_learning_task_attempts_scope,priority:2"`
+	KnowledgeBaseID string `json:"knowledge_base_id" gorm:"type:varchar(36);not null;index:idx_learning_task_attempts_scope,priority:3"`
+	// TaskID points at the shared task; ObjectiveID/FamilyID/Slug are
+	// frozen at submit time so later task edits never move history.
+	TaskID      string `json:"task_id" gorm:"type:varchar(36);not null"`
+	ObjectiveID string `json:"objective_id" gorm:"type:varchar(36);not null;default:''"`
+	FamilyID    string `json:"family_id" gorm:"type:varchar(64);not null;default:''"`
+	Slug        string `json:"slug" gorm:"type:varchar(512);not null"`
+	// Answers: the learner's field values; Checks: per-check pass/fail;
+	// IsPassed = every critical check passed (deterministic exact match).
+	Answers  map[string]string `json:"answers" gorm:"column:answers;type:jsonb;serializer:json"`
+	Checks   JSONColumn        `json:"checks" gorm:"column:checks;type:jsonb"`
+	IsPassed bool              `json:"is_passed" gorm:"not null;default:false"`
+	// Frozen trial conditions and server verdict, same semantics as quiz
+	// attempts (assistance mode, task status at submit, eligibility and
+	// its reason).
+	AssistanceMode string    `json:"assistance_mode" gorm:"type:varchar(16);not null;default:''"`
+	TaskStatus     string    `json:"task_status" gorm:"type:varchar(16);not null;default:''"`
+	ContentVersion string    `json:"content_version" gorm:"type:varchar(64);not null;default:''"`
+	Eligible       bool      `json:"eligible" gorm:"not null;default:false"`
+	GradeReason    string    `json:"grade_reason" gorm:"type:varchar(32);not null;default:''"`
+	SubmittedAt    time.Time `json:"submitted_at" gorm:"not null"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+func (LearningTaskAttempt) TableName() string { return "learning_task_attempts" }
+
 // HumanLearningEventTypes is the explicit activity vocabulary. Background
 // projections and agent traces never count as human recency, streak or targets.
 func HumanLearningEventTypes() []string {
-	return []string{LearningEventAnswerCite, LearningEventCrossRef, LearningEventReAsk,
+	return []string{LearningEventReviewAgain, LearningEventReviewHard, LearningEventReviewGood, LearningEventReviewEasy, LearningEventNodeRead, LearningEventNodeKnown, LearningEventNodeReview, LearningEventAnswerCite, LearningEventCrossRef, LearningEventReAsk,
 		LearningEventWikiToolRead, LearningEventWikiDeepRead, LearningEventQuizCorrect,
 		LearningEventQuizWrong, LearningEventQuizUnsure, LearningEventSelfAssessUp,
 		LearningEventSelfAssessDownAll, LearningEventSelfAssessDownDocGap,

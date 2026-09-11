@@ -27,10 +27,13 @@ func setupLearningTestDB(t *testing.T) *gorm.DB {
 		&types.LearningEdge{},
 		&types.LearningQuizItem{},
 		&types.LearningQuizAttempt{},
-		&types.LearningSubjectPrefs{},
+		&types.LearningSubjectPrefs{}, &types.LearningPlanPreference{},
 		&types.LearningBackfillMark{},
 		&types.LearningSkip{},
 		&types.LearningSubjectEpoch{},
+		&types.LearningObjective{},
+		&types.LearningTask{},
+		&types.LearningTaskAttempt{},
 	))
 	return db
 }
@@ -349,7 +352,6 @@ func TestLearningRepositorySubjectScopedExportAndDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, other, 1, "other subjects in the same tenant survive")
 }
-
 
 // TestLearningRepositorySkips locks the skip-list DB contracts: declare is
 // idempotent and preserves the original date, an alias move honors the

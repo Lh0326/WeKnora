@@ -1,0 +1,220 @@
+{
+  "data_origin": "engineering_fixture",
+  "frozen_rules": "objective-holdout-protocol-v2",
+  "random_seed": 20260910,
+  "tuning_split": false,
+  "participants": [
+    {
+      "participant_id": "fixture-user-1",
+      "group": "guided",
+      "data_origin": "engineering_fixture",
+      "goal_states_before": {
+        "o1": "verified",
+        "o2": "unverified",
+        "o3": "unverified",
+        "o4": "verified"
+      },
+      "snapshots": [
+        {
+          "snapshot_id": "fixture-user-1-o1",
+          "participant_id": "fixture-user-1",
+          "objective_id": "o1",
+          "state_before": "verified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-1",
+          "family_id": "holdout-family-1",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:01:00Z",
+          "graded_at": "2026-09-10T01:01:30Z",
+          "eligible": true,
+          "result": true
+        },
+        {
+          "snapshot_id": "fixture-user-1-o2",
+          "participant_id": "fixture-user-1",
+          "objective_id": "o2",
+          "state_before": "unverified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-2",
+          "family_id": "holdout-family-2",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:02:00Z",
+          "graded_at": "2026-09-10T01:02:30Z",
+          "eligible": true,
+          "result": false
+        }
+      ],
+      "posttest_score": 1,
+      "posttest_max": 2
+    },
+    {
+      "participant_id": "fixture-user-2",
+      "group": "guided",
+      "data_origin": "engineering_fixture",
+      "goal_states_before": {
+        "o1": "verified",
+        "o2": "unverified",
+        "o3": "unverified",
+        "o4": "verified"
+      },
+      "snapshots": [
+        {
+          "snapshot_id": "fixture-user-2-o1",
+          "participant_id": "fixture-user-2",
+          "objective_id": "o1",
+          "state_before": "verified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-1",
+          "family_id": "holdout-family-1",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:01:00Z",
+          "graded_at": "2026-09-10T01:01:30Z",
+          "eligible": true,
+          "result": false
+        },
+        {
+          "snapshot_id": "fixture-user-2-o2",
+          "participant_id": "fixture-user-2",
+          "objective_id": "o2",
+          "state_before": "unverified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-2",
+          "family_id": "holdout-family-2",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:02:00Z",
+          "graded_at": "2026-09-10T01:02:30Z",
+          "eligible": true,
+          "result": true
+        }
+      ],
+      "posttest_score": 1,
+      "posttest_max": 2
+    },
+    {
+      "participant_id": "fixture-user-3",
+      "group": "baseline",
+      "data_origin": "engineering_fixture",
+      "goal_states_before": {
+        "o1": "verified",
+        "o2": "unverified",
+        "o3": "unverified",
+        "o4": "verified"
+      },
+      "snapshots": [
+        {
+          "snapshot_id": "fixture-user-3-o1",
+          "participant_id": "fixture-user-3",
+          "objective_id": "o1",
+          "state_before": "verified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-1",
+          "family_id": "holdout-family-1",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:01:00Z",
+          "graded_at": "2026-09-10T01:01:30Z",
+          "eligible": true,
+          "result": true
+        },
+        {
+          "snapshot_id": "fixture-user-3-o2",
+          "participant_id": "fixture-user-3",
+          "objective_id": "o2",
+          "state_before": "unverified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-2",
+          "family_id": "holdout-family-2",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:02:00Z",
+          "graded_at": "2026-09-10T01:02:30Z",
+          "eligible": true,
+          "result": true
+        }
+      ],
+      "posttest_score": 2,
+      "posttest_max": 2
+    },
+    {
+      "participant_id": "fixture-user-4",
+      "group": "baseline",
+      "data_origin": "engineering_fixture",
+      "goal_states_before": {
+        "o1": "verified",
+        "o2": "unverified",
+        "o3": "unverified",
+        "o4": "verified"
+      },
+      "snapshots": [
+        {
+          "snapshot_id": "fixture-user-4-o1",
+          "participant_id": "fixture-user-4",
+          "objective_id": "o1",
+          "state_before": "verified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-1",
+          "family_id": "holdout-family-1",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:01:00Z",
+          "graded_at": "2026-09-10T01:01:30Z",
+          "eligible": true,
+          "result": true
+        },
+        {
+          "snapshot_id": "fixture-user-4-o2",
+          "participant_id": "fixture-user-4",
+          "objective_id": "o2",
+          "state_before": "unverified",
+          "evidence_families_before": [
+            "training-a",
+            "training-b"
+          ],
+          "policy_version": "objective-projection-v2",
+          "state_as_of": "2026-09-10T01:00:00Z",
+          "item_id": "holdout-2",
+          "family_id": "holdout-family-2",
+          "phase": "posttest",
+          "presented_at": "2026-09-10T01:02:00Z",
+          "graded_at": "2026-09-10T01:02:30Z",
+          "eligible": true,
+          "result": false
+        }
+      ],
+      "posttest_score": 1,
+      "posttest_max": 2
+    }
+  ]
+}

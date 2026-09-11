@@ -54,6 +54,7 @@ test('visible dwell resumes after hiding, ignores background time, and stops cle
     tick(5_000)
     assert.deepEqual(recorded, ['a:normal'])
     tick(55_000)
+    assert.deepEqual(recorded, ['a:normal', 'a:deep'], 'deep feedback must arrive before leaving the visible page')
     visibility(true)
     visibility(true)
     assert.deepEqual(recorded, ['a:normal', 'a:deep'])

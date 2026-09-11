@@ -73,3 +73,16 @@ const CIRCLED = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', 
 export function circledNum(n: number): string {
   return n >= 1 && n <= CIRCLED.length ? CIRCLED[n - 1] : `${n}.`
 }
+
+/**
+ * pathOrderOf answers "which stop on the module's learning path is this
+ * slug" — the single ordinal source the collapsed cursor row and the
+ * expanded path rows share. Returns 0 when the slug is not on the path
+ * (callers render no number rather than a wrong one).
+ */
+export function pathOrderOf(paths: Record<string, ZonePathEntry[]>, key: string, slug: string): number {
+  const list = paths[key]
+  if (!list) return 0
+  const hit = list.find((e) => e.slug === slug)
+  return hit ? hit.order : 0
+}

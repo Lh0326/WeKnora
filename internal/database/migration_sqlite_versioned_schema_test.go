@@ -22,25 +22,32 @@ var versionedSQLiteTables = []string{
 	"knowledge_tag_relations",
 	"learning_skips",
 	"learning_subject_epochs",
+	"learning_objectives", // 000019 = versioned 000092
+	"learning_tasks",      // 000020 = versioned 000093
+	"learning_task_attempts", "learning_plan_preferences",
 }
 
 // versionedSQLiteColumns maps each existing table to the columns that the
 // versioned migrations add and the SQLite baseline was missing.
 var versionedSQLiteColumns = map[string][]string{
-	"learning_quiz_attempts": {"original_slug"},
-	"learning_events":        {"original_slug"},
-	"mastery_states":         {"projection_version", "replay_hash"},
-	"tenants":                {"api_principal_config"},           // 000064
-	"users":                  {"is_system_admin"},                // 000053
-	"knowledges":             {"pending_subtasks_count"},         // 000056
-	"messages":               {"attachments"},                    // 000034
-	"tenant_invitations":     {"token", "accepted_count"},        // 000054
-	"embed_channels":         {"allow_memory"},                   // 000060
-	"mcp_oauth_tokens":       {"principal_type", "principal_id"}, // 000064
-	"learning_quiz_items":    {"evidence_hash"},                  // 000017 = versioned 000090
+	"learning_plan_preferences": {"revision", "limit_to_folder", "folder_id", "depth", "time_budget_minutes", "use_memory", "goal_objectives"},
+	"learning_tasks":            {"objective_version", "evidence_hash"},
+	"learning_task_attempts":    {"objective_version", "contract_version", "rubric_version", "scorer_version"},
+	"learning_quiz_attempts":    {"original_slug", "objective_id", "family_id", "content_version", "contract_version", "rubric_version", "scorer_version", "item_content_version"}, // 000019 = 000092
+	"learning_objectives":       {"reviewer", "published_at", "review_note", "change_kind", "evidence_hash"},                                                                       // 000021 = 000094
+	"learning_quiz_items":       {"evidence_hash", "objective_id", "family_id", "objective_version"},                                                                               // 000017+000019
+	"learning_events":           {"original_slug", "review_data"},
+	"mastery_states":            {"projection_version", "replay_hash"},
+	"tenants":                   {"api_principal_config"},           // 000064
+	"users":                     {"is_system_admin"},                // 000053
+	"knowledges":                {"pending_subtasks_count"},         // 000056
+	"messages":                  {"attachments"},                    // 000034
+	"tenant_invitations":        {"token", "accepted_count"},        // 000054
+	"embed_channels":            {"allow_memory"},                   // 000060
+	"mcp_oauth_tokens":          {"principal_type", "principal_id"}, // 000064
 }
 
-const expectedSQLiteMigrationVersion = 18
+const expectedSQLiteMigrationVersion = 25
 
 func TestSQLiteMigrationsCreateVersionedSchema(t *testing.T) {
 	repoRoot := sqliteRepoRoot(t)

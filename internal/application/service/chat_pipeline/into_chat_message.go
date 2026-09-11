@@ -80,7 +80,7 @@ func (p *PluginIntoChatMessage) OnEvent(ctx context.Context,
 	// through the context template so runtime metadata (current_time, etc.) is injected.
 	if !chatManage.NeedsRetrieval() {
 		userContent := safeQuery
-		if rewrite := strings.TrimSpace(chatManage.RewriteQuery); rewrite != "" {
+		if rewrite := strings.TrimSpace(chatManage.AnswerQuery()); rewrite != "" {
 			if safeRewrite, ok := utils.ValidateInput(rewrite); ok {
 				userContent = safeRewrite
 			} else {

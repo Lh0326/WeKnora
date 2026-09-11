@@ -4,9 +4,6 @@
     <div v-if="collectDisabled && !initialLoading" class="collect-banner">
       {{ $t('knowledgeEditor.learningTab.collectOnNote') }}
     </div>
-    <!-- 头部：首屏只保留「今日」一行——任务导向（Khan/Duolingo 首屏模式），
-         总进度仪表盘下移为次屏分区，避免一进页签就被四档+分组+遗忘+推荐
-         全量信息淹没。 -->
     <!-- 加载态 / 错误态：整幅占位（错误态给重试入口，绝不伪装成"没有数据"） -->
     <div v-if="initialLoading" class="sky-state">
       <t-loading size="large" />
@@ -16,9 +13,8 @@
       <t-button size="small" variant="outline" @click="refresh()">{{ $t('knowledgeEditor.learningTab.retry') }}</t-button>
     </div>
 
-    <!-- 单屏星空：左 2/3 知识星图（无边框、标题悬浮于圆图左上空角），右 1/3 数据栏
-         （今日统计→档位→待巩固→分组→推荐，内部滚动），底部固定入口放大查看时间线/画像 -->
-    <div v-else class="sky" :class="{ 'health-view': healthView }">
+    <!-- 知识网络与验证进度共用目标状态；右栏只展示当前行动。 -->
+    <div v-else class="sky" :class="{ 'health-view': healthView, 'compact-map':compactMap }">
       <!-- 头部行：左上标题 + 右上视图切换（仅 owner/admin 可见）；健康视图下标题
            切换为「知识资产健康」，星图与数据栏整体让位给健康面板，个人视图保持原样 -->
       <div class="sky-head">
@@ -26,23 +22,10 @@
           <template v-if="!healthView">
           <div class="ts-title">
             {{ $t('knowledgeEditor.learningTab.title') }}
-            <t-popup trigger="hover" placement="bottom-left" show-arrow :overlay-style="{ maxWidth: '380px' }">
-              <template #content>
-                <div class="howto">
-                  <div class="howto-title">{{ $t('knowledgeEditor.learningTab.howComputedTitle') }}</div>
-                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedSignals') }}</div>
-                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedGate') }}</div>
-                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedDecay') }}</div>
-                  <div class="howto-line">{{ $t('knowledgeEditor.learningTab.howComputedTiers') }}</div>
-                </div>
-              </template>
-              <span class="help-icon"><HelpCircleIcon size="15" /></span>
-            </t-popup>
+
           </div>
-          <div class="ts-line">
-            {{ $t('knowledgeEditor.learningTab.litOf', { lit: displayLit, total: progress?.total_nodes ?? 0 }) }}
-            <span v-if="masteredCount" class="meta-mastered">· {{ $t('knowledgeEditor.learningTab.masteredOf', { n: masteredCount }) }}</span>
-          </div>
+          <div class="ts-line">阅读会点亮接触状态；可确认已会，也可加入待巩固。</div>
+          <nav class="compact-view-switch" aria-label="学习视图"><button :aria-pressed="!compactMap" @click="compactMap=false">学习导航</button><button :aria-pressed="compactMap" @click="compactMap=true">知识星图</button></nav>
           </template>
           <div v-else class="ts-title">{{ $t('knowledgeEditor.learningTab.healthTitle') }}</div>
         </div>
@@ -64,7 +47,7 @@
                而不是渲染 0/0 空环让人无从下手 -->
           <template v-if="hasNodes">
             <LearningConstellation :nodes="constellationNodes" :edges="zoneEdges" :zones="zoneAxes"
-              :highlight-zone="highlightZone" @open="openPage" />
+              :highlight-zone="highlightZone" verification @open="openPage" />
           </template>
           <div v-else class="empty-nodes">
             <div class="empty-nodes-orb" aria-hidden="true"></div>
@@ -74,190 +57,10 @@
         </div>
         <div class="sky-side">
         <div class="side-scroll">
-          <!-- 今日处理记录：企业数据整合视角的事实性状态。连续学习天数一类的
-               激励话术属于教育产品语境，不符合 WeKnora（企业级数据管理）定位 -->
-          <div class="side-stats">
-            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayEventsNote')">
-              {{ $t('knowledgeEditor.learningTab.todayEvents', { n: todayTimelineCount }) }}
-            </span>
-            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayAnswers')">
-              {{ todayAnswersText }}
-            </span>
-            <span class="ts-stat" :title="$t('knowledgeEditor.learningTab.todayLit')">
-              {{ $t('knowledgeEditor.learningTab.todayLit', { n: progress?.today?.lit_today ?? 0 }) }}
-            </span>
-          </div>
-          <!-- 四档统计 + 档位明细 -->
-          <div class="side-block">
-            <div class="meta-tiers">
-              <button v-for="tier in tierOrder" :key="tier.key" class="tier-stat"
-                :class="{ active: tierExpanded === tier.key, zero: (progress?.levels?.[tier.key] ?? 0) === 0 }"
-                :title="tier.hint" @click="toggleTier(tier.key)">
-                <span class="tier-dot" :style="{ background: tier.color }"></span>
-                <span class="tier-name">{{ tier.label }}</span>
-                <span class="tier-num">{{ tierDisplay(tier.key) }}</span>
-              </button>
-            </div>
-            <div v-if="tierExpanded" class="tier-detail">
-              <div v-if="tierListLoading || !masteryList" class="section-empty">{{ $t('common.loading') }}</div>
-              <div v-else-if="masteryLoadFailed" class="section-empty">
-                <span>{{ $t('knowledgeEditor.learningTab.tierListLoadFailed') }}</span>
-                <t-button size="small" variant="text" @click="retryMasteryList()">{{ $t('knowledgeEditor.learningTab.retry') }}</t-button>
-              </div>
-              <div v-else-if="!tierList.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.tierListEmpty') }}</div>
-              <template v-else>
-                <span v-for="m in tierList" :key="m.slug" class="tier-node"
-                  :class="{ 'is-skipped': m.skipped }"
-                  role="button" tabindex="0"
-                  :title="$t('knowledgeEditor.learningTab.tierNodeTip', { p: Math.round((m.p_eff ?? 0) * 100), n: m.evidence_count }) + (m.self_assess ? '\n' + selfAssessText(m.self_assess) : '') + (m.skipped ? '\n' + $t('knowledgeEditor.learningTab.skippedBadge') : '')"
-                  @click="openPage(m.slug)" @keydown.enter.prevent="openPage(m.slug)">
-                  <span v-if="tierExpanded === 'unseen' && m.evidence_count > 0" class="tier-dot" style="background: #7b8ba1;"></span>
-                  <span class="tier-node-title">{{ titleOf(m.slug, m.title) }}</span>
-                  <!-- 已跳过徽标 + 恢复入口：跳过的节点仍可在这里一键取回推荐 -->
-                  <span v-if="m.skipped" class="tier-node-skip">{{ $t('knowledgeEditor.learningTab.skippedTag') }}</span>
-                  <span class="tier-node-meta" :title="$t('knowledgeEditor.learningTab.lowConfidenceTip')">{{ m.evidence_count }}{{ m.low_confidence ? '?' : '' }}</span>
-                  <button v-if="m.skipped" class="tier-restore" @click.stop="restoreSkip(m.slug)" @keydown.enter.stop
-                    :title="$t('knowledgeEditor.learningTab.restoreSkip')">{{ $t('knowledgeEditor.learningTab.restoreSkip') }}</button>
-                </span>
-              </template>
-            </div>
-          </div>
-          <!-- 今日待巩固 -->
-          <div class="side-block" v-if="todayTodo.length">
-            <div class="side-title">{{ $t('knowledgeEditor.learningTab.todayCardTitle') }}</div>
-            <div class="todo-list">
-              <div v-for="td in todayTodo" :key="td.slug" class="todo-row" role="button" tabindex="0"
-                @click="openPage(td.slug)" @keydown.enter.prevent="openPage(td.slug)">
-                <span class="todo-tag" :style="todoTagStyle(td.kind)">{{ todoTagText(td.kind) }}</span>
-                <span class="todo-title" :title="$t('knowledgeEditor.learningTab.hoverOpenNode')">{{ td.title }}</span>
-                <span v-if="td.detail" class="todo-detail">{{ td.detail }}</span>
-                <span class="todo-actions" @click.stop @keydown.enter.stop>
-                  <t-button v-if="td.hasQuiz" size="small" @click="startQuiz({ slug: td.slug, title: td.title, has_quiz: true } as any)">
-                    {{ $t('knowledgeEditor.learningTab.practice') }}
-                  </t-button>
-                  <t-button size="small" variant="outline" @click="openPage(td.slug)">
-                    {{ $t('knowledgeEditor.learningTab.openPage') }}
-                  </t-button>
-                </span>
-              </div>
-            </div>
-          </div>
-          <!-- 分组进度 -->
-          <div class="side-block units-compact" v-if="units.length">
-            <div class="units-title" @click="unitsCollapsed = !unitsCollapsed">
-              {{ $t('knowledgeEditor.learningTab.unitsTitle') }}
-              <ChevronRightIcon size="13" class="units-chevron" :class="{ collapsed: unitsCollapsed }" />
-            </div>
-            <div v-show="!unitsCollapsed" class="units-body">
-              <div v-for="u in units" :key="u.folder_id" class="unit-row">
-                <span class="unit-name" :title="u.folder_name || u.folder_id">{{ u.folder_name || $t('knowledgeEditor.learningTab.rootUnit') }}</span>
-                <div class="unit-bar">
-                  <div class="unit-bar-fill" :style="{ width: (unitPercent(u) * animT) + '%' }"></div>
-                </div>
-                <span class="unit-count">{{ u.lit }}/{{ u.total }}</span>
-              </div>
-            </div>
-          </div>
-          <!-- 下一步看什么：模块卡片按推荐优先级从上往下排，第一张可学卡
-               带「从这开始」标记——多模块时用户只需要跟着标记走；每张卡内
-               ①是当前学步（带档位与下一步提示），②完成①后接棒。右上角
-               x/x =（已点亮）/（总数），"已掌握，移除推荐"计为已点亮。 -->
-          <div class="side-block">
-            <div class="side-title">{{ $t('knowledgeEditor.learningTab.recommendTitle') }}</div>
-            <div v-if="zoneList.length" class="role-plan-intro">
-              <span class="role-plan-name">{{ $t('knowledgeEditor.learningTab.zoneIntro') }}</span>
-            </div>
-            <div v-if="recommendLoading" class="section-empty">{{ $t('common.loading') }}</div>
-            <div v-else-if="!zoneList.length" class="section-empty">{{ $t('knowledgeEditor.learningTab.recommendEmpty') }}</div>
-            <div v-else class="zone-card-list">
-              <div v-for="(zone, zi) in zoneList" :key="zone.folder_id || 'root'" class="zone-card"
-                :class="{ hot: highlightZone === (zone.folder_id || ''), 'first-pick': zone.next && zi === firstPickIndex }"
-                @mouseenter="highlightZone = zone.folder_id || ''" @mouseleave="highlightZone = null">
-                <div class="zone-card-head">
-                  <span v-if="zone.next && zi === firstPickIndex" class="zone-start-badge">
-                    {{ $t('knowledgeEditor.learningTab.zoneStartHere') }}
-                  </span>
-                  <span class="zone-card-name" :title="zone.folder_name || $t('knowledgeEditor.learningTab.rootUnit')">
-                    {{ zone.folder_name || $t('knowledgeEditor.learningTab.rootUnit') }}
-                  </span>
-                  <span class="zone-card-count" :title="$t('knowledgeEditor.learningTab.zoneCountTip', { lit: zone.lit, total: zone.total })">
-                    {{ zone.lit }}/{{ zone.total }}
-                  </span>
-                </div>
-                <template v-if="zone.next">
-                  <!-- ①当前学步：整行可点开页面；右侧档位徽标让"读过了"的
-                       进度可见（同一节点连续推荐时不再像"卡住"），下一行
-                       明确告诉用户怎么往前走。 -->
-                  <div class="zone-next" role="button" tabindex="0"
-                    :title="reasonText(zone.next.reason)"
-                    @click="openPage(zone.next.slug)" @keydown.enter.prevent="openPage(zone.next.slug)">
-                    <span class="zone-next-mark">①</span>
-                    <span class="zone-next-title">
-                      {{ zone.next.title || zone.next.slug }}
-                    </span>
-                    <span class="zone-next-tier" :style="levelStyle(zone.next.level || 'unseen', zone.next.faded)">
-                      {{ levelLabel(zone.next.level || 'unseen', zone.next.faded) }}{{ zone.next.p_eff ? ' ' + Math.round(zone.next.p_eff * 100) + '%' : '' }}
-                    </span>
-                  </div>
-                  <div class="zone-next-hint">
-                    {{ zoneStepHint(zone.next) }}
-                  </div>
-                  <div v-if="zone.second" class="zone-then" role="button" tabindex="0"
-                    @click="openPage(zone.second.slug)" @keydown.enter.prevent="openPage(zone.second.slug)"
-                    :title="reasonText(zone.second.reason)">
-                    <span class="zone-then-mark">②</span>
-                    <span class="zone-then-title">{{ zone.second.title || zone.second.slug }}</span>
-                    <span class="zone-then-note">{{ $t('knowledgeEditor.learningTab.zoneThenNote') }}</span>
-                  </div>
-                  <!-- 自评/跳过入口：文字按钮，不再用无标注的黑点图标。
-                       仅在有当前学步（zone.next）时可用。 -->
-                  <div v-if="expandedZoneAssess === (zone.folder_id || 'root')" class="zone-esa">
-                    <div class="esa-buttons">
-                      <button class="esa-btn up" @click="confirmSelfAssessUp(zone.next!)">{{ $t('knowledgeEditor.learningTab.selfAssessUp') }}</button>
-                      <button class="esa-btn down" @click="openSelfAssessDown(zone.next!)">{{ $t('knowledgeEditor.learningTab.selfAssessDown') }}</button>
-                      <button class="esa-btn known" @click="confirmSkip(zone.next!)">{{ $t('knowledgeEditor.learningTab.skipAction') }}</button>
-                    </div>
-                    <div class="esa-note">{{ $t('knowledgeEditor.learningTab.skipNote') }}</div>
-                  </div>
-                  <div class="zone-actions-row">
-                    <button class="zone-esa-toggle" :title="$t('knowledgeEditor.learningTab.selfAssessSection')"
-                      :aria-label="$t('knowledgeEditor.learningTab.selfAssessSection')"
-                      @click.stop="expandedZoneAssess = expandedZoneAssess === (zone.folder_id || 'root') ? null : (zone.folder_id || 'root')">
-                      {{ $t('knowledgeEditor.learningTab.zoneActionsBtn') }}
-                    </button>
-                  </div>
-                </template>
-                <div v-else class="zone-done">{{ $t('knowledgeEditor.learningTab.zoneDone') }}</div>
-                <!-- 展开的完整学习路径在 v-if 之外：已完成的模块同样能展开
-                     回顾全程（此时没有「当前」标记）。序号连续 ①..N 按资料
-                     顺序铺开，每行档位批注，点击直达页面。 -->
-                <div v-if="expandedZones.has(zone.folder_id || 'root')" class="zone-path">
-                  <div class="zone-path-cap">{{ $t('knowledgeEditor.learningTab.zonePathCaption') }}</div>
-                  <div v-for="e in zonePaths[zone.folder_id || 'root'] || []" :key="e.slug"
-                    class="zone-path-row" :class="{ current: zone.next && e.slug === zone.next.slug, skipped: e.skipped }"
-                    role="button" tabindex="0" :title="e.title"
-                    @click="openPage(e.slug)" @keydown.enter.prevent="openPage(e.slug)">
-                    <span class="zone-path-mark">{{ circledNum(e.order) }}</span>
-                    <span class="zone-path-title">{{ e.title }}</span>
-                    <span v-if="zone.next && e.slug === zone.next.slug" class="zone-path-now">
-                      {{ $t('knowledgeEditor.learningTab.zoneCurrentMark') }}
-                    </span>
-                    <span class="zone-next-tier" :style="levelStyle(e.level, e.faded)">
-                      {{ e.skipped ? $t('knowledgeEditor.learningTab.skippedTag') : levelLabel(e.level, e.faded) }}{{ !e.skipped && e.pEff ? ' ' + Math.round(e.pEff * 100) + '%' : '' }}
-                    </span>
-                  </div>
-                </div>
-                <!-- 展开/收起按钮对任何超过两个节点的模块可用（含已完成模块） -->
-                <div v-if="(zonePaths[zone.folder_id || 'root']?.length ?? 0) > 2" class="zone-path-row-togglehost">
-                  <button class="zone-path-toggle" @click.stop="toggleZonePath(zone.folder_id || 'root')">
-                    {{ expandedZones.has(zone.folder_id || 'root')
-                      ? $t('knowledgeEditor.learningTab.zoneCollapsePath')
-                      : $t('knowledgeEditor.learningTab.zoneExpandPath', { n: zonePaths[zone.folder_id || 'root']?.length ?? 0 }) }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
+          <ObjectiveWorkspace ref="objectiveWorkspace" :kb-id="knowledgeBaseId"
+            @open="openPage" @quiz="(slug, objective) => startQuiz({slug,title:slug,reason:'',has_quiz:true}, objective)"
+            @view="objView=$event" @plan="currentPath=$event" @highlight="highlightZone=$event" />
+
         </div>
         <!-- 固定底栏：放大查看时间线与画像；时间线按钮带"今日 N 条"徽标，
              学完回页签不点开抽屉也能一眼看到今天的记录 -->
@@ -279,6 +82,7 @@
       <KnowledgeHealthPanel v-else class="health-host" :kb-id="knowledgeBaseId" @open="openPage" />
     </div>
 
+    <LearningReader :kb-id="knowledgeBaseId" :slug="readerSlug" :visible="readerOpen" :next-slug="readerNext?.slug" :next-title="readerNext?.title" @close="readerOpen=false" @next="openPage" @full="openWikiPage" />
     <!-- 测验答题抽屉：放大作答，不打断单屏星空布局 -->
     <t-drawer :visible="quiz.active" size="600px" :footer="false"
       :header="$t('knowledgeEditor.learningTab.quizTitle', { slug: quiz.title })" @close="closeQuiz()">
@@ -287,6 +91,8 @@
       </div>
       <div v-if="quiz.loading" class="section-empty">{{ $t('common.loading') }}</div>
       <template v-else-if="quizCurrent">
+        <p class="collect-note">{{ quizCurrent.mode === "verification" ? "独立验证候选：按题目规定条件完成" : "练习题：不增加独立验证证据" }} · {{ quizCurrent.assistance_mode === "open_book" ? "开卷" : "闭卷" }}</p>
+        <label><input v-model="quizHelped" type="checkbox" :disabled="quiz.result!==null" />本次使用了助手或额外帮助（仅作练习）</label>
         <div class="quiz-question">{{ quizCurrent.question }}</div>
         <div class="quiz-options">
           <div v-for="(text, key) in quizCurrent.options" :key="key" class="quiz-option"
@@ -314,9 +120,10 @@
               : quiz.result.correct ? $t('knowledgeEditor.learningTab.answerCorrect') : $t('knowledgeEditor.learningTab.answerWrong') }}
           </div>
           <div v-if="quiz.result.unsure" class="result-schedule">{{ $t('knowledgeEditor.learningTab.unsureNote') }}</div>
-          <div v-if="pEffMoveText" class="result-level">{{ pEffMoveText }}</div>
-          <div v-if="levelChangeText" class="result-level">{{ levelChangeText }}</div>
-          <div v-if="reviewScheduleText" class="result-schedule">{{ reviewScheduleText }}</div>
+          <p>{{ quiz.result.eligible ? "本次计入验证证据，目标状态以目标面板为准。" : "本次未计入独立验证证据，可查看解析继续练习。" }}</p>
+          <div v-if="!quizCurrent.objective_id && pEffMoveText" class="result-level">{{ pEffMoveText }}</div>
+          <div v-if="!quizCurrent.objective_id && levelChangeText" class="result-level">{{ levelChangeText }}</div>
+          <div v-if="!quizCurrent.objective_id && reviewScheduleText" class="result-schedule">{{ reviewScheduleText }}</div>
           <div class="result-explanation">{{ quiz.result.explanation }}</div>
           <div v-if="currentSourceDocs.length" class="result-refs">
             <span class="result-refs-label">{{ $t('knowledgeEditor.learningTab.evidenceSource') }}</span>
@@ -469,7 +276,11 @@ import { Button as TButton, Dialog as TDialog, Drawer as TDrawer, MessagePlugin,
 import { ChevronRightIcon, HelpCircleIcon } from 'tdesign-icons-vue-next'
 import LearningConstellation from './LearningConstellation.vue'
 import KnowledgeHealthPanel from './KnowledgeHealthPanel.vue'
-import { buildZonePaths, circledNum, type ZonePathEntry } from './zonePath'
+import { buildZonePaths, circledNum, pathOrderOf, type ZonePathEntry } from './zonePath'
+import ObjectiveWorkspace from './ObjectiveWorkspace.vue'
+import { projectObjectiveNodes } from './objectivePresentation'
+import LearningReader from './LearningReader.vue'
+import type { LearningPathPlan, ObjectiveViewResponse } from '@/api/learning/objectives'
 import {
   getLearningProgress, getLearningZoneMap, getLearningQuiz, submitLearningAnswer,
   getLearningTimeline, exportLearningProfile, deleteLearningProfile, selfAssess, skipNode,
@@ -490,6 +301,97 @@ const progress = ref<LearningProgress | null>(null)
 const recommendations = ref<Recommendation[]>([])
 // 模块分区视图：每个 wiki 目录一个知识区，各区自己的"1/2"+全区节点+先修边。
 const zoneMap = ref<ZoneMapResponse | null>(null)
+// Stage-4 objective layer: separated progress + objective view + path plan.
+const objectiveWorkspace=ref<InstanceType<typeof ObjectiveWorkspace>|null>(null)
+const objView = ref<ObjectiveViewResponse | null>(null)
+const currentPath = ref<LearningPathPlan | null>(null)
+// Per-node objective summary from the objective view: slug → list of
+// {state, title, evidenceCount, lastVerifiedAt} for badge rendering.
+const objectivesBySlug = computed(() => {
+  const map: Record<string, Array<{ state: string; title: string; evidence: number; lastVerified?: string; conflicting: boolean; stale: boolean }>> = {}
+  if (!objView.value?.entries) return map
+  for (const e of objView.value.entries) {
+    if (!map[e.slug]) map[e.slug] = []
+    map[e.slug].push({
+      state: e.state,
+      title: e.title,
+      evidence: e.evidence.eligible_passes + e.evidence.eligible_failures,
+      lastVerified: e.recency.last_verified_at,
+      conflicting: e.state === 'conflicting',
+      stale: e.state === 'stale_content',
+    })
+  }
+  return map
+})
+
+// Per-node detail from the objective view: contact / self-report / last
+// verified date / next step suggestion — the four textual dimensions each
+// zone-path-row displays alongside the objective badges.
+const nodeDetailBySlug = computed(() => {
+  const map: Record<string, { contacted: boolean; reads: number; cites: number; selfReport: string; selfReportAt?: string; lastVerified?: string; nextStep: string }> = {}
+  if (!objView.value?.entries) return map
+  for (const e of objView.value.entries) {
+    if (!map[e.slug]) {
+      map[e.slug] = { contacted: false, reads: 0, cites: 0, selfReport: '', selfReportAt: undefined, lastVerified: undefined, nextStep: '' }
+    }
+    const d = map[e.slug]
+    d.reads += e.exposure.reads
+    d.cites += e.exposure.cites
+    if (e.exposure.reads > 0 || e.exposure.cites > 0) d.contacted = true
+    if (e.self_report.direction && !d.selfReport) {
+      d.selfReport = e.self_report.direction
+      d.selfReportAt = e.self_report.at
+    }
+    if (e.recency.last_verified_at && (!d.lastVerified || e.recency.last_verified_at > d.lastVerified)) {
+      d.lastVerified = e.recency.last_verified_at
+    }
+  }
+  // Derive next-step text from the freshest objective's path_status.
+  for (const e of objView.value.entries) {
+    if (map[e.slug] && !map[e.slug].nextStep) {
+      map[e.slug].nextStep = nextStepText(e.state, e.path_status)
+    }
+  }
+  return map
+})
+
+function nextStepText(state: string, pathStatus: string): string {
+  if (pathStatus === 'user_retired') return t('knowledgeEditor.learningTab.nodeNextRetired')
+  if (pathStatus === 'challenge_pending') return t('knowledgeEditor.learningTab.nodeNextChallenge')
+  switch (state) {
+    case 'verified': return t('knowledgeEditor.learningTab.nodeNextVerified')
+    case 'conflicting': return t('knowledgeEditor.learningTab.nodeNextConflicting')
+    case 'stale_content': return t('knowledgeEditor.learningTab.nodeNextStale')
+    case 'partial': return t('knowledgeEditor.learningTab.nodeNextPartial')
+    default: return t('knowledgeEditor.learningTab.nodeNextUnverified')
+  }
+}
+
+// Objective badge label helper: text-first (not color-only).
+function objBadge(entry: { state: string; evidence: number; conflicting: boolean; stale: boolean }): string {
+  const { t: tl } = { t: (k: string, p?: any) => k } // placeholder; real t used below
+  switch (entry.state) {
+    case 'verified': return `✓ ${entry.evidence}证据`
+    case 'conflicting': return `⚠ 冲突`
+    case 'stale_content': return `⟳ 待复核`
+    case 'partial': return `◐ ${entry.evidence}证据`
+    default: return `— 未验证`
+  }
+}
+
+function formatDate(iso: string): string {
+  try { return new Date(iso).toLocaleDateString() } catch { return iso }
+}
+
+function objBadgeClass(entry: { state: string }): string {
+  switch (entry.state) {
+    case 'verified': return 'obj-badge-verified'
+    case 'conflicting': return 'obj-badge-conflicting'
+    case 'stale_content': return 'obj-badge-stale'
+    case 'partial': return 'obj-badge-partial'
+    default: return 'obj-badge-unverified'
+  }
+}
 // 悬停右侧栏分区卡片时，星图仅亮该分区并标记其"1"。
 const highlightZone = ref<string | null>(null)
 // 展开某分区"1"的自评/跳过操作面板。
@@ -623,17 +525,13 @@ const masteryLoadFailed = ref(false)
 // 知识星图的数据源：与档位清单共用一份缓存，refresh 时后台补拉一次。
 // 星图数据源：zone-map 的全量节点（带分区/章节/位次），自评悬停徽标从
 // 掌握度列表补齐（两份缓存来自同一份后端事实）。
-const constellationNodes = computed(() =>
-  (zoneMap.value?.nodes ?? []).map((n) => ({
-    ...n,
-    self_assess: masteryList.value?.find((m) => m.slug === n.slug)?.self_assess,
-  })))
+const constellationNodes = computed(() => projectObjectiveNodes(zoneMap.value?.nodes ?? [], objView.value))
 const zoneEdges = computed(() => zoneMap.value?.edges ?? [])
 const zoneAxes = computed(() =>
   (zoneMap.value?.zones ?? []).map((z) => ({
     id: z.folder_id,
     name: z.folder_name || t('knowledgeEditor.learningTab.rootUnit'),
-    next: z.next?.slug ?? null,
+    next: currentPath.value?.steps.find(step => zoneMap.value?.nodes.some(n => n.slug === step.slug && n.folder_id === z.folder_id))?.slug ?? null,
   })))
 const zoneList = computed<ZoneSummary[]>(() => zoneMap.value?.zones ?? [])
 
@@ -646,6 +544,11 @@ const firstPickIndex = computed(() => zoneList.value.findIndex((z) => !!z.next))
 const zonePaths = computed<Record<string, ZonePathEntry[]>>(() => buildZonePaths(zoneMap.value?.nodes ?? []))
 // 每张模块卡独立的展开状态（重命名为整体替换以保持响应性）。
 const expandedZones = ref(new Set<string>())
+// 游标的路径序号：推荐目标落在学习路径的第几站（0＝不在路径里，容错为
+// 不显示序号）。折叠态游标行与展开态高亮行由此共享同一套编号。
+function cursorOrderOf(zone: ZoneSummary): number {
+  return pathOrderOf(zonePaths.value, zone.folder_id || 'root', zone.next?.slug || '')
+}
 function toggleZonePath(key: string) {
   const next = new Set(expandedZones.value)
   if (next.has(key)) next.delete(key)
@@ -759,7 +662,24 @@ function reasonText(reason: string): string {
   }
   return map[reason] || reason
 }
-// 卡面短理由（≤6 字）：卡片自解释靠短语，完整语义放悬停提示（reasonText）。
+// 游标行短理由（≤6 字）：紧贴提示行前缀，完整语义放悬停（reasonText）。
+function reasonShort(reason: string): string {
+  const map: Record<string, string> = {
+    affinity: t('knowledgeEditor.learningTab.rsAffinity'),
+    frontier: t('knowledgeEditor.learningTab.rsFrontier'),
+    foundation: t('knowledgeEditor.learningTab.rsFoundation'),
+    continue: t('knowledgeEditor.learningTab.rsContinue'),
+    consolidate: t('knowledgeEditor.learningTab.rsConsolidate'),
+    review: t('knowledgeEditor.learningTab.rsReview'),
+    remedial: t('knowledgeEditor.learningTab.rsRemedial'),
+    struggling: t('knowledgeEditor.learningTab.rsStruggling'),
+    'prerequisite-stuck': t('knowledgeEditor.learningTab.rsStuck'),
+    bypass: t('knowledgeEditor.learningTab.rsBypass'),
+    explore: t('knowledgeEditor.learningTab.rsExplore'),
+    'self-verify': t('knowledgeEditor.learningTab.rsSelfVerify'),
+  }
+  return map[reason] || ''
+}
 function pageTypeOf(slug: string): string {
   const i = slug.indexOf('/')
   return i > 0 ? slug.slice(0, i) : ''
@@ -774,6 +694,8 @@ function pageTypeText(pageType: string): string {
   return map[pageType] || pageType
 }
 function eventText(type: string): string {
+  const recallLabels:Record<string,string>={review_enroll:'开启间隔复习',review_pause:'暂停间隔复习',review_again:'回忆反馈：忘记了',review_hard:'回忆反馈：费力想起',review_good:'回忆反馈：正常想起',review_easy:'回忆反馈：轻松想起'}
+  if(recallLabels[type])return recallLabels[type]
   const map: Record<string, string> = {
     answer_cite: t('knowledgeEditor.learningTab.evCite'),
     cross_ref: t('knowledgeEditor.learningTab.evCross'),
@@ -966,8 +888,12 @@ const profileSummary = computed(() => {
   })
 })
 
-function openPage(slug: string) {
-  // Jump to the wiki tab and open the page drawer there.
+const readerSlug=ref(''),readerOpen=ref(false),compactMap=ref(false)
+watch(()=>props.knowledgeBaseId,()=>{readerOpen.value=false;readerSlug.value=''})
+const readerNext=computed(()=>currentPath.value?.steps.find(step=>!step.completed&&step.slug!==readerSlug.value))
+function openPage(slug:string){readerSlug.value=slug;readerOpen.value=true}
+function openWikiPage(slug: string) {
+  readerOpen.value=false
   router.push({ path: `/platform/knowledge-bases/${props.knowledgeBaseId}`, query: { tab: 'wiki', slug } })
 }
 
@@ -1005,6 +931,7 @@ async function refresh() {
     collectDisabled.value = (s as any).data?.collect_disabled ?? false
     masteryList.value = null // 画像可能已变化，档位清单缓存失效
     ensureMasteryList() // 星图随刷新重建
+    await objectiveWorkspace.value?.refresh()
     loadFailed.value = false
   } catch (err) {
     console.error('[LearningTab] refresh failed:', err)
@@ -1115,15 +1042,17 @@ async function currentMasteryOf(slug: string): Promise<MasteryView | null> {
 // Bug fix: generation counter — when quiz A is closed and quiz B opened
 // quickly, A's late-arriving response would overwrite B's items/levelBefore
 // (wrong questions displayed under B's slug, wrong mastery comparison).
+const quizHelped=ref(false)
 let quizGeneration = 0
-async function startQuiz(rec: Recommendation) {
+async function startQuiz(rec: Recommendation, objectiveID?: string) {
+  quizHelped.value=false
   const gen = ++quizGeneration
   quiz.value = { active: true, slug: rec.slug, title: rec.title || rec.slug, loading: true, items: [], index: 0, chosen: '', result: null, levelBefore: '', levelAfter: '', levelAfterP: 0, levelBeforeFaded: false, levelAfterFaded: false }
   const [before] = await Promise.all([currentMasteryOf(rec.slug), (async () => {
     try {
       const res = await getLearningQuiz(props.knowledgeBaseId, rec.slug)
       if (gen !== quizGeneration) return // a newer quiz session superseded this one
-      quiz.value.items = ((res as any).data ?? res) as QuizQuestion[]
+      quiz.value.items = (((res as any).data ?? res) as QuizQuestion[]).filter(q=>!objectiveID||q.objective_id===objectiveID)
     } catch (err) {
       // 取题失败给出明确反馈，而不是静默渲染"暂无题目"的误导性空态。
       console.error('[LearningTab] quiz fetch failed:', err)
@@ -1157,7 +1086,7 @@ async function submitAnswer() {
   if (!current || !quiz.value.chosen) return
   quizSubmitting.value = true
   try {
-    const res = await submitLearningAnswer(props.knowledgeBaseId, current.id, quiz.value.chosen)
+    const res = await submitLearningAnswer(props.knowledgeBaseId, current.id, quiz.value.chosen, quizHelped.value ? "assistant_helped" : current.assistance_mode)
     quiz.value.result = ((res as any).data ?? res) as AnswerResult
     // "看→练→掌握度更新→下一轮推荐"闭环在一屏内完成：作答后即时重拉
     // 进度、该节点掌握度、推荐列表与时间线首屏，不等关闭答题卡。
@@ -1181,6 +1110,7 @@ async function submitAnswer() {
     timeline.value = ((tl as any).data ?? tl) as TimelineItem[]
     timelineTotal.value = ((tl as any).total ?? 0) as number
     timelinePage.value = 1
+    await objectiveWorkspace.value?.refresh()
     // currentMasteryOf 已回填作答后的档位缓存（星图/档位清单直接复用）。
   } catch (err) {
     console.error('[LearningTab] submit failed:', err)
@@ -1190,6 +1120,7 @@ async function submitAnswer() {
   }
 }
 function nextQuestion() {
+  quizHelped.value=false
   quiz.value.index++
   quiz.value.chosen = ''
   quiz.value.result = null
@@ -1245,6 +1176,7 @@ async function doDelete() {
   try {
     const optOut = deleteOptOut.value
     await deleteLearningProfile(optOut)
+    await objectiveWorkspace.value?.restorePreferences()
     if (optOut) {
       collectDisabled.value = true
       deleteOptOut.value = false
@@ -1328,6 +1260,7 @@ onActivated(() => {
   window.addEventListener('keydown', onKeydown)
 })
 onDeactivated(() => {
+  readerOpen.value = false
   window.removeEventListener('keydown', onKeydown)
   cancelAnimationFrame(animRAF)
   // 侧栏分区卡悬停置位的 highlightZone 在切页签（如经覆盖建议进入 wiki）
@@ -1548,17 +1481,16 @@ onUnmounted(() => {
 .zone-card-head { display: flex; align-items: center; gap: 8px; }
 .zone-card-name { font-size: 12px; font-weight: 600; color: var(--td-text-color-primary, #333); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zone-card-count { margin-left: auto; font-size: 11px; color: var(--td-text-color-placeholder, #999); white-space: nowrap; cursor: help; }
-.zone-next { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-wrap: wrap; }
-.zone-next-mark { font-size: 13px; color: #049b38; font-weight: 700; }
-.zone-next-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
-/* ① 的档位徽标：同一节点连续推荐时，档位/百分比的变化让进度可见 */
+/* 折叠态游标行：序号来自学习路径（与展开视图同一套编号），档位徽标紧贴
+   本行节点，「当前」徽标标出推荐游标；视觉与展开态高亮行一致。 */
+.zone-cursor { display: flex; align-items: center; gap: 6px; cursor: pointer; flex-wrap: wrap; padding: 3px 4px; border-radius: 6px; background: rgba(7, 192, 95, 0.08); }
+.zone-cursor:hover { background: rgba(7, 192, 95, 0.14); }
+.zone-cursor-mark { flex: none; font-size: 12px; color: #049b38; font-weight: 700; line-height: 1; }
+.zone-cursor-order { flex: none; font-size: 12px; color: #049b38; font-weight: 700; min-width: 16px; text-align: center; }
+.zone-cursor-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
+/* 档位徽标：紧贴所属行（游标行与路径行共用），百分比变化让进度可见 */
 .zone-next-tier { flex: none; font-size: 10px; line-height: 1; padding: 3px 6px; border-radius: 999px; white-space: nowrap; }
-.zone-next-hint { font-size: 11px; color: var(--td-text-color-secondary, #555); line-height: 1.5; padding-left: 18px; }
-.zone-then { display: flex; align-items: center; gap: 6px; cursor: pointer; padding-left: 2px; }
-.zone-then-mark { font-size: 11px; color: var(--td-text-color-placeholder, #999); font-weight: 600; }
-.zone-then-title { font-size: 12px; color: var(--td-text-color-secondary, #555); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.zone-then-note { flex: none; margin-left: auto; font-size: 10px; color: var(--td-text-color-placeholder, #aaa); white-space: nowrap; }
-.zone-then-reason { font-size: 10px; color: var(--td-text-color-placeholder, #999); white-space: nowrap; }
+.zone-next-hint { font-size: 11px; color: var(--td-text-color-secondary, #555); line-height: 1.5; padding-left: 20px; }
 /* 自评/跳过入口：文字按钮（黑点图标无人能懂）；行式布局不再悬浮遮内容 */
 .zone-actions-row { display: flex; justify-content: flex-end; }
 .zone-path-row-togglehost { display: flex; justify-content: flex-end; margin-top: 2px; }
@@ -1572,7 +1504,8 @@ onUnmounted(() => {
 .zone-path-toggle:hover { border-color: rgba(7, 192, 95, 0.5); background: var(--td-brand-color-light, rgba(7, 192, 95, 0.1)); color: #049b38; }
 /* 展开的完整学习路径：连续序号 + 档位批注，学到哪一眼可追 */
 .zone-path { display: flex; flex-direction: column; gap: 2px; border-top: 1px dashed var(--td-component-border, #eee); padding-top: 6px; }
-.zone-path-cap { font-size: 10px; color: var(--td-text-color-placeholder, #aaa); margin-bottom: 2px; }
+.zone-path-cap { font-size: 10px; color: var(--td-text-color-placeholder, #aaa); margin-bottom: 1px; }
+.zone-path-legend { font-size: 10px; color: var(--td-text-color-placeholder, #aaa); margin-bottom: 4px; }
 .zone-path-row { display: flex; align-items: center; gap: 6px; cursor: pointer; padding: 2px 2px; border-radius: 6px; }
 .zone-path-row:hover { background: var(--td-brand-color-light, rgba(7, 192, 95, 0.07)); }
 .zone-path-row.current { background: rgba(7, 192, 95, 0.1); }
@@ -1581,6 +1514,32 @@ onUnmounted(() => {
 .zone-path-row.current .zone-path-mark { color: #049b38; }
 .zone-path-title { font-size: 12px; color: var(--td-text-color-primary, #333); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1; }
 .zone-path-now { flex: none; font-size: 9px; line-height: 1; padding: 2px 5px; border-radius: 999px; background: #07c05f; color: #fff; white-space: nowrap; }
+/* 节点级目标徽标：文字优先（✓/⚠/⟳/◐/—），颜色仅辅助 */
+.zone-obj-badge { flex: none; font-size: 9px; line-height: 1; padding: 2px 5px; border-radius: 4px; white-space: nowrap; font-weight: 500; }
+.zone-obj-badge.obj-badge-verified { background: #e8f5e9; color: #1b5e20; }
+.zone-obj-badge.obj-badge-conflicting { background: #ffebee; color: #b71c1c; }
+.zone-obj-badge.obj-badge-stale { background: #fff3e0; color: #e65100; }
+.zone-obj-badge.obj-badge-partial { background: #e3f2fd; color: #0d47a1; }
+.zone-obj-badge.obj-badge-unverified { background: #f5f5f5; color: #757575; }
+/* 节点级四维度文字：接触/自述/最后验证/下一步建议 */
+.zone-node-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 0 18px;
+  margin-top: -2px;
+  margin-bottom: 2px;
+}
+.node-detail-item {
+  font-size: 10px;
+  color: var(--td-text-color-placeholder, #999);
+  white-space: nowrap;
+}
+.node-detail-item.contact { color: #4b9bd8; }
+.node-detail-item.no-contact { color: var(--td-text-color-placeholder, #aaa); }
+.node-detail-item.self-report { color: #7b1fa2; }
+.node-detail-item.last-verified { color: #049b38; }
+.node-detail-item.next-step { color: var(--td-text-color-secondary, #666); }
 .zone-esa-toggle {
   display: inline-flex; align-items: center;
   height: 20px; padding: 0 8px;
@@ -1806,11 +1765,15 @@ onUnmounted(() => {
 }
 .delete-body { display: flex; flex-direction: column; gap: 12px; font-size: 13px; line-height: 1.6; }
 .delete-optout { display: flex; align-items: center; gap: 8px; cursor: pointer; color: var(--td-text-color-secondary, #555); }
+.compact-view-switch{display:none;pointer-events:auto;gap:8px;margin-top:12px}.compact-view-switch button{font:inherit;font-size:12px;padding:7px 14px;border:1px solid var(--td-component-border);border-radius:6px;background:var(--td-bg-color-container);color:var(--td-text-color-primary);cursor:pointer}.compact-view-switch button[aria-pressed=true]{color:var(--td-brand-color);border-color:var(--td-brand-color)}
 @media (max-width: 980px) {
-  /* 窄屏放弃单屏锁定：恢复自然纵向流，星图给足高度后数据栏自然下排 */
+  /* 窄屏先呈现可执行的导航，星图通过同页切换保持可达。 */
   .learning-tab { height: auto; }
   .sky { display: flex; flex-direction: column; }
-  .sky-chart { min-height: 68vw; max-height: 78vh; }
+  .compact-view-switch{display:flex}
+  .sky-chart { display:none;min-height: 68vw; max-height: 78vh; }
+  .sky.compact-map .sky-chart{display:flex}
+  .sky.compact-map .sky-side{display:none}
   .sky-head { position: static; }
   .sky-side { border-left: none; padding-left: 0; border-top: 1px solid var(--td-component-border, #eee); padding-top: 12px; }
   .side-scroll { overflow-y: visible; }

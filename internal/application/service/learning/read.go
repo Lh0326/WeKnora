@@ -576,10 +576,35 @@ func (s *Service) TakeQuiz(ctx context.Context, kbID, slug string) ([]QuizQuesti
 	}
 	var fresh, used []QuizQuestion
 	for _, it := range items {
-		if it.Status != types.LearningQuizStatusActive || it.EvidenceHash == "" || it.EvidenceHash != evidenceHash {
+		// Serving split: published items are verification material;
+		// legacy 'active' and LLM drafts serve as clearly-labelled
+		// practice (their attempts record practice_* reasons and never
+		// promote the strict profile).
+		if it.Status != types.LearningQuizStatusActive &&
+			it.Status != types.LearningQuizStatusPublished &&
+			it.Status != types.LearningQuizStatusDraft {
 			continue
 		}
-		q := QuizQuestion{ID: it.ID, Question: it.Question, Options: map[string]string{}, ChunkRefs: []string(it.ChunkRefs)}
+		if it.EvidenceHash == "" || it.EvidenceHash != evidenceHash {
+			continue
+		}
+		mode := "practice"
+		if it.Status == types.LearningQuizStatusPublished {
+			o, e := s.verificationObjective(ctx, scope.TenantID, kbID, it.ObjectiveID, it.Slug, types.ObjectiveContractConceptTwoFamily)
+			if e != nil || o.ContentVersion != it.ObjectiveVersion {
+				continue
+			}
+			priorFamily := 0
+			for _, a := range attempts {
+				if a.QuizItemID == it.ID || (a.FamilyID == it.FamilyID && a.ObjectiveID == it.ObjectiveID) {
+					priorFamily++
+				}
+			}
+			if ok, _ := strictQuizEligibility(&it, it.AssistanceMode, priorFamily); ok {
+				mode = "verification"
+			}
+		}
+		q := QuizQuestion{ObjectiveID: it.ObjectiveID, FamilyID: it.FamilyID, AssistanceMode: it.AssistanceMode, ID: it.ID, Question: it.Question, Options: map[string]string{}, ChunkRefs: []string(it.ChunkRefs), Mode: mode}
 		for k, v := range it.Options {
 			q.Options[k] = v
 		}
@@ -665,7 +690,7 @@ func (s *Service) resolveSourceDocs(
 // fold are one read-modify-write, and a concurrent double-submit of the same
 // item would otherwise both read prior=0 and both earn the full weight —
 // exactly the anti-farm decay exists to prevent.
-func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error) {
+func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey, declaredAssistance string) (*AnswerResult, error) {
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return nil, err
@@ -677,7 +702,7 @@ func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	}
 	mu := s.lockNode(scope, item.Slug)
 	defer mu.Unlock()
-	result, err := s.submitAnswerNode(ctx, scope, item, chosenKey)
+	result, err := s.submitAnswerNode(ctx, scope, item, chosenKey, declaredAssistance)
 	if err == nil && !s.quizEvidenceMatches(ctx, item) {
 		return nil, ErrQuizNotFound
 	}
@@ -685,7 +710,7 @@ func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 }
 
 func (s *Service) submitAnswerNode(
-	ctx context.Context, scope interfaces.LearningScope, item *types.LearningQuizItem, chosenKey string,
+	ctx context.Context, scope interfaces.LearningScope, item *types.LearningQuizItem, chosenKey, declaredAssistance string,
 ) (*AnswerResult, error) {
 	itemID := item.ID
 
@@ -710,8 +735,33 @@ func (s *Service) submitAnswerNode(
 	if err != nil {
 		return nil, err
 	}
+	// Stage-2 trial-condition policy: practice kinds never fold weight —
+	// LLM drafts, assistance-mode mismatches and assistant-helped trials
+	// give feedback only. Legacy 'active' serving keeps its compatibility
+	// fold; strictness is carried by the frozen Eligible verdict below.
+	strictPrior := 0
+	for _, a := range priorAttempts {
+		if a.QuizItemID == itemID || (a.FamilyID != "" && a.ObjectiveID == item.ObjectiveID && a.FamilyID == item.FamilyID) {
+			strictPrior++
+		}
+	}
+	eligible, gradeReason := strictQuizEligibility(item, declaredAssistance, strictPrior)
+	if grade.EventType == types.LearningEventQuizUnsure {
+		eligible = false
+		gradeReason = "unsure"
+	}
+	var objective *types.LearningObjective
+	if eligible {
+		objective, err = s.verificationObjective(ctx, scope.TenantID, scope.KnowledgeBaseID, item.ObjectiveID, item.Slug, types.ObjectiveContractConceptTwoFamily)
+		if err != nil || objective.ContentVersion != item.ObjectiveVersion {
+			return nil, ErrQuizNotFound
+		}
+	}
+	if grade.Weight != 0 && !eligible && gradeReason != "practice_legacy" {
+		grade.Weight = 0
+	}
 	result := &AnswerResult{
-		Correct: grade.Correct, CorrectKey: item.CorrectKey,
+		Eligible: eligible, GradeReason: gradeReason, Correct: grade.Correct, CorrectKey: item.CorrectKey,
 		Explanation: item.Explanation, ChunkRefs: []string(item.ChunkRefs),
 		Unsure: grade.EventType == types.LearningEventQuizUnsure,
 	}
@@ -729,6 +779,23 @@ func (s *Service) submitAnswerNode(
 		QuizItemID: itemID, Slug: item.Slug,
 		ChosenKey: chosenKey, IsCorrect: grade.Correct, AnsweredAt: now,
 	}
+	// Freeze the strict-evidence linkage AT ANSWER TIME, server-side:
+	// the item's objective and family, and the objective's current
+	// content version. Later item edits or objective re-versioning never
+	// rewrite what this attempt verified (stage-1 evidence separation).
+	attempt.ObjectiveID = item.ObjectiveID
+	attempt.FamilyID = item.FamilyID
+	attempt.ContentVersion = item.ObjectiveVersion
+	if objective != nil {
+		attempt.ContractVersion = objective.ContractVersion
+	}
+	attempt.ItemContentVersion = item.ContentVersion
+	attempt.RubricVersion = item.RubricVersion
+	attempt.ScorerVersion = item.ScorerVersion
+	attempt.AssistanceMode = defaultIfEmpty(declaredAssistance, defaultIfEmpty(item.AssistanceMode, types.AssistanceClosedBook))
+	attempt.ItemStatus = item.Status
+	attempt.Eligible = eligible
+	attempt.GradeReason = gradeReason
 	if err := s.repo.InsertAttempt(ctx, &attempt); err != nil {
 		return nil, err
 	}
@@ -763,6 +830,26 @@ func (s *Service) submitAnswerNode(
 		}
 	}
 	return result, nil
+}
+
+// objectiveContentVersion resolves the objective's content version for
+// attempt freezing; empty when the item carries no objective (the attempt
+// is legacy by construction) or the lookup fails conservatively.
+func (s *Service) objectiveContentVersion(ctx context.Context, tenantID uint64, kbID, objectiveID string) string {
+	if objectiveID == "" {
+		return ""
+	}
+	objectives, err := s.repo.ListObjectives(ctx, tenantID, kbID)
+	if err != nil {
+		logger.Warnf(ctx, "learning: objective version lookup failed (kb %s): %v", kbID, err)
+		return ""
+	}
+	for _, o := range objectives {
+		if o.ID == objectiveID {
+			return o.ContentVersion
+		}
+	}
+	return ""
 }
 
 // tierDownThreshold maps a display tier to its demotion gate — the p_eff
@@ -854,6 +941,9 @@ func (s *Service) ExportProfile(ctx context.Context) (*ExportPayload, error) {
 
 	payload := &ExportPayload{ExportedAt: time.Now()}
 	var err error
+	if payload.PlanPreferences, err = s.repo.ListPlanPreferencesBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
 	if payload.Events, err = s.repo.ListEventsBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
@@ -866,8 +956,53 @@ func (s *Service) ExportProfile(ctx context.Context) (*ExportPayload, error) {
 	if payload.Attempts, err = s.repo.ListAttemptsBySubject(ctx, subject); err != nil {
 		return nil, err
 	}
+	if payload.TaskAttempts, err = s.repo.ListTaskAttemptsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
 	if payload.Skips, err = s.repo.ListSkipsBySubject(ctx, subject); err != nil {
 		return nil, err
+	}
+	// Stage-1 separated evidence profile: objective definitions plus the
+	// derived states for this subject's attempt facts, per (tenant, KB) of
+	// the attempts. Legacy metadata never fabricates strict states — the
+	// derivation itself guarantees it.
+	seenScopes := map[[2]string]bool{}
+	scopeAttempts := append([]types.LearningQuizAttempt(nil), payload.Attempts...)
+	for _, task := range payload.TaskAttempts {
+		scopeAttempts = append(scopeAttempts, types.LearningQuizAttempt{TenantID: task.TenantID, KnowledgeBaseID: task.KnowledgeBaseID})
+	}
+	for _, a := range scopeAttempts {
+		key := [2]string{formatUintKey(a.TenantID), a.KnowledgeBaseID}
+		if seenScopes[key] {
+			continue
+		}
+		seenScopes[key] = true
+		objectives, err := s.currentObjectiveDefinitions(ctx, a.TenantID, a.KnowledgeBaseID)
+		if err != nil {
+			logger.Warnf(ctx, "learning: export objectives read failed (kb %s): %v", a.KnowledgeBaseID, err)
+			continue // raw attempts remain exported; the derived section degrades
+		}
+		var scoped []types.LearningQuizAttempt
+		for _, x := range payload.Attempts {
+			if x.TenantID == a.TenantID && x.KnowledgeBaseID == a.KnowledgeBaseID {
+				scoped = append(scoped, x)
+			}
+		}
+		var scopedTasks []types.LearningTaskAttempt
+		for _, x := range payload.TaskAttempts {
+			if x.TenantID == a.TenantID && x.KnowledgeBaseID == a.KnowledgeBaseID {
+				scopedTasks = append(scopedTasks, x)
+			}
+		}
+		legacyByItem := map[string]string{}
+		if items, err := s.repo.ListQuizItemsByKB(ctx, a.TenantID, a.KnowledgeBaseID); err == nil {
+			for _, it := range items {
+				if it.ObjectiveID != "" {
+					legacyByItem[it.ID] = it.ObjectiveID
+				}
+			}
+		}
+		payload.Objectives = append(payload.Objectives, objectiveExportRows(objectives, scoped, legacyByItem, scopedTasks)...)
 	}
 	payload.KBSummary = s.exportKBSummary(ctx, payload)
 	return payload, nil
@@ -911,6 +1046,9 @@ func (s *Service) exportKBSummary(ctx context.Context, payload *ExportPayload) [
 	}
 	for _, s := range payload.Skips {
 		get(s.KnowledgeBaseID).Skips++
+	}
+	for _, p := range payload.PlanPreferences {
+		get(p.KnowledgeBaseID)
 	}
 	out := make([]ExportKBSummary, 0, len(byKB))
 	for _, u := range byKB {

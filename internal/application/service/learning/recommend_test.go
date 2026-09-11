@@ -275,8 +275,8 @@ func TestRecommendSelfVerifyOutranksInferredLabels(t *testing.T) {
 		{Slug: "concept/struggler", PageType: "concept", Title: "乙"},
 	}
 	recs := recommendNodes(recommendInput{
-		Pages:    pages,
-		States:   map[string]FoldState{"concept/claimed": claimed, "concept/struggler": struggler},
+		Pages:         pages,
+		States:        map[string]FoldState{"concept/claimed": claimed, "concept/struggler": struggler},
 		QuizStruggled: map[string]bool{"concept/claimed": true, "concept/struggler": true},
 		SelfAssess: map[string]interfaces.SelfAssessMark{
 			"concept/claimed": {Direction: "down", EventType: "self_assess_down_quiz_easy", At: now.Add(-40 * time.Minute)},
@@ -311,8 +311,8 @@ func TestRecommendSelfVerifyFreshestFirst(t *testing.T) {
 		{Slug: "concept/fresher-claim", PageType: "concept", Title: "乙"},
 	}
 	recs := recommendNodes(recommendInput{
-		Pages:  pages,
-		States: map[string]FoldState{"concept/older-claim": touched(30), "concept/fresher-claim": touched(30)},
+		Pages:   pages,
+		States:  map[string]FoldState{"concept/older-claim": touched(30), "concept/fresher-claim": touched(30)},
 		HasQuiz: map[string]bool{"concept/fresher-claim": true},
 		SelfAssess: map[string]interfaces.SelfAssessMark{
 			"concept/older-claim":   {Direction: "down", EventType: "self_assess_down_all", At: now.Add(-6 * time.Hour)},
@@ -339,17 +339,17 @@ func TestRecommendColdStartFollowsDocumentOrder(t *testing.T) {
 	// would put chapter 3's "A主题" first and chapter 1's "丙基础" last.
 	pages := []*types.WikiPage{
 		{Slug: "concept/ch3-topic", PageType: "concept", Title: "A主题"},  // chapter 3
-		{Slug: "concept/ch2-topic", PageType: "concept", Title: "乙进阶"}, // chapter 2
+		{Slug: "concept/ch2-topic", PageType: "concept", Title: "乙进阶"},  // chapter 2
 		{Slug: "concept/ch1-basics", PageType: "concept", Title: "丙基础"}, // chapter 1
-		{Slug: "concept/ch1-more", PageType: "concept", Title: "丁入门"},  // chapter 1, later
-		{Slug: "concept/ch0-intro", PageType: "concept", Title: "戊导论"}, // chapter 0
+		{Slug: "concept/ch1-more", PageType: "concept", Title: "丁入门"},   // chapter 1, later
+		{Slug: "concept/ch0-intro", PageType: "concept", Title: "戊导论"},  // chapter 0
 	}
 	docOrder := map[string]int{
-		"concept/ch0-intro":   0,
-		"concept/ch1-basics":  1,
-		"concept/ch1-more":    2,
-		"concept/ch2-topic":   3,
-		"concept/ch3-topic":   4,
+		"concept/ch0-intro":  0,
+		"concept/ch1-basics": 1,
+		"concept/ch1-more":   2,
+		"concept/ch2-topic":  3,
+		"concept/ch3-topic":  4,
 	}
 	recs := recommendNodes(recommendInput{Pages: pages, DocOrder: docOrder}, now, nil, 5)
 	got := slugList(recs)
@@ -381,7 +381,7 @@ func TestRecommendExplorationStaysOnTheOnRamp(t *testing.T) {
 	docOrder := map[string]int{}
 	for i := 0; i < many; i++ {
 		slug := "concept/ch" + fmt.Sprintf("%02d", i)
-		pages = append(pages, &types.WikiPage{Slug: slug, PageType: "concept", Title: string(rune('A' + i%26)) + fmt.Sprint(i)})
+		pages = append(pages, &types.WikiPage{Slug: slug, PageType: "concept", Title: string(rune('A'+i%26)) + fmt.Sprint(i)})
 		docOrder[slug] = i
 	}
 	// Sweep seeds until one triggers exploration, then bound the pick.
@@ -451,7 +451,7 @@ func TestRecommendFoundationWindowSlides(t *testing.T) {
 func TestRecommendDocOrderTiebreakWithoutWindow(t *testing.T) {
 	now := time.Now()
 	pages := []*types.WikiPage{
-		{Slug: "concept/late-doc", PageType: "concept", Title: "乙"}, // later in the book
+		{Slug: "concept/late-doc", PageType: "concept", Title: "乙"},  // later in the book
 		{Slug: "concept/early-doc", PageType: "concept", Title: "甲"}, // earlier in the book
 		{Slug: "concept/untouched", PageType: "concept", Title: "丙"},
 	}

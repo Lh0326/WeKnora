@@ -288,7 +288,7 @@ func TestRecordWikiReadReopenTracesButNotScores(t *testing.T) {
 }
 
 // TestRecordWikiReadSkipOptedOut: opted-out subjects keep their reads
-// private — no event, no error.
+// private — no event, and an explicit disabled outcome for UI feedback.
 func TestRecordWikiReadSkipOptedOut(t *testing.T) {
 	svc, repo, _ := wikiReadFixture(t)
 	t.Setenv("LEARNING_ENABLE", "true")
@@ -299,8 +299,8 @@ func TestRecordWikiReadSkipOptedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != nil {
-		t.Fatal(err)
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", ""); err != interfaces.ErrLearningCollectionDisabled {
+		t.Fatalf("want disabled collection outcome, got %v", err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
 		t.Fatalf("events = %d, want 0 for opted-out subject", n)
@@ -384,6 +384,7 @@ func TestRecordWikiReadDeepTier(t *testing.T) {
 // TestRecordWikiReadDeepTierRespectsOptOut: opted-out subjects get nothing
 // stored, deep or not.
 func TestRecordWikiReadDeepTierRespectsOptOut(t *testing.T) {
+	t.Setenv("LEARNING_ENABLE", "true")
 	repo := newStubRepo()
 	wiki := &stubWikiRepo{pages: map[string][]*types.WikiPage{}}
 	wiki.addPage(testKB, testWikiPage("concept/rag", []string{"c1"}, []string{"d1|Doc"}))
@@ -391,8 +392,8 @@ func TestRecordWikiReadDeepTierRespectsOptOut(t *testing.T) {
 	repo.prefs["web_user:alice"] = &types.LearningSubjectPrefs{CollectDisabled: true}
 	ctx := collectorCtx(1, "alice")
 
-	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
-		t.Fatal(err)
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != interfaces.ErrLearningCollectionDisabled {
+		t.Fatalf("want disabled collection outcome, got %v", err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
 		t.Fatalf("opted-out deep read stored %d events, want 0", n)

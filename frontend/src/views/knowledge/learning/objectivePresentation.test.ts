@@ -1,0 +1,12 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { projectObjectiveNodes } from './objectivePresentation'
+import type { ObjectiveViewEntry } from '@/api/learning/objectives'
+const node = {slug:'concept/a',level:'mastered',p_eff:0.99,evidence_count:99,skipped:true}
+const entry = (state:string, status='published'):ObjectiveViewEntry => ({slug:node.slug,objective_id:state,title:'目标',behavior:'识别边界',capability_type:'concept',contract_type:'concept_two_family',contract_version:'v1',content_version:'v1',objective_status:status,state,evidence:{families_passed:[],families_passed_historic:[],eligible_passes:0,eligible_failures:0,stale_passes:0,legacy_attempts:0,source:'quiz'},exposure:{reads:100,cites:20,agent_reads:30},self_report:{direction:'up',skipped:true},recency:{},path_status:'available'})
+const project=(entries:ObjectiveViewEntry[])=>projectObjectiveNodes([node],{projection_version:'v2',entries})[0]!
+test('legacy score, repeated reading, self report and skipping never light a verified page',()=>{const n=project([entry('unverified')]);assert.equal(n.verification_complete,false);assert.equal(n.p_eff,undefined);assert.equal(n.skipped,false);assert.equal(n.level,'touched')})
+test('all published objectives must pass; one passing objective is only partial',()=>{const n=project([entry('verified'),entry('unverified')]);assert.equal(n.verification_complete,false);assert.match(n.verification_label!,/1\/2/);assert.equal(n.level,'familiar');assert.equal(project([entry('verified')]).verification_complete,true)})
+test('draft and unconfigured pages cannot be certified',()=>{assert.equal(project([entry('verified','draft')]).verification_complete,false);assert.equal(project([]).verification_complete,false)})
+test('conflicting and stale content withdraw the full-page light and request review',()=>{for(const state of ['conflicting','stale_content']){const n=project([entry('verified'),entry(state)]);assert.equal(n.verification_complete,false);assert.match(n.verification_label!,/需复核/);assert.equal(n.verification_color,'#b58124')}})
+test('missing projection is unavailable; graph node set and source objects remain intact',()=>{const n=projectObjectiveNodes([node],null);assert.equal(n.length,1);assert.match(n[0]!.verification_label!,/不可用/);assert.equal(node.p_eff,.99);assert.equal(projectObjectiveNodes([node],{projection_version:'unavailable',entries:[]})[0]!.verification_complete,false)})

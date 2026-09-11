@@ -541,6 +541,15 @@ func (s *Service) runQuizPass(ctx context.Context, kb *types.KnowledgeBase, mode
 			}
 			item.TenantID = kb.TenantID
 			item.EvidenceHash = hash
+			// Stage 2: LLM drafts are practice-only until human review —
+			// status draft keeps them servable as labelled practice while
+			// their attempts can never promote the strict profile. The
+			// fingerprint seeds clone detection; objective binding is
+			// repaired by the reviewer.
+			item.Status = types.LearningQuizStatusDraft
+			item.FamilyFingerprint = FamilyFingerprint(item.ObjectiveID, item.Options, item.CorrectKey)
+			item.AssistanceMode = types.AssistanceClosedBook
+			item.ScorerVersion = types.MCQScorerVersion
 			if err := s.repo.UpsertQuizItem(ctx, item); err != nil {
 				return err
 			}

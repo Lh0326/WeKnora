@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, reactive, computed, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, watch, reactive, computed, nextTick, provide } from "vue";
 import { MessagePlugin } from "tdesign-vue-next";
 import DocContent from "@/components/doc-content.vue";
 import useKnowledgeBase from '@/hooks/useKnowledgeBase';
@@ -55,8 +55,9 @@ import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import WikiBrowser from './wiki/WikiBrowser.vue';
 import LearningTab from './learning/LearningTab.vue';
+import { createLearningSession, learningSessionKey } from './learning/learningSession';
 import WikiAssistantWidget from './wiki/WikiAssistantWidget.vue';
-import { assistantHostContext, setAssistantHost } from './assistantHost';
+import { createAssistantHost, assistantHostKey } from './assistantHost';
 import { getWikiStats } from '@/api/wiki';
 import {
   isKnowledgeParseInFlight,
@@ -88,6 +89,17 @@ watch(() => route.fullPath, () => {
   canGoBackInApp.value = typeof window.history.state?.back === 'string' && window.history.state.back !== '';
 }, { immediate: true });
 const kbId = computed(() => (route.params as any).kbId as string || '');
+const learningAccount = computed(() => JSON.stringify([authStore.user?.id || '', authStore.effectiveTenantId || '']));
+const learningIdentity = computed(() => JSON.stringify([authStore.user?.id || '', authStore.effectiveTenantId || '', kbId.value]));
+const learningSession = createLearningSession();
+const assistantHost = createAssistantHost();
+const assistantHostContext = assistantHost.context;
+provide(assistantHostKey, assistantHost);
+watch(learningIdentity, identity => assistantHost.setScope(identity), { immediate: true, flush: 'sync' });
+onUnmounted(() => assistantHost.clear());
+provide(learningSessionKey, learningSession);
+watch(learningIdentity, identity => learningSession.setScope(identity, kbId.value), { immediate: true, flush: 'sync' });
+onUnmounted(() => learningSession.clear());
 const kbInfo = ref<any>(null);
 const uploadSourceRef = ref<InstanceType<typeof KbUploadSourceDropdown> | null>(null);
 const uploading = ref(false);
@@ -1095,9 +1107,7 @@ const loadKnowledgeList = async () => {
 // Sync activeKbTab to URL query so it survives page refresh
 // KB-wide assistant host context: non-wiki tabs publish their scene here;
 // the wiki/graph tabs are owned by WikiBrowser's richer page-level publish.
-watch(activeKbTab, (tab) => {
-  if (tab !== 'wiki' && tab !== 'graph') setAssistantHost({ scene: tab })
-}, { immediate: true })
+watch(activeKbTab, tab => assistantHost.setScene(tab), { immediate: true, flush: 'sync' })
 
 watch(activeKbTab, (tab) => {
   const query = { ...route.query }
@@ -2389,8 +2399,8 @@ async function createNewSession(value: string): Promise<void> {
               </t-tooltip>
             </div>
           </div>
-          <p class="document-subtitle">{{ $t('knowledgeEditor.document.subtitle') }}</p>
-          <p v-if="unsupportedFileTypes.length" class="parser-hint" @click="goToParserSettings">
+          <p v-if="!isWiki || activeKbTab==='documents'" class="document-subtitle">{{ $t('knowledgeEditor.document.subtitle') }}</p>
+          <p v-if="unsupportedFileTypes.length && (!isWiki || activeKbTab==='documents')" class="parser-hint" @click="goToParserSettings">
             <t-icon name="info-circle" class="parser-hint-icon" />
             <span>{{$t('knowledgeBase.unsupportedTypesHint', {
               types: unsupportedFileTypes.map(t => '.' + t).join('、')
@@ -2398,7 +2408,7 @@ async function createNewSession(value: string): Promise<void> {
               }}</span>
             <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
           </p>
-          <p v-if="missingStorageEngine" class="storage-engine-warning" @click="handleOpenKBSettings">
+          <p v-if="missingStorageEngine && (!isWiki || activeKbTab==='documents')" class="storage-engine-warning" @click="handleOpenKBSettings">
             <t-icon name="info-circle" class="warning-icon" />
             <span>{{ $t('knowledgeBase.missingStorageEngine') }}</span>
             <span class="warning-link">{{ $t('knowledgeBase.goToStorageSettings') }} →</span>
@@ -2410,13 +2420,13 @@ async function createNewSession(value: string): Promise<void> {
            推荐"查看"）再回来时，答题进度与滚动位置不丢、无整屏白闪重载；
            失活实例的 DOM 被摘除，星图常驻动画（呼吸/闪烁）不占渲染预算 -->
       <div v-if="isWiki" v-show="activeKbTab === 'learning'" class="learning-main-area">
-        <KeepAlive :max="2">
-          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="kbId" :knowledge-base-id="kbId" :can-manage="canManage"
+        <KeepAlive :key="learningAccount" :max="2">
+          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="learningIdentity" :knowledge-base-id="kbId" :can-manage="canManage"
             @open-source-doc="openSourceDoc" />
         </KeepAlive>
       </div>
       <div v-if="isWiki && (activeKbTab === 'wiki' || activeKbTab === 'graph')" class="wiki-main-area">
-        <WikiBrowser v-if="kbId" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
+        <WikiBrowser v-if="kbId" :key="learningIdentity" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
           :can-edit="canEdit" @open-source-doc="openSourceDoc" @status-change="onWikiStatusChange"
           @view-graph="onViewWikiInGraph" />
       </div>

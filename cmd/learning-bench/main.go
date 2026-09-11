@@ -16,13 +16,15 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "", "simulate | replay | verify | walk | optimize")
+	mode := flag.String("mode", "", "simulate | replay | verify | walk | optimize | assess")
 	flag.StringVar(&weightOverrides, "w", "", "replay: weight overrides K=V,K=V (offline tuning sweep only)")
 	flag.BoolVar(&refold, "refold", false, "replay: recompute weights from current vars instead of frozen row values (tuning mode)")
 	verifyOut := flag.String("verify-out", "", "verify: write JSON artifact to this path")
 	optReport := flag.String("report", "", "optimize: write JSON calibration report to this path")
 	script := flag.String("script", "", "simulate: path to persona JSON script")
 	export := flag.String("export", "", "replay: path to exported profile JSON file")
+	assessIn := flag.String("assess-input", "", "assess: path to assessment input JSON file")
+	assessOut := flag.String("assess-out", "", "assess: persist metrics JSON report to this path")
 	topK := flag.String("topk", "5,10", "replay: comma-separated K values (default 5,10)")
 	verbose := flag.Bool("verbose", false, "print per-step details")
 	flag.Parse()
@@ -60,6 +62,14 @@ func main() {
 		if err := runOptimize(*export, *optReport, *verbose); err != nil {
 			fatal(fmt.Sprintf("optimize failed: %v", err))
 		}
+	case "assess":
+		if *assessIn == "" {
+			fatal("assess mode requires -assess-input=<path>")
+		}
+		if err := runAssessOut(*assessIn, *assessOut); err != nil {
+			fatal(fmt.Sprintf("assess failed: %v", err))
+		}
+		fmt.Println("✓ assess: independent assessment report generated")
 	default:
 		flag.Usage()
 		os.Exit(1)

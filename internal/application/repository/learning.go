@@ -310,12 +310,149 @@ func (r *learningRepository) UpsertQuizItem(ctx context.Context, item *types.Lea
 	if item.Status == "" {
 		item.Status = types.LearningQuizStatusActive
 	}
-	return r.database(ctx).Clauses(clause.OnConflict{
+	result := r.database(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "id"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Eq{Column: clause.Column{Table: "learning_quiz_items", Name: "tenant_id"}, Value: item.TenantID},
+			clause.Eq{Column: clause.Column{Table: "learning_quiz_items", Name: "knowledge_base_id"}, Value: item.KnowledgeBaseID},
+		}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"question", "options", "correct_key", "explanation", "chunk_refs", "evidence_hash", "status", "updated_at",
+			"question", "options", "correct_key", "explanation", "chunk_refs", "evidence_hash",
+			"objective_id", "family_id", "objective_version", "content_version", "rubric_version", "scorer_version",
+			"assistance_mode", "family_fingerprint", "reviewer", "published_at", "review_note",
+			"change_kind", "status", "updated_at",
 		}),
-	}).Create(item).Error
+	}).Create(item)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("learning: content id belongs to another scope")
+	}
+	return nil
+}
+
+// ListObjectives returns the KB's objective definitions, deterministic
+// order (slug, id) so derivations and exports are reproducible.
+func (r *learningRepository) ListObjectives(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningObjective, error) {
+	var rows []types.LearningObjective
+	err := r.database(ctx).
+		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID).
+		Order("slug ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
+// UpsertObjective inserts or updates one objective definition by id. The
+// definition is KB-shared inventory: subject deletes never touch it.
+func (r *learningRepository) UpsertObjective(ctx context.Context, objective *types.LearningObjective) error {
+	if objective.ID == "" {
+		return errors.New("learning: objective id required")
+	}
+	if objective.Status == "" {
+		objective.Status = types.LearningObjectiveStatusDraft
+	}
+	if objective.ContractType == "" {
+		objective.ContractType = types.ObjectiveContractConceptTwoFamily
+	}
+	if objective.ContractVersion == "" {
+		objective.ContractVersion = types.ObjectiveContractVersion
+	}
+	result := r.database(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Eq{Column: clause.Column{Table: "learning_objectives", Name: "tenant_id"}, Value: objective.TenantID},
+			clause.Eq{Column: clause.Column{Table: "learning_objectives", Name: "knowledge_base_id"}, Value: objective.KnowledgeBaseID},
+		}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"slug", "title", "behavior", "capability_type",
+			"contract_type", "contract_params", "contract_version",
+			"source_refs", "content_version", "evidence_hash", "reviewer", "published_at",
+			"review_note", "change_kind", "status", "prereq_objective_id", "updated_at",
+		}),
+	}).Create(objective)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("learning: content id belongs to another scope")
+	}
+	return nil
+}
+
+// GetTaskByID resolves one structured task.
+func (r *learningRepository) GetTaskByID(ctx context.Context, tenantID uint64, taskID string) (*types.LearningTask, error) {
+	var t types.LearningTask
+	err := r.database(ctx).Where("tenant_id = ? AND id = ?", tenantID, taskID).First(&t).Error
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ListTasks returns the KB's tasks in deterministic (slug, id) order.
+func (r *learningRepository) ListTasks(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningTask, error) {
+	var rows []types.LearningTask
+	err := r.database(ctx).
+		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID).
+		Order("slug ASC, id ASC").
+		Find(&rows).Error
+	return rows, err
+}
+
+// UpsertTask stores one task by id.
+func (r *learningRepository) UpsertTask(ctx context.Context, t *types.LearningTask) error {
+	if t.ID == "" {
+		return errors.New("learning: task id required")
+	}
+	if t.Status == "" {
+		t.Status = types.LearningQuizStatusDraft
+	}
+	result := r.database(ctx).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "id"}},
+		Where: clause.Where{Exprs: []clause.Expression{
+			clause.Eq{Column: clause.Column{Table: "learning_tasks", Name: "tenant_id"}, Value: t.TenantID},
+			clause.Eq{Column: clause.Column{Table: "learning_tasks", Name: "knowledge_base_id"}, Value: t.KnowledgeBaseID},
+		}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"slug", "objective_id", "family_id", "title", "scenario", "fields", "answer_key",
+			"critical_checks", "source_refs", "evidence_hash", "objective_version", "content_version", "rubric_version", "scorer_version",
+			"assistance_mode", "reviewer", "published_at", "review_note", "change_kind", "status", "updated_at",
+		}),
+	}).Create(t)
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return errors.New("learning: content id belongs to another scope")
+	}
+	return nil
+}
+
+// InsertTaskAttempt stores one graded task submission.
+func (r *learningRepository) InsertTaskAttempt(ctx context.Context, a *types.LearningTaskAttempt) error {
+	if a.ID == "" {
+		a.ID = uuid.New().String()
+	}
+	return r.database(ctx).Create(a).Error
+}
+
+// ListTaskAttempts returns the subject's task submissions in one KB,
+// oldest first — the derivation input for task contracts.
+func (r *learningRepository) ListTaskAttempts(ctx context.Context, scope interfaces.LearningScope) ([]types.LearningTaskAttempt, error) {
+	var rows []types.LearningTaskAttempt
+	err := r.scoped(ctx, scope).Order("submitted_at ASC, id ASC").Find(&rows).Error
+	return rows, err
+}
+
+// ListTaskAttemptsBySubject is the export-side variant.
+func (r *learningRepository) ListTaskAttemptsBySubject(ctx context.Context, subjectID string) ([]types.LearningTaskAttempt, error) {
+	var rows []types.LearningTaskAttempt
+	err := r.database(ctx).
+		Where("subject_id = ?", subjectID).
+		Order("submitted_at ASC").
+		Find(&rows).Error
+	return rows, err
 }
 
 // StaleQuizItemsByEvidence auto-invalidates the slug's active items whose
@@ -611,7 +748,7 @@ func (r *learningRepository) ListAttemptsBySubject(ctx context.Context, subjectI
 func (r *learningRepository) DeleteLearningDataByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) error {
 	return r.deleteLearningData(ctx, []string{
 		"learning_events", "mastery_states", "memory_wiki_map", "learning_quiz_attempts",
-		"learning_backfill_marks", "learning_skips",
+		"learning_backfill_marks", "learning_task_attempts", "learning_skips", "learning_plan_preferences",
 	}, "tenant_id = ? AND knowledge_base_id = ?", tenantID, knowledgeBaseID)
 }
 
@@ -625,7 +762,7 @@ func (r *learningRepository) DeleteLearningDataBySubject(ctx context.Context, su
 	// next startup. learning_skips IS personal data and goes with the rest.
 	return r.deleteLearningData(ctx, []string{
 		"learning_events", "mastery_states", "memory_wiki_map", "learning_quiz_attempts",
-		"learning_skips",
+		"learning_task_attempts", "learning_skips", "learning_plan_preferences",
 	}, "subject_id = ?", subjectID)
 }
 
@@ -661,7 +798,7 @@ func (r *learningRepository) DeleteProfileData(
 		}
 		for _, table := range []string{
 			"learning_events", "mastery_states", "memory_wiki_map", "learning_quiz_attempts",
-			"learning_skips",
+			"learning_task_attempts", "learning_skips", "learning_plan_preferences",
 		} {
 			if err := tx.Table(table).Where("subject_id = ?", subjectID).Delete(nil).Error; err != nil {
 				return err

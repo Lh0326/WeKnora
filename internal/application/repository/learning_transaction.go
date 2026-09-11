@@ -93,8 +93,10 @@ func (r *learningRepository) WithSubject(ctx context.Context, subject string, ep
 
 func (r *learningRepository) ListEventScopes(ctx context.Context) ([]interfaces.LearningScope, error) {
 	var scopes []interfaces.LearningScope
-	err := r.database(ctx).Model(&types.LearningEvent{}).
-		Distinct("tenant_id", "subject_id", "knowledge_base_id").
-		Order("tenant_id, subject_id, knowledge_base_id").Scan(&scopes).Error
+	// Preference-only scopes also require orphan cleanup after KB deletion.
+	// They identify storage owners here; they never count as learning events.
+	err := r.database(ctx).Raw(`SELECT tenant_id, subject_id, knowledge_base_id FROM learning_events
+UNION SELECT tenant_id, subject_id, knowledge_base_id FROM learning_plan_preferences
+ORDER BY tenant_id, subject_id, knowledge_base_id`).Scan(&scopes).Error
 	return scopes, err
 }

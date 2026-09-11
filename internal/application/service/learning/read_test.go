@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 // readFixture wires the real Service with the full stub set.
@@ -185,7 +186,7 @@ func TestSubmitAnswerGradesAndFolds(t *testing.T) {
 	_ = storeGroundedQuiz(t, svc, repo, ctx, item)
 
 	// Wrong answer.
-	res, err := svc.SubmitAnswer(ctx, testKB, "q-1", "A")
+	res, err := svc.SubmitAnswer(ctx, testKB, "q-1", "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestSubmitAnswerGradesAndFolds(t *testing.T) {
 	}
 
 	// Correct answer after feedback: verdict is correct, evidence weight zero.
-	res, err = svc.SubmitAnswer(ctx, testKB, "q-1", "B")
+	res, err = svc.SubmitAnswer(ctx, testKB, "q-1", "B", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +231,7 @@ func TestSubmitAnswerOptedOutServesVerdictButStoresNothing(t *testing.T) {
 		CorrectKey: "A", Explanation: "why", Status: types.LearningQuizStatusActive,
 	})
 
-	res, err := svc.SubmitAnswer(ctx, testKB, "q-9", "A")
+	res, err := svc.SubmitAnswer(ctx, testKB, "q-9", "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -536,7 +537,7 @@ func TestSubmitAnswerReturnsReviewSchedule(t *testing.T) {
 		CorrectKey: "B", Explanation: "why", Status: types.LearningQuizStatusActive,
 	})
 
-	res, err := svc.SubmitAnswer(ctx, testKB, "q-sched", "B")
+	res, err := svc.SubmitAnswer(ctx, testKB, "q-sched", "B", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +552,7 @@ func TestSubmitAnswerReturnsReviewSchedule(t *testing.T) {
 		Question: "Q?", Options: types.QuizOptions{"A": "a", "B": "b", "C": "c", "D": "d"},
 		CorrectKey: "B", Explanation: "why", Status: types.LearningQuizStatusActive,
 	})
-	res, err = svc.SubmitAnswer(ctx, testKB, "q-sink", "A")
+	res, err = svc.SubmitAnswer(ctx, testKB, "q-sink", "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +586,7 @@ func TestSubmitAnswerRepeatDecayWindowed(t *testing.T) {
 			AnsweredAt: time.Now().Add(-ReAskWindowHours*time.Hour - time.Duration(i+1)*time.Hour),
 		})
 	}
-	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B"); err != nil {
+	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B", ""); err != nil {
 		t.Fatal(err)
 	}
 	events := repo.snapshotEvents()
@@ -594,14 +595,14 @@ func TestSubmitAnswerRepeatDecayWindowed(t *testing.T) {
 	}
 
 	// Part 2: same-session repeats still decay (the anti-farm guarantee).
-	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B"); err != nil {
+	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B", ""); err != nil {
 		t.Fatal(err)
 	}
 	events = repo.snapshotEvents()
 	if events[len(events)-1].Weight != 0 {
 		t.Fatalf("same-window repeat weight = %v, want 0", events[len(events)-1].Weight)
 	}
-	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B"); err != nil {
+	if _, err := svc.SubmitAnswer(ctx, testKB, "q-decay", "B", ""); err != nil {
 		t.Fatal(err)
 	}
 	events = repo.snapshotEvents()
@@ -634,7 +635,7 @@ func TestSubmitAnswerConcurrentDoubleSubmit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := svc.SubmitAnswer(ctx, testKB, "q-race", "B"); err != nil {
+			if _, err := svc.SubmitAnswer(ctx, testKB, "q-race", "B", ""); err != nil {
 				t.Errorf("concurrent submit failed: %v", err)
 			}
 		}()
@@ -716,8 +717,8 @@ func TestOptOutIsSubjectGlobalForSharedKBs(t *testing.T) {
 	// …but the read arrives under the shared KB's effective tenant 7.
 	sharedCtx := collectorCtx(7, "alice")
 	_ = wiki
-	if err := svc.RecordWikiRead(sharedCtx, testKB, "concept/rag", ""); err != nil {
-		t.Fatal(err)
+	if err := svc.RecordWikiRead(sharedCtx, testKB, "concept/rag", ""); err != interfaces.ErrLearningCollectionDisabled {
+		t.Fatalf("want disabled collection outcome, got %v", err)
 	}
 	if n := len(repo.snapshotEvents()); n != 0 {
 		t.Fatalf("collection continued under effective tenant despite opt-out: %d events", n)

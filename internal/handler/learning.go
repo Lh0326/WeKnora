@@ -38,8 +38,18 @@ func (h *LearningHandler) requireLearningEnabled(c *gin.Context) bool {
 
 func (h *LearningHandler) fail(c *gin.Context, err error, message string) {
 	switch {
+	case errors.Is(err, interfaces.ErrLearningReviewConflict):
+		c.Error(apperrors.NewConflictError("recall schedule or source changed; reload before submitting"))
+	case errors.Is(err, interfaces.ErrLearningPreferenceConflict):
+		c.Error(apperrors.NewConflictError("saved learning scope changed in another page; reload it before saving"))
 	case errors.Is(err, learning.ErrNoLearningScope):
 		c.Error(apperrors.NewUnauthorizedError("no principal in request"))
+	case errors.Is(err, learning.ErrInvalidLearningRequest), errors.Is(err, learning.ErrReviewRejected):
+		c.Error(apperrors.NewBadRequestError(err.Error()))
+	case errors.Is(err, learning.ErrTaskNotFound), errors.Is(err, learning.ErrTaskNotTakeable):
+		c.Error(apperrors.NewNotFoundError("task unavailable; refresh the learning path"))
+	case errors.Is(err, interfaces.ErrLearningEpochAdvanced):
+		c.Error(apperrors.NewBadRequestError("learning profile changed; refresh before submitting"))
 	case errors.Is(err, learning.ErrQuizNotFound):
 		c.Error(apperrors.NewNotFoundError("quiz item not found"))
 	case errors.Is(err, learning.ErrWikiReadTarget):
@@ -137,6 +147,205 @@ func (h *LearningHandler) ZoneMap(c *gin.Context) {
 }
 
 // TakeQuiz godoc
+// ReviewQuizItem godoc
+// @Summary Human content review of a quiz item
+// @Description Approve publishes (clone-safe family, version bump on semantic change); reject disables with the audit trail. Reviewer = authenticated human principal only.
+// @Tags learning
+// @Accept json
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param item_id path string true "Quiz item id"
+// @Param body body interfaces.ReviewDecisionInput true "Review decision"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/quiz/{item_id}/review [post]
+func (h *LearningHandler) ReviewQuizItem(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req interfaces.ReviewDecisionInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.fail(c, err, "invalid review body")
+		return
+	}
+	item, err := h.learningService.ReviewQuizItem(c.Request.Context(), c.Param("kb_id"), c.Param("item_id"), req)
+	if err != nil {
+		h.fail(c, err, "review failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": item})
+}
+
+// ReviewObjective godoc
+// @Summary Human review of an objective definition
+// @Tags learning
+// @Accept json
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param objective_id path string true "Objective id"
+// @Param body body interfaces.ReviewDecisionInput true "Review decision"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/objectives/{objective_id}/review [post]
+func (h *LearningHandler) ReviewObjective(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req interfaces.ReviewDecisionInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.fail(c, err, "invalid review body")
+		return
+	}
+	obj, err := h.learningService.ReviewObjective(c.Request.Context(), c.Param("kb_id"), c.Param("objective_id"), req)
+	if err != nil {
+		h.fail(c, err, "review failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": obj})
+}
+
+// ReviewTask godoc
+// @Summary Human review of a structured application task
+// @Tags learning
+// @Accept json
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param task_id path string true "Task id"
+// @Param body body interfaces.ReviewDecisionInput true "Review decision"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/tasks/{task_id}/review [post]
+func (h *LearningHandler) ReviewTask(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req interfaces.ReviewDecisionInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.fail(c, err, "invalid review body")
+		return
+	}
+	task, err := h.learningService.ReviewTask(c.Request.Context(), c.Param("kb_id"), c.Param("task_id"), req)
+	if err != nil {
+		h.fail(c, err, "review failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": task})
+}
+
+// TakeTask godoc
+// @Summary Takeable structured tasks (no answer keys)
+// @Tags learning
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param objective_id query string false "Filter by objective"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/tasks [get]
+func (h *LearningHandler) TakeTask(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	tasks, err := h.learningService.TakeTask(c.Request.Context(), c.Param("kb_id"), c.Query("objective_id"))
+	if err != nil {
+		h.fail(c, err, "failed to load tasks")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": tasks})
+}
+
+// SubmitTaskAnswer godoc
+// @Summary Submit a task answer (server-side deterministic grading)
+// @Tags learning
+// @Accept json
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param task_id path string true "Task id"
+// @Param body body object true "{answers: {field_id: value}, assistance_mode?: string}"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/tasks/{task_id}/answer [post]
+func (h *LearningHandler) SubmitTaskAnswer(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req struct {
+		Answers        map[string]string `json:"answers"`
+		AssistanceMode string            `json:"assistance_mode"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.fail(c, err, "invalid task answer body")
+		return
+	}
+	result, err := h.learningService.SubmitTaskAnswer(c.Request.Context(), c.Param("kb_id"), c.Param("task_id"), req.Answers, req.AssistanceMode)
+	if err != nil {
+		h.fail(c, err, "task submit failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": result})
+}
+
+// ObjectiveProgress godoc
+// @Summary Separated progress numbers (stage 4)
+// @Description Verified X/Y objectives, conflicts, stale, partial, untested, contact coverage — never a probability
+// @Tags learning
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/objective-progress [get]
+func (h *LearningHandler) ObjectiveProgress(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	summary, err := h.learningService.ObjectiveProgress(c.Request.Context(), c.Param("kb_id"), c.QueryArray("goal")...)
+	if err != nil {
+		h.fail(c, err, "failed to load objective progress")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": summary})
+}
+
+// ShortPath godoc
+// @Summary Cold-start / short learning path (3-5 steps)
+// @Description (node, objective, action) steps with structured reasons, time estimates, completion conditions and conditional successors
+// @Tags learning
+// @Accept json
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Param body body interfaces.ColdStartRequestPayload true "Cold start request (goals, depth, budget, fast-track)"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/path [post]
+func (h *LearningHandler) ShortPath(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req interfaces.ColdStartRequestPayload
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.fail(c, err, "invalid path request body")
+		return
+	}
+	plan, err := h.learningService.ShortPath(c.Request.Context(), c.Param("kb_id"), req)
+	if err != nil {
+		h.fail(c, err, "failed to plan path")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": plan})
+}
+
+// ObjectiveView godoc
+// @Summary Separated evidence profile (objectives)
+// @Description Per (node, objective) five dimensions: exposure, self_report, objective_evidence, recency, path_status
+// @Tags learning
+// @Produce json
+// @Param kb_id path string true "Knowledge base id"
+// @Success 200 {object} map[string]interface{}
+// @Router /learning/kb/{kb_id}/objectives [get]
+func (h *LearningHandler) ObjectiveView(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	view, err := h.learningService.ObjectiveView(c.Request.Context(), c.Param("kb_id"))
+	if err != nil {
+		h.fail(c, err, "failed to load objective view")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": view})
+}
+
 func (h *LearningHandler) TakeQuiz(c *gin.Context) {
 	if !h.requireLearningEnabled(c) {
 		return
@@ -156,6 +365,10 @@ func (h *LearningHandler) TakeQuiz(c *gin.Context) {
 
 type learningAnswerRequest struct {
 	ChosenKey string `json:"chosen_key" binding:"required,oneof=A B C D E"`
+	// AssistanceMode optionally declares the trial condition ("" = the
+	// item's designed mode); assistant_helped records practice, never
+	// strict evidence.
+	AssistanceMode string `json:"assistance_mode"`
 }
 
 type learningReadRequest struct {
@@ -191,10 +404,14 @@ func (h *LearningHandler) RecordRead(c *gin.Context) {
 		return
 	}
 	if err := h.learningService.RecordWikiRead(c.Request.Context(), c.Param("kb_id"), req.Slug, req.Tier); err != nil {
+		if errors.Is(err, interfaces.ErrLearningCollectionDisabled) {
+			c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"recorded": false, "reason": "collection_disabled"}})
+			return
+		}
 		h.fail(c, err, "Failed to record wiki read")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"recorded": true}})
 }
 
 // SelfAssess godoc — the interactive self-assessment: lifts the score into
@@ -255,7 +472,7 @@ func (h *LearningHandler) SubmitAnswer(c *gin.Context) {
 		c.Error(apperrors.NewValidationError("Invalid request data").WithDetails(err.Error()))
 		return
 	}
-	result, err := h.learningService.SubmitAnswer(c.Request.Context(), c.Param("kb_id"), c.Param("item_id"), req.ChosenKey)
+	result, err := h.learningService.SubmitAnswer(c.Request.Context(), c.Param("kb_id"), c.Param("item_id"), req.ChosenKey, req.AssistanceMode)
 	if err != nil {
 		h.fail(c, err, "Failed to grade answer")
 		return
@@ -359,4 +576,37 @@ func (h *LearningHandler) UpdateSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": gin.H{"collect_disabled": *req.CollectDisabled}})
+}
+
+// FreezeAssessment is a server-generated, label-free snapshot for external holdout evaluation.
+func (h *LearningHandler) FreezeAssessment(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	snapshot, err := h.learningService.FreezeAssessment(c.Request.Context(), c.Param("kb_id"))
+	if err != nil {
+		h.fail(c, err, "failed to freeze assessment state")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": snapshot})
+}
+
+// SetNodeState records the caller's explicit learning preference, never a grade.
+func (h *LearningHandler) SetNodeState(c *gin.Context) {
+	if !h.requireLearningEnabled(c) {
+		return
+	}
+	var req struct {
+		Slug  string `json:"slug" binding:"required"`
+		State string `json:"state" binding:"required,oneof=read known review"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.Error(apperrors.NewValidationError("Invalid learning preference"))
+		return
+	}
+	if err := h.learningService.SetNodeState(c.Request.Context(), c.Param("kb_id"), req.Slug, req.State); err != nil {
+		h.fail(c, err, "Failed to save learning preference")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }

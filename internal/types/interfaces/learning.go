@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -28,6 +29,9 @@ func (s LearningScope) Valid() bool {
 // (edges, quiz items) plus personal attempt records. Later stages extend
 // this interface with their own reads rather than widening these methods.
 type LearningRepository interface {
+	GetPlanPreference(context.Context, LearningScope) (*types.LearningPlanPreference, error)
+	SavePlanPreference(context.Context, *types.LearningPlanPreference, string) error
+	ListPlanPreferencesBySubject(context.Context, string) ([]types.LearningPlanPreference, error)
 	// WithSubject serializes a complete personal operation with deletion and
 	// consent changes. The callback must use its supplied context for every
 	// repository call; errors roll the whole operation back. collect=false is
@@ -143,6 +147,12 @@ type LearningRepository interface {
 
 	// ListQuizItemsByKB returns every quiz item of one KB in a single query.
 	ListQuizItemsByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningQuizItem, error)
+	// ListObjectives returns the KB's observable learning-objective
+	// definitions in deterministic order (stage-1 evidence separation).
+	ListObjectives(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningObjective, error)
+	// UpsertObjective stores one objective definition by id (KB-shared
+	// inventory; the review/publish chain arrives in stage 2).
+	UpsertObjective(ctx context.Context, objective *types.LearningObjective) error
 	// StaleQuizItemsByEvidence auto-invalidates one slug's active quiz items
 	// whose frozen evidence version no longer matches the current material
 	// digest (legacy empty hashes count as unknown and go stale too). The
@@ -207,6 +217,16 @@ type LearningRepository interface {
 	// a subject with skips but no folded mastery must still be visited.
 	ListAllSkips(ctx context.Context) ([]types.LearningSkip, error)
 
+	// GetTaskByID resolves one structured task; ListTasks lists a KB's
+	// tasks deterministically; UpsertTask stores one by id; task attempts
+	// follow the quiz-attempt read patterns.
+	GetTaskByID(ctx context.Context, tenantID uint64, taskID string) (*types.LearningTask, error)
+	ListTasks(ctx context.Context, tenantID uint64, knowledgeBaseID string) ([]types.LearningTask, error)
+	UpsertTask(ctx context.Context, task *types.LearningTask) error
+	InsertTaskAttempt(ctx context.Context, attempt *types.LearningTaskAttempt) error
+	ListTaskAttempts(ctx context.Context, scope LearningScope) ([]types.LearningTaskAttempt, error)
+	ListTaskAttemptsBySubject(ctx context.Context, subjectID string) ([]types.LearningTaskAttempt, error)
+
 	// ---- Deletion epoch fence (profile delete serialization) ----
 
 	// GetSubjectEpoch returns the subject's current deletion epoch. An absent
@@ -243,6 +263,9 @@ var ErrLearningEpochAdvanced = errors.New("learning: subject epoch advanced, dis
 // runner triggers on startup. Failures are logged inside and never
 // surface to the answer path.
 type LearningService interface {
+	UpdateReviewSchedule(context.Context, string, LearningReviewInput) (*LearningReviewStatus, error)
+	GetPlanPreferences(context.Context, string) (*LearningPlanSettings, error)
+	UpdatePlanPreferences(context.Context, string, LearningPlanSettings) (*LearningPlanSettings, error)
 	// RecordAnswerTouches folds the knowledge nodes the answer's citations
 	// touched into the caller's mastery. No-op unless LEARNING_ENABLE=true
 	// and the subject has not opted out of collection.
@@ -294,8 +317,26 @@ type LearningService interface {
 	// TakeQuiz serves a node's active questions without answer material.
 	TakeQuiz(ctx context.Context, kbID, slug string) ([]QuizQuestion, error)
 	// SubmitAnswer grades deterministically and folds the result (opted-out
-	// subjects still get the verdict; nothing is stored).
-	SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error)
+	// subjects still get the verdict; nothing is stored). declaredAssistance
+	// carries the trial's assistance condition ("" = the item's designed
+	// mode); non-matching or assistant-helped trials record as practice and
+	// never count as strict evidence.
+	SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey, declaredAssistance string) (*AnswerResult, error)
+	// ReviewQuizItem applies a human content review to one quiz item:
+	// approve publishes (with clone-safe family assignment and version
+	// bumping on semantic change), reject disables with the audit trail.
+	// Only authenticated human principals can review — never the LLM.
+	ReviewQuizItem(ctx context.Context, kbID, itemID string, decision ReviewDecisionInput) (*types.LearningQuizItem, error)
+	// ReviewObjective publishes/retires an objective definition.
+	ReviewObjective(ctx context.Context, kbID, objectiveID string, decision ReviewDecisionInput) (*types.LearningObjective, error)
+	// ReviewTask applies the review chain to a structured application task.
+	ReviewTask(ctx context.Context, kbID, taskID string, decision ReviewDecisionInput) (*types.LearningTask, error)
+	// TakeTask serves takeable published tasks WITHOUT answer keys.
+	TakeTask(ctx context.Context, kbID, objectiveID string) ([]TaskTakePayload, error)
+	// SubmitTaskAnswer grades a task server-side (exact critical-check
+	// match); the client supplies field values only and cannot influence
+	// the verdict.
+	SubmitTaskAnswer(ctx context.Context, kbID, taskID string, answers map[string]string, declaredAssistance string) (*TaskSubmitPayload, error)
 	// Timeline pages the caller's newest-first events.
 	Timeline(ctx context.Context, kbID string, page, pageSize int) ([]TimelineItem, int64, error)
 	// ExportProfile assembles the caller's full personal learning data.
@@ -313,12 +354,241 @@ type LearningService interface {
 	// nothing is persisted, nothing enters the event stream (the timeline
 	// stays a log of real actions; passive drift is a separate channel).
 	PassiveChanges(ctx context.Context, kbID string, limit int) (*PassiveChangesSummary, error)
+	// ObjectiveProgress derives the separated progress header: verified
+	// /total objectives with conflict/stale/partial/untested breakdowns,
+	// contact coverage, self-report count. Never a probability.
+	FreezeAssessment(ctx context.Context, kbID string) (*AssessmentFreeze, error)
+	ObjectiveProgress(ctx context.Context, kbID string, goalIDs ...string) (*ObjectiveProgressSummary, error)
+	// ShortPath derives the caller's 3–5 step cold-start/short path as
+	// (node, objective, action) steps with structured reasons, evidence
+	// refs, time estimates, completion conditions and conditional
+	// successors. Deterministic for the same snapshot + policy version.
+	ShortPath(ctx context.Context, kbID string, req ColdStartRequestPayload) (*LearningPathPlan, error)
+	// ObjectiveView derives the separated evidence profile for one KB
+	// (stage 1): per (node, objective) the five dimensions — exposure,
+	// self_report, objective_evidence, recency, path_status — and the
+	// contract-derived state. Read-time pure derivation from server-side
+	// facts; scope comes from the authenticated caller alone.
+	ObjectiveView(ctx context.Context, kbID string) (*ObjectiveViewResponse, error)
+	SetNodeState(ctx context.Context, kbID, slug, state string) error
 	// KnowledgeHealth assembles the owner/admin org aggregate for one KB:
 	// coverage counts, expert nodes, single-person and stale-doc risks,
 	// folder roll-ups and recent self-assessment maintenance marks. Fully
 	// deterministic (no LLM); no subject identifier ever leaves the
 	// aggregate — people are counted, never named.
 	KnowledgeHealth(ctx context.Context, kbID string) (*KnowledgeHealth, error)
+}
+
+// ObjectiveEvidenceView is the direct-evidence dimension of one
+// objective, derived at read time from eligible (independent, graded)
+// attempts frozen with family/objective metadata.
+type ObjectiveEvidenceView struct {
+	FamiliesPassed         []string  `json:"families_passed"`
+	FamiliesPassedHistoric []string  `json:"families_passed_historic"`
+	EligiblePasses         int       `json:"eligible_passes"`
+	EligibleFailures       int       `json:"eligible_failures"`
+	LastPassAt             time.Time `json:"last_pass_at,omitempty"`
+	LastFailureAt          time.Time `json:"last_failure_at,omitempty"`
+	ContractMetAt          time.Time `json:"contract_met_at,omitempty"`
+	StalePasses            int       `json:"stale_passes"`
+	LegacyAttempts         int       `json:"legacy_attempts"`
+	// Source is "quiz" or "legacy_unverified" (metadata-less history:
+	// visible, exportable, never promoting).
+	Source string `json:"source"`
+	// Unknown: no attempt references the objective at all — the honest
+	// "no evidence" state, never a sigmoid(0)=50%.
+	Unknown bool `json:"unknown,omitempty"`
+}
+
+// ObjectiveViewEntry is one (node, objective) row of the separated
+// profile: five independent dimensions — exposure, self_report,
+// objective_evidence, recency, path_status — plus the contract-derived
+// state. No dimension derives another; weak signals and time passage
+// never modify the evidence dimension.
+type ObjectiveViewEntry struct {
+	Slug            string `json:"slug"`
+	ObjectiveID     string `json:"objective_id"`
+	Title           string `json:"title"`
+	Behavior        string `json:"behavior"`
+	CapabilityType  string `json:"capability_type"`
+	ContractType    string `json:"contract_type"`
+	ContractVersion string `json:"contract_version"`
+	ContentVersion  string `json:"content_version"`
+	// ObjectiveStatus is draft/published/retired; non-published
+	// objectives never derive verified (unreviewed content cannot
+	// certify ability).
+	ObjectiveStatus string                `json:"objective_status"`
+	State           string                `json:"state"`
+	Evidence        ObjectiveEvidenceView `json:"evidence"`
+	// Exposure counts contact facts only.
+	Exposure struct {
+		Reads      int       `json:"reads"`
+		Cites      int       `json:"cites"`
+		AgentReads int       `json:"agent_reads"`
+		LastAt     time.Time `json:"last_at,omitempty"`
+	} `json:"exposure"`
+	// SelfReport is the user's own claim — never a system verification.
+	SelfReport struct {
+		Direction string    `json:"direction,omitempty"` // up | down
+		At        time.Time `json:"at,omitempty"`
+		Skipped   bool      `json:"skipped"`
+	} `json:"self_report"`
+	// Recency reports timestamps only; it never demotes a verified fact.
+	Recency struct {
+		LastVerifiedAt time.Time `json:"last_verified_at,omitempty"`
+		LastEvidenceAt time.Time `json:"last_evidence_at,omitempty"`
+		LastExposureAt time.Time `json:"last_exposure_at,omitempty"`
+	} `json:"recency"`
+	// PathStatus: available | user_retired | challenge_pending.
+	PathStatus string `json:"path_status"`
+}
+
+// ObjectiveProgressSummary is the stage-4 separated progress header:
+// explainable counts, never a "mastery probability". All three coverage
+// numbers coexist: verified-objective coverage, contact coverage, and the
+// full-library objective denominator — removing a goal or skipping a node
+// never inflates the full-library coverage.
+type ObjectiveProgressSummary struct {
+	// VerifiedObjectives / TotalObjectives: the primary progress pair.
+	// "已验证 2/6 目标" — never a probability.
+	VerifiedObjectives int `json:"verified_objectives"`
+	TotalObjectives    int `json:"total_objectives"`
+	// ConflictingObjectives: currently conflicting (re-verification owed).
+	ConflictingObjectives int `json:"conflicting_objectives"`
+	// StaleObjectives: content re-versioned, evidence pending re-check.
+	StaleObjectives int `json:"stale_objectives"`
+	// PartialObjectives: one family passed, contract not yet met.
+	PartialObjectives int `json:"partial_objectives"`
+	// UntestedObjectives: no eligible attempt has ever landed.
+	UntestedObjectives   int `json:"untested_objectives"`
+	UnverifiedObjectives int `json:"unverified_objectives"`
+	// ContactCoverage: nodes the user has actually opened/cited (contact
+	// is exposure, not ability — displayed separately, never conflated).
+	ContactNodes int `json:"contact_nodes"`
+	TotalNodes   int `json:"total_nodes"`
+	// SelfReportCount: standing user claims (up/down) — never verified.
+	SelfReportCount int `json:"self_report_count"`
+	// LegacyAttemptCount: pre-stage metadata-less attempts, visible but
+	// never promoting.
+	LegacyAttemptCount int `json:"legacy_attempt_count"`
+	// GoalSetVersion identifies the current goal scope: changing the goal
+	// set creates a new version; removing a goal changes "本次目标完成度"
+	// but never inflates the full-library coverage above.
+	GoalSetVersion string `json:"goal_set_version,omitempty"`
+	// GoalVerifiedObjectives / GoalTotalObjectives: the SELECTED goal
+	// scope's coverage pair — displayed alongside (never merged with) the
+	// full-library coverage.
+	GoalVerifiedObjectives int `json:"goal_verified_objectives"`
+	GoalTotalObjectives    int `json:"goal_total_objectives"`
+}
+
+// ColdStartRequestPayload is the short-path request: goal objectives,
+// depth, time budget and the VOLUNTARY fast-track challenge.
+type ColdStartRequestPayload struct {
+	UseMemory      *bool    `json:"use_memory,omitempty"`
+	GoalSlugs      []string `json:"goal_slugs,omitempty"`
+	ExcludedSlugs  []string `json:"excluded_slugs,omitempty"`
+	GoalObjectives []string `json:"goal_objectives"`
+	Depth          string   `json:"depth"`
+	TimeBudgetMin  int      `json:"time_budget_minutes"`
+	FastTrack      bool     `json:"fast_track"`
+}
+
+// LearningPathPlan mirrors the service plan for transport.
+type LearningPathPlan struct {
+	Personalization string             `json:"personalization,omitempty"`
+	PolicyVersion   string             `json:"policy_version"`
+	Steps           []LearningPathStep `json:"steps"`
+	Degrade         string             `json:"degrade,omitempty"`
+}
+
+// LearningPathStep is one (node, objective, action) step.
+type LearningPathStep struct {
+	ID          string `json:"id"`
+	Completed   bool   `json:"completed"`
+	Slug        string `json:"slug"`
+	Title       string `json:"title,omitempty"`
+	Objective   string `json:"objective,omitempty"`
+	Action      string `json:"action"`
+	Minutes     int    `json:"minutes"`
+	DoneWhen    string `json:"done_when"`
+	Eligibility string `json:"eligibility"`
+	Requires    string `json:"requires,omitempty"`
+	Next        string `json:"next,omitempty"`
+	Reason      struct {
+		Code     string   `json:"code"`
+		Detail   string   `json:"detail,omitempty"`
+		Evidence []string `json:"evidence,omitempty"`
+	} `json:"reason"`
+}
+
+// ReviewDecisionInput is the review API payload (mirrors the service's
+// ReviewDecision for transport).
+type ReviewDecisionInput struct {
+	Decision    string `json:"decision"`
+	Reason      string `json:"reason"`
+	Note        string `json:"note"`
+	ChangeKind  string `json:"change_kind"`
+	ObjectiveID string `json:"objective_id,omitempty"`
+	FamilyID    string `json:"family_id,omitempty"`
+}
+
+// TaskTakePayload is one takeable task without the answer key.
+type TaskTakePayload struct {
+	FamilyID       string          `json:"family_id"`
+	Mode           string          `json:"mode"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Scenario       string          `json:"scenario"`
+	Fields         json.RawMessage `json:"fields"`
+	CriticalChecks json.RawMessage `json:"critical_checks,omitempty"`
+	AssistanceMode string          `json:"assistance_mode"`
+	ContentVersion string          `json:"content_version"`
+	RubricVersion  string          `json:"rubric_version"`
+	ObjectiveID    string          `json:"objective_id"`
+}
+
+// TaskCheckResultPayload is one critical check's verdict (no correct
+// values are revealed).
+type TaskCheckResultPayload struct {
+	ID     string `json:"id"`
+	Passed bool   `json:"passed"`
+}
+
+// TaskSubmitPayload is the server-computed verdict of one task submission.
+type TaskSubmitPayload struct {
+	Passed      bool                     `json:"passed"`
+	Checks      []TaskCheckResultPayload `json:"checks"`
+	Assistance  string                   `json:"assistance_mode"`
+	Eligible    bool                     `json:"eligible"`
+	GradeReason string                   `json:"grade_reason"`
+}
+
+// ObjectiveViewResponse is the stage-1 separated evidence profile of one
+// KB for the authenticated caller.
+type LearningNodeView struct {
+	Review            *LearningReviewStatus `json:"review,omitempty"`
+	Slug              string                `json:"slug"`
+	Title             string                `json:"title"`
+	FolderID          string                `json:"folder_id"`
+	FolderName        string                `json:"folder_name"`
+	State             string                `json:"state"` // unseen | learning | self_known | verified | review
+	Reads             int                   `json:"reads"`
+	Cites             int                   `json:"cites"`
+	LastReadAt        time.Time             `json:"last_read_at,omitempty"`
+	DeclaredAt        time.Time             `json:"declared_at,omitempty"`
+	Updated           bool                  `json:"updated"`
+	ObjectiveTotal    int                   `json:"objective_total"`
+	ObjectiveVerified int                   `json:"objective_verified"`
+}
+
+type ObjectiveViewResponse struct {
+	Nodes             []LearningNodeView   `json:"nodes"`
+	ProjectionVersion string               `json:"projection_version"`
+	Entries           []ObjectiveViewEntry `json:"entries"`
+	// LegacyByNode counts metadata-less attempts per node: visible and
+	// exported, but never strict verification evidence.
+	LegacyByNode map[string]int `json:"legacy_by_node,omitempty"`
 }
 
 // ZoneMapResponse is the module-partitioned recommendation surface: the
@@ -564,16 +834,22 @@ type PassiveChangesSummary struct {
 
 // QuizQuestion is the served question shape (no answer material).
 type QuizQuestion struct {
-	ID        string            `json:"id"`
-	Question  string            `json:"question"`
-	Options   map[string]string `json:"options"`
-	ChunkRefs []string          `json:"chunk_refs"`
+	ObjectiveID    string            `json:"objective_id,omitempty"`
+	FamilyID       string            `json:"family_id,omitempty"`
+	AssistanceMode string            `json:"assistance_mode,omitempty"`
+	ID             string            `json:"id"`
+	Question       string            `json:"question"`
+	Options        map[string]string `json:"options"`
+	ChunkRefs      []string          `json:"chunk_refs"`
 	// SourceDocs resolves the cited chunks back to their source documents
 	// (id + title + how many of the item's chunks live there), so the
 	// client can link "this question came from that document". Derived
 	// deterministically at serve time; empty when the evidence cannot be
 	// resolved (e.g. chunks deleted since generation).
 	SourceDocs []QuizSourceDoc `json:"source_docs,omitempty"`
+	// Mode labels the serving tier: "verification" (human-reviewed) or
+	// "practice" (LLM draft / legacy). The answer key is never present.
+	Mode string `json:"mode,omitempty"`
 }
 
 // QuizSourceDoc is one source document behind a quiz item.
@@ -585,6 +861,8 @@ type QuizSourceDoc struct {
 
 // AnswerResult is the response after a submission.
 type AnswerResult struct {
+	Eligible    bool     `json:"eligible"`
+	GradeReason string   `json:"grade_reason"`
 	Correct     bool     `json:"correct"`
 	CorrectKey  string   `json:"correct_key"`
 	Explanation string   `json:"explanation"`
@@ -622,7 +900,8 @@ type TimelineItem struct {
 
 // ExportPayload is the data-sovereignty export.
 type ExportPayload struct {
-	ExportedAt time.Time `json:"exported_at"`
+	PlanPreferences []types.LearningPlanPreference `json:"plan_preferences"`
+	ExportedAt      time.Time                      `json:"exported_at"`
 	// KBSummary groups the payload by knowledge base at the top so the
 	// exported file reads as "what I did where" at a glance; KBs that no
 	// longer exist (deleted after the data was collected) are marked with
@@ -635,6 +914,22 @@ type ExportPayload struct {
 	// Skips are the standing "已掌握，不再推荐" declarations — a preference
 	// the user set, hence part of the profile they can view and export.
 	Skips []types.LearningSkip `json:"skips"`
+	// TaskAttempts are the structured-task submissions — personal data,
+	// exported with the same containment as quiz attempts.
+	TaskAttempts []types.LearningTaskAttempt `json:"task_attempts,omitempty"`
+	// Objectives is the derived separated evidence profile (stage 1):
+	// per (node, objective) state + evidence dimensions at export time.
+	// Legacy attempts without objective metadata stay visible here and in
+	// Attempts; they never fabricate strict verification states.
+	Objectives []ObjectiveExportRow `json:"objectives,omitempty"`
+}
+
+// ObjectiveExportRow is one objective's derived profile inside the export.
+type ObjectiveExportRow struct {
+	types.LearningObjective
+	State    string                `json:"state"`
+	Evidence ObjectiveEvidenceView `json:"evidence"`
+	Source   string                `json:"source"`
 }
 
 // ExportKBSummary is one knowledge base's roll-up inside the export.
@@ -719,4 +1014,15 @@ var ErrLearningCollectionDisabled = errors.New("learning: collection disabled")
 // before starting a model/tool, never after its detached callback is scheduled.
 type LearningContextCapturer interface {
 	CaptureCollectionContext(context.Context) context.Context
+}
+
+// AssessmentFreeze contains no challenge or labels. Persist it before presenting a held-out family.
+type AssessmentFreeze struct {
+	SnapshotID             string            `json:"snapshot_id"`
+	KnowledgeBaseID        string            `json:"knowledge_base_id"`
+	PolicyVersion          string            `json:"policy_version"`
+	StateAsOf              time.Time         `json:"state_as_of"`
+	GoalStatesBefore       map[string]string `json:"goal_states_before"`
+	ObjectiveVersions      map[string]string `json:"objective_versions"`
+	EvidenceFamiliesBefore []string          `json:"evidence_families_before"`
 }

@@ -1,0 +1,67 @@
+{
+  "frozen_rules": "objective-holdout-protocol-v2",
+  "data_origin": "engineering_fixture",
+  "selected_snapshots": [
+    "fixture-user-1-o1",
+    "fixture-user-1-o2",
+    "fixture-user-2-o1",
+    "fixture-user-2-o2",
+    "fixture-user-3-o1",
+    "fixture-user-3-o2",
+    "fixture-user-4-o1",
+    "fixture-user-4-o2"
+  ],
+  "exclusions": {},
+  "enrolled_by_group": {
+    "baseline": 2,
+    "guided": 2
+  },
+  "missing_by_group": {},
+  "withdrawn_by_group": {},
+  "provenance_note": "Origin tags are declarations, not proof of real participants; retain consent, source records and frozen artifact hashes separately.",
+  "verified_n": 4,
+  "verified_passes": 3,
+  "verified_failure_rate": 0.25,
+  "verified_success_rate": 0.75,
+  "verified_failure_ci": {
+    "lower": 0,
+    "upper": 0.75,
+    "method": "bootstrap-participant-clusters"
+  },
+  "unverified_n": 4,
+  "unverified_passes": 2,
+  "unverified_pass_rate": 0.5,
+  "unverified_pass_ci": {
+    "lower": 0,
+    "upper": 1,
+    "method": "bootstrap-participant-clusters"
+  },
+  "unknown_n": 0,
+  "unknown_passes": 0,
+  "unknown_pass_rate": null,
+  "total_objectives": 16,
+  "verified_objectives": 8,
+  "system_verified_coverage": 0.5,
+  "system_verified_coverage_ci": {
+    "lower": 0.5,
+    "upper": 0.5,
+    "method": "bootstrap-participant-clusters"
+  },
+  "mean_post_guided": 50,
+  "mean_post_baseline": 75,
+  "delta_post": -25,
+  "delta_post_ci": {
+    "lower": -50,
+    "upper": 0,
+    "method": "bootstrap-user"
+  },
+  "n_users_guided": 2,
+  "n_users_baseline": 2,
+  "state_counts": {
+    "unverified": 4,
+    "verified": 4
+  },
+  "origin_counts": {
+    "engineering_fixture": 4
+  }
+}

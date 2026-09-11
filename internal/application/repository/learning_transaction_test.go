@@ -92,7 +92,7 @@ func postgresLearningTestDB(t *testing.T) *gorm.DB {
 			_ = pool.Close()
 		}
 	})
-	require.NoError(t, db.AutoMigrate(&types.LearningEvent{}, &types.MasteryState{}, &types.MemoryWikiMap{}, &types.LearningQuizAttempt{}, &types.LearningSubjectPrefs{}, &types.LearningSubjectEpoch{}, &types.LearningSkip{}))
+	require.NoError(t, db.AutoMigrate(&types.LearningEvent{}, &types.MasteryState{}, &types.MemoryWikiMap{}, &types.LearningQuizAttempt{}, &types.LearningTaskAttempt{}, &types.LearningPlanPreference{}, &types.LearningSubjectPrefs{}, &types.LearningSubjectEpoch{}, &types.LearningSkip{}))
 	return db
 }
 
@@ -123,7 +123,7 @@ func TestPostgresDeletionFencesOldWritesAcrossConnections(t *testing.T) {
 			// Pause AFTER the last personal DELETE. The old lock order allowed an
 			// old-epoch writer to commit in exactly this interval.
 			require.NoError(t, db.Callback().Delete().After("gorm:delete").Register("test:delete_barrier", func(tx *gorm.DB) {
-				if tx.Statement.Table == "learning_skips" && tx.Statement.Context.Value(learningDeleteBarrierKey{}) == true {
+				if tx.Statement.Table == "learning_plan_preferences" && tx.Statement.Context.Value(learningDeleteBarrierKey{}) == true {
 					once.Do(func() { close(paused); <-release })
 				}
 			}))

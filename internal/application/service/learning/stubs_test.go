@@ -28,6 +28,7 @@ type stubLearningRepo struct {
 	deleted      []string
 	kbSweeps     [][2]interface{} // [tenantID, kbID] of orphan-sweep calls
 	prefs        map[string]*types.LearningSubjectPrefs
+	planPrefs    map[interfaces.LearningScope]types.LearningPlanPreference
 	affinity     []types.MemoryDocAffinity
 	topicStats   []types.MemoryTopicStat
 	maps         map[string]*types.MemoryWikiMap
@@ -47,6 +48,11 @@ type stubLearningRepo struct {
 	masteryUpserts atomic.Int32
 	// epoch mirrors learning_subject_epochs: subject → deletion generation.
 	epoch map[string]int64
+	// objectives mirrors learning_objectives (KB-shared definitions).
+	objectives []types.LearningObjective
+	// tasks/taskAttempts mirror learning_tasks / learning_task_attempts.
+	tasks        []types.LearningTask
+	taskAttempts []types.LearningTaskAttempt
 	// deleteErr / applyErr are fault-injection hooks for the delete-atomicity
 	// and epoch-fence tests; nil means "never fail".
 	deleteErr func() error
@@ -331,9 +337,155 @@ func (s *stubLearningRepo) UpsertQuizItem(_ context.Context, item *types.Learnin
 	if item.ID == "" {
 		item.ID = "quiz-" + strconv.Itoa(len(s.quizItems)+1)
 	}
+	// Real-repository upsert semantics: replace by id, append when new.
+	// (A stub that only appends makes review-lifecycle tests see stale
+	// duplicate rows.)
+	for i := range s.quizItems {
+		if s.quizItems[i].ID == item.ID {
+			s.quizItems[i] = *item
+			return nil
+		}
+	}
 	clone := *item
 	s.quizItems = append(s.quizItems, clone)
 	return nil
+}
+
+// objectives mirrors learning_objectives (KB-shared inventory).
+func (s *stubLearningRepo) ListObjectives(_ context.Context, tenantID uint64, kbID string) ([]types.LearningObjective, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningObjective
+	for _, o := range s.objectives {
+		if o.TenantID == tenantID && o.KnowledgeBaseID == kbID {
+			out = append(out, o)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Slug != out[j].Slug {
+			return out[i].Slug < out[j].Slug
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *stubLearningRepo) UpsertObjective(_ context.Context, o *types.LearningObjective) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if o.ID == "" {
+		return errors.New("learning: objective id required")
+	}
+	if o.Status == "" {
+		o.Status = types.LearningObjectiveStatusDraft
+	}
+	if o.ContractType == "" {
+		o.ContractType = types.ObjectiveContractConceptTwoFamily
+	}
+	if o.ContractVersion == "" {
+		o.ContractVersion = types.ObjectiveContractVersion
+	}
+	replaced := false
+	for i := range s.objectives {
+		if s.objectives[i].ID == o.ID {
+			s.objectives[i] = *o
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.objectives = append(s.objectives, *o)
+	}
+	return nil
+}
+
+// tasks/taskAttempts mirror learning_tasks / learning_task_attempts.
+func (s *stubLearningRepo) GetTaskByID(_ context.Context, tenantID uint64, taskID string) (*types.LearningTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == taskID && s.tasks[i].TenantID == tenantID {
+			clone := s.tasks[i]
+			return &clone, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *stubLearningRepo) ListTasks(_ context.Context, tenantID uint64, kbID string) ([]types.LearningTask, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningTask
+	for _, t := range s.tasks {
+		if t.TenantID == tenantID && t.KnowledgeBaseID == kbID {
+			out = append(out, t)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Slug != out[j].Slug {
+			return out[i].Slug < out[j].Slug
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
+}
+
+func (s *stubLearningRepo) UpsertTask(_ context.Context, t *types.LearningTask) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if t.ID == "" {
+		return errors.New("learning: task id required")
+	}
+	if t.Status == "" {
+		t.Status = types.LearningQuizStatusDraft
+	}
+	replaced := false
+	for i := range s.tasks {
+		if s.tasks[i].ID == t.ID {
+			s.tasks[i] = *t
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.tasks = append(s.tasks, *t)
+	}
+	return nil
+}
+
+func (s *stubLearningRepo) InsertTaskAttempt(_ context.Context, a *types.LearningTaskAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a.ID == "" {
+		a.ID = "ta-" + strconv.Itoa(len(s.taskAttempts)+1)
+	}
+	s.taskAttempts = append(s.taskAttempts, *a)
+	return nil
+}
+
+func (s *stubLearningRepo) ListTaskAttempts(_ context.Context, scope interfaces.LearningScope) ([]types.LearningTaskAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningTaskAttempt
+	for _, a := range s.taskAttempts {
+		if a.TenantID == scope.TenantID && a.SubjectID == scope.SubjectID && a.KnowledgeBaseID == scope.KnowledgeBaseID {
+			out = append(out, a)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].SubmittedAt.Before(out[j].SubmittedAt) })
+	return out, nil
+}
+
+func (s *stubLearningRepo) ListTaskAttemptsBySubject(_ context.Context, subjectID string) ([]types.LearningTaskAttempt, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []types.LearningTaskAttempt
+	for _, a := range s.taskAttempts {
+		if a.SubjectID == subjectID {
+			out = append(out, a)
+		}
+	}
+	return out, nil
 }
 
 // StaleQuizItemsByEvidence mirrors the real repository: active items of the
@@ -390,6 +542,9 @@ func (s *stubLearningRepo) ListCorrectAttempts(_ context.Context, scope interfac
 func (s *stubLearningRepo) InsertAttempt(_ context.Context, a *types.LearningQuizAttempt) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if a.ID == "" {
+		a.ID = "qa-" + strconv.Itoa(len(s.quizAttempts)+1)
+	}
 	clone := *a
 	s.quizAttempts = append(s.quizAttempts, clone)
 	return nil
@@ -660,6 +815,11 @@ func (s *stubLearningRepo) DeleteLearningDataBySubject(_ context.Context, subjec
 // deleteLearningDataBySubjectLocked is the sweep body shared with
 // DeleteProfileData; callers hold s.mu.
 func (s *stubLearningRepo) deleteLearningDataBySubjectLocked(subjectID string) error {
+	for scope := range s.planPrefs {
+		if scope.SubjectID == subjectID {
+			delete(s.planPrefs, scope)
+		}
+	}
 	s.events = filterEventsBySubject(s.events, subjectID)
 	for key, row := range s.mastery {
 		if row.SubjectID == subjectID {
@@ -678,6 +838,14 @@ func (s *stubLearningRepo) deleteLearningDataBySubjectLocked(subjectID string) e
 		}
 	}
 	s.quizAttempts = kept
+	// Task attempts are personal data: the profile delete removes them.
+	var keptTasks []types.LearningTaskAttempt
+	for _, a := range s.taskAttempts {
+		if a.SubjectID != subjectID {
+			keptTasks = append(keptTasks, a)
+		}
+	}
+	s.taskAttempts = keptTasks
 	// Skips are personal data: the profile delete removes them too.
 	for key := range s.skips {
 		if parts := strings.Split(key, "|"); len(parts) == 4 && parts[1] == subjectID {
@@ -702,6 +870,11 @@ func filterEventsBySubject(events []types.LearningEvent, subjectID string) []typ
 func (s *stubLearningRepo) DeleteLearningDataByKB(_ context.Context, tenantID uint64, kbID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for scope := range s.planPrefs {
+		if scope.TenantID == tenantID && scope.KnowledgeBaseID == kbID {
+			delete(s.planPrefs, scope)
+		}
+	}
 	s.kbSweeps = append(s.kbSweeps, [2]interface{}{tenantID, kbID})
 	for key, row := range s.mastery {
 		if row.TenantID == tenantID && row.KnowledgeBaseID == kbID {
@@ -878,8 +1051,11 @@ func (s *stubWikiRepo) ListAllFolders(_ context.Context, kbID string) ([]*types.
 	return s.folders[kbID], nil
 }
 
-func (s *stubWikiRepo) GetBySlug(_ context.Context, _ string, slug string) (*types.WikiPage, error) {
-	for _, pages := range s.pages {
+func (s *stubWikiRepo) GetBySlug(_ context.Context, kb string, slug string) (*types.WikiPage, error) {
+	for key, pages := range s.pages {
+		if len(key) <= len(kb) || key[:len(kb)+1] != kb+"|" {
+			continue
+		}
 		for _, p := range pages {
 			if p.Slug == slug {
 				return p, nil
@@ -1089,6 +1265,10 @@ func (s *stubLearningRepo) ListEventScopes(ctx context.Context) ([]interfaces.Le
 	defer s.mu.Unlock()
 	seen := map[interfaces.LearningScope]bool{}
 	var out []interfaces.LearningScope
+	for scope := range s.planPrefs {
+		seen[scope] = true
+		out = append(out, scope)
+	}
 	for _, e := range s.events {
 		scope := interfaces.LearningScope{TenantID: e.TenantID, SubjectID: e.SubjectID, KnowledgeBaseID: e.KnowledgeBaseID}
 		if !seen[scope] {

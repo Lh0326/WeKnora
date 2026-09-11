@@ -19,12 +19,15 @@ import (
 // so tests only stray where they mean to.
 type fakeLearningService struct {
 	interfaces.LearningService
+	freezeCalls   int
+	selectedGoals []string
 	progressCalls int
 	healthCalls   int
 	healthKB      string
 	readCalls     int
 	readKB        string
 	readSlug      string
+	readErr       error
 	lastCtx       context.Context
 }
 
@@ -32,7 +35,27 @@ func (f *fakeLearningService) RecordWikiRead(_ context.Context, kbID, slug, tier
 	f.readCalls++
 	f.readKB = kbID
 	f.readSlug = slug
-	return nil
+	return f.readErr
+}
+
+func TestLearningReadReportsDisabledCollection(t *testing.T) {
+	t.Setenv("LEARNING_ENABLE", "true")
+	for _, disabled := range []bool{false, true} {
+		fake := &fakeLearningService{}
+		if disabled {
+			fake.readErr = interfaces.ErrLearningCollectionDisabled
+		}
+		c, w := learningTestContext(t, true)
+		c.Request = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"slug":"concept/rag"}`))
+		c.Request.Header.Set("Content-Type", "application/json")
+		NewLearningHandler(fake).RecordRead(c)
+		require.Equal(t, http.StatusOK, w.Code)
+		if disabled {
+			require.JSONEq(t, `{"success":true,"data":{"recorded":false,"reason":"collection_disabled"}}`, w.Body.String())
+		} else {
+			require.JSONEq(t, `{"success":true,"data":{"recorded":true}}`, w.Body.String())
+		}
+	}
 }
 
 func (f *fakeLearningService) KnowledgeHealth(_ context.Context, kbID string) (*interfaces.KnowledgeHealth, error) {
@@ -201,4 +224,43 @@ func TestLearningSettingsValidation(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPut, "/", nil)
 	h.UpdateSettings(c)
 	require.Len(t, c.Errors, 1)
+}
+
+func (f *fakeLearningService) FreezeAssessment(ctx context.Context, kbID string) (*interfaces.AssessmentFreeze, error) {
+	f.freezeCalls++
+	f.lastCtx = ctx
+	return &interfaces.AssessmentFreeze{SnapshotID: "s", KnowledgeBaseID: kbID, GoalStatesBefore: map[string]string{"o": "unverified"}}, nil
+}
+func (f *fakeLearningService) ObjectiveProgress(ctx context.Context, kbID string, goals ...string) (*interfaces.ObjectiveProgressSummary, error) {
+	f.selectedGoals = goals
+	return &interfaces.ObjectiveProgressSummary{GoalTotalObjectives: len(goals)}, nil
+}
+func TestLearningAssessmentFreezeEnvelopeAndGate(t *testing.T) {
+	fake := &fakeLearningService{}
+	h := NewLearningHandler(fake)
+	t.Setenv("LEARNING_ENABLE", "true")
+	c, w := learningTestContext(t, true)
+	h.FreezeAssessment(c)
+	require.Equal(t, 1, fake.freezeCalls)
+	require.Equal(t, 200, w.Code)
+	require.Contains(t, w.Body.String(), `"snapshot_id":"s"`)
+	require.NotContains(t, w.Body.String(), `"result"`)
+	principal, ok := types.PrincipalFromContext(fake.lastCtx)
+	require.True(t, ok)
+	require.Equal(t, "alice", principal.ID)
+	t.Setenv("LEARNING_ENABLE", "")
+	c, _ = learningTestContext(t, true)
+	h.FreezeAssessment(c)
+	require.Equal(t, 1, fake.freezeCalls)
+	require.Len(t, c.Errors, 1)
+}
+func TestLearningObjectiveProgressPassesSelectedGoalScope(t *testing.T) {
+	fake := &fakeLearningService{}
+	h := NewLearningHandler(fake)
+	t.Setenv("LEARNING_ENABLE", "true")
+	c, w := learningTestContext(t, true)
+	c.Request.URL.RawQuery = "goal=one&goal=two"
+	h.ObjectiveProgress(c)
+	require.Equal(t, []string{"one", "two"}, fake.selectedGoals)
+	require.Contains(t, w.Body.String(), `"goal_total_objectives":2`)
 }

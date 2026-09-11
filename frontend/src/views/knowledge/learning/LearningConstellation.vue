@@ -33,8 +33,8 @@
       <!-- 中心枢纽：点亮/总数（投影原点，始终在画布中心） -->
       <g class="cs-hub">
         <circle :cx="SIZE / 2" :cy="SIZE / 2" r="40" class="cs-hub-disc" />
-        <text :x="SIZE / 2" :y="SIZE / 2 - 4" text-anchor="middle" class="cs-hub-num">{{ litCount }}/{{ totalCount }}</text>
-        <text :x="SIZE / 2" :y="SIZE / 2 + 14" text-anchor="middle" class="cs-hub-sub">{{ $t('knowledgeEditor.learningTab.constellationLit') }}</text>
+        <text :x="SIZE / 2" :y="SIZE / 2 - 4" text-anchor="middle" class="cs-hub-num">{{ verification && nodes.some(n => n.verification_label === '验证状态暂不可用') ? '—' : `${litCount}/${totalCount}` }}</text>
+        <text :x="SIZE / 2" :y="SIZE / 2 + 14" text-anchor="middle" class="cs-hub-sub">{{ verification ? '已接触的知识点' : $t('knowledgeEditor.learningTab.constellationLit') }}</text>
       </g>
 
       <!-- 星尘：折起的未接触微点云（无标签、不挡交互） -->
@@ -73,7 +73,10 @@
       <text v-for="z in zoneLabelViews" :key="`zl-${z.id}`" class="cs-zone-rim"
         :x="z.x" :y="z.y" text-anchor="middle" :opacity="z.dim ? 0.3 : 0.78">{{ z.name }}</text>
     </svg>
-    <div class="cs-caption">{{ $t('knowledgeEditor.learningTab.constellationHint3d') }}</div>
+    <div class="cs-caption" :class="{'verification-caption':verification}">
+      <div v-if="verification" class="verification-legend"><span><i style="background:#c9ced5"></i>未开始</span><span><i style="background:#5c9dce"></i>学习中</span><span><i style="background:#64b991"></i>自认已会</span><span><i style="background:#148452"></i>验证通过</span><span><i style="background:#d59b35"></i>待巩固</span></div>
+      <div>{{ verification ? '点击阅读 · 自认已会可移出待学 · 验证通过单独标记' : $t('knowledgeEditor.learningTab.constellationHint3d') }}</div>
+    </div>
   </div>
 </template>
 
@@ -91,6 +94,7 @@ const props = defineProps<{
   edges: ConstellationEdge[]
   zones: ZoneAxis[]
   highlightZone?: string | null
+  verification?: boolean
 }>()
 const emit = defineEmits<{ (e: 'open', slug: string): void }>()
 const { t } = useI18n()
@@ -291,12 +295,12 @@ const nodeViews = computed<NodeView[]>(() => {
       let dim = !inZone
       if (!dim && adjacency.value) dim = !isAdjacent
       const label = truncateLabel(nodeLabel(node.title, node.slug), 9)
-      const lines = [
+      const lines = props.verification ? [nodeLabel(node.title, node.slug), node.verification_label || '验证状态暂不可用'] : [
         nodeLabel(node.title, node.slug),
         t('knowledgeEditor.learningTab.constellationHoverP', { p: Math.round((node.p_eff ?? 0) * 100) }),
         t('knowledgeEditor.learningTab.constellationHoverN', { n: node.evidence_count ?? 0 }),
       ]
-      if (p.faded) lines.push(t('knowledgeEditor.learningTab.tierFaded'))
+      if (p.faded && !props.verification) lines.push(t('knowledgeEditor.learningTab.tierFaded'))
       if (node.skipped) lines.push(t('knowledgeEditor.learningTab.skippedBadge'))
       const place = node.section || node.doc_title
       if (place) lines.push(place)
@@ -308,7 +312,7 @@ const nodeViews = computed<NodeView[]>(() => {
         x: pr.x, y: pr.y,
         depth: pr.depth,
         r: p.r * pr.scale * zoom.value,
-        fill: node.skipped ? SKIPPED_COLOR : p.faded ? FADED_COLOR : tierColor(p.tier),
+        fill: props.verification ? (node.verification_color || '#a7afb8') : node.skipped ? SKIPPED_COLOR : p.faded ? FADED_COLOR : tierColor(p.tier),
         tier: p.tier,
         faded: p.faded,
         recent: p.recent,
@@ -479,7 +483,7 @@ const zoneLabelViews = computed(() => {
 })
 
 const litCount = computed(() =>
-  layout.value.placed.filter((p) => p.tier !== 'unseen' && !p.faded && !p.node.skipped).length)
+  layout.value.placed.filter((p) => props.verification ? p.node.learning_contacted ?? p.node.verification_complete : p.tier !== 'unseen' && !p.faded && !p.node.skipped).length)
 const totalCount = computed(() => layout.value.placed.length)
 
 function selfAssessLine(m: { direction: string; event_type: string }): string {
@@ -546,6 +550,7 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
    刻意压到"有呼吸感即可"，配合球体整体不显死寂） */
 @keyframes cs-ping { 0%, 100% { transform: scale(0.92); opacity: 0.30; } 50% { transform: scale(1.16); opacity: 0.10; } }
 .cs-caption { position: absolute; left: 4px; bottom: 2px; font-size: 11px; color: var(--td-text-color-placeholder, #999); max-width: 46%; text-align: left; pointer-events: none; }
+.cs-caption.verification-caption{max-width:95%;line-height:1.7;color:var(--td-text-color-secondary,#666)}.verification-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:3px}.verification-legend span{display:inline-flex;align-items:center;gap:4px}.verification-legend i{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
 @media (prefers-reduced-motion: reduce) {
   .cs-bg, .cs-ping, .cs-next-ring { animation: none; }
 }

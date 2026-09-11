@@ -95,6 +95,20 @@ func TestIntoChatMessage_ImageDescriptionAppended(t *testing.T) {
 
 // --- PipelineBuilder tests ---
 
+func TestIntoChatMessage_NoSearchPreservesLearningContext(t *testing.T) {
+	cm := &types.ChatManage{}
+	cm.Query = "[Host context]\nlearning_scope: 度量机制；预算 5 分钟\n[/Host context]\n\n我的下一步是什么？"
+	cm.RewriteQuery = "用户的下一步学习计划是什么"
+	cm.Intent = types.IntentChitchat
+	plugin := &PluginIntoChatMessage{}
+	if err := plugin.OnEvent(context.Background(), types.INTO_CHAT_MESSAGE, cm, func() *PluginError { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if cm.UserContent != cm.Query {
+		t.Fatalf("current learning context lost: %s", cm.UserContent)
+	}
+}
+
 func TestPipelineBuilder_Basic(t *testing.T) {
 	pipeline := types.NewPipelineBuilder().
 		Add(types.LOAD_HISTORY).

@@ -208,6 +208,7 @@
             <div v-if="graphDrawerNeighborHint" class="wiki-drawer-neighbor-hint" style="margin-bottom: 16px;">
               {{ graphDrawerNeighborHint }}
             </div>
+            <NodeLearningControls v-if="['entity','concept'].includes(graphDrawerPage.page_type)" :kb-id="knowledgeBaseId" :slug="graphDrawerPage.slug" />
             <div ref="drawerBodyRef" class="wiki-reader-body" v-html="graphDrawerContent"
               @click="handleGraphDrawerClick"></div>
           </template>
@@ -615,6 +616,7 @@
                 </div>
               </div>
 
+              <NodeLearningControls v-if="!editingPage && ['entity','concept'].includes(selectedPage.page_type)" :kb-id="knowledgeBaseId" :slug="selectedPage.slug" />
               <!-- Content -->
               <div v-if="!editingPage" ref="readerBodyRef" class="wiki-reader-body" v-html="renderedContent"
                 @click="handleContentClick">
@@ -849,12 +851,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMenuStore } from '@/stores/menu'
 import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from 'vue-i18n'
-import { setAssistantHost } from '../assistantHost'
+import { useAssistantHostPublisher } from '../assistantHost'
+const setAssistantHost = useAssistantHostPublisher(['wiki', 'graph'])
 import { marked } from 'marked'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { RecycleScroller } from 'vue-virtual-scroller'
@@ -897,6 +900,8 @@ import {
 } from '@/api/wiki'
 import { recordWikiRead, getLearningMastery, getLearningQuiz } from '@/api/learning'
 import { createWikiReadTracker } from './readTracker'
+import NodeLearningControls from '../learning/NodeLearningControls.vue'
+import { notifyLearningUpdated, notifyReadStatus } from '../learning/learningEvents'
 import { masteryRing, nodeFill, newlyLitSlugs, tierColor, type MasteryLevel } from './graphMasteryColors'
 
 const router = useRouter()
@@ -1215,24 +1220,27 @@ const assistantHostContext = computed<Record<string, string> | null>(() => {
     current_page_title: page.title || page.slug,
     current_page_slug: page.slug,
     current_page_type: page.page_type || '',
+    current_page_excerpt: (page.content || '').slice(0, 6000),
   }
 })
 
 // Publish into the KB-wide assistant host store (the widget lives at the
 // KnowledgeBase root now): with a page open → wiki-page scene carrying the
 // page identity; otherwise the generic wiki/graph scene.
-watch(assistantHostContext, (ctx) => {
+watch([assistantHostContext, () => props.view], ([ctx]) => {
   setAssistantHost(ctx ? { scene: 'wiki-page', ...ctx } : { scene: props.view === 'graph' ? 'graph' : 'wiki' })
 }, { immediate: true })
 
 // Tiered read signal: normal fires 5s after a page becomes active (quick
-// flips record nothing), deep fires on leave when dwell ≥ 60s. Replaces
+// flips record nothing), deep fires while visible when dwell ≥ 60s. Replaces
 // the old fire-on-open recordWikiRead calls.
 const readTracker = createWikiReadTracker((slug, tier) => {
-  recordWikiRead(props.knowledgeBaseId, slug, tier).catch(() => {})
+  const kb=props.knowledgeBaseId
+  notifyReadStatus(kb,slug,'saving',tier)
+  recordWikiRead(kb, slug, tier).then(result=>{if(result.data?.recorded===false){notifyReadStatus(kb,slug,'disabled',tier);return}notifyReadStatus(kb,slug,'saved',tier);notifyLearningUpdated(kb,slug)}).catch(() => notifyReadStatus(kb,slug,'error',tier))
 })
 watch(
-  () => activeContextPage.value?.slug || '',
+  () => activeContextPage.value && ['entity','concept'].includes(activeContextPage.value.page_type) ? activeContextPage.value.slug : '',
   (slug) => readTracker.enter(slug),
   { immediate: true },
 )
@@ -5154,6 +5162,8 @@ onMounted(() => {
   readTracker.start()
 })
 
+onActivated(()=>{readTracker.start();const p=activeContextPage.value;readTracker.enter(p&&['entity','concept'].includes(p.page_type)?p.slug:'')})
+onDeactivated(()=>readTracker.stop())
 onUnmounted(() => {
   readTracker.stop()
   if (statsTimer) {

@@ -83,6 +83,7 @@ export interface QuizSourceDoc {
 }
 
 export interface QuizQuestion {
+  objective_id?: string; family_id?: string; mode?: string; assistance_mode?: string;
   id: string;
   question: string;
   options: Record<string, string>;
@@ -92,6 +93,7 @@ export interface QuizQuestion {
 }
 
 export interface AnswerResult {
+  eligible?: boolean; grade_reason?: string;
   correct: boolean;
   correct_key: string;
   explanation: string;
@@ -271,16 +273,17 @@ export function getLearningQuiz(kbId: string, slug: string) {
   return get<Envelope<QuizQuestion[]>>(`/api/v1/learning/kb/${kbId}/quiz?slug=${encodeURIComponent(slug)}`);
 }
 
-export function submitLearningAnswer(kbId: string, itemId: string, chosenKey: string) {
+export function submitLearningAnswer(kbId: string, itemId: string, chosenKey: string, assistanceMode?: string) {
   return post<Envelope<AnswerResult>>(`/api/v1/learning/kb/${kbId}/quiz/${itemId}/answer`, {
     chosen_key: chosenKey,
+    assistance_mode: assistanceMode,
   });
 }
 
 // Reading a wiki page is a deliberate low-trust touch (§3.3.6 signal);
 // the backend dedupes per slug per 48h window, so fire-and-forget is safe.
 export function recordWikiRead(kbId: string, slug: string, tier?: string) {
-  return post<Envelope<null>>(`/api/v1/learning/kb/${kbId}/read`, { slug, tier: tier || undefined });
+  return post<Envelope<{recorded:boolean;reason?:string}>>(`/api/v1/learning/kb/${kbId}/read`, { slug, tier: tier || undefined });
 }
 
 export type SelfAssessDirection = 'up' | 'down';

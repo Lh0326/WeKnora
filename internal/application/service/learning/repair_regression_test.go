@@ -147,7 +147,7 @@ func TestDelayedCorrectFeedbackUsesLatestGateFact(t *testing.T) {
 		_ = repo.InsertAttempt(ctx, &types.LearningQuizAttempt{TenantID: 1, KnowledgeBaseID: testKB, SubjectID: scope.SubjectID, Slug: item.Slug, QuizItemID: id, IsCorrect: true, ChosenKey: "A", AnsweredAt: old})
 	}
 	_ = repo.UpsertMastery(ctx, &types.MasteryState{TenantID: 1, KnowledgeBaseID: testKB, SubjectID: scope.SubjectID, Slug: item.Slug, Logit: 4, EvidenceCount: 2, PositiveCount: 2, Stability: 20, FirstSeenAt: old, LastEvidenceAt: old})
-	result, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A")
+	result, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestDisabledQuizCannotBeSubmitted(t *testing.T) {
 	svc, repo, _ := readFixture(t)
 	ctx := collectorCtx(1, "alice")
 	_ = repo.UpsertQuizItem(ctx, &types.LearningQuizItem{ID: "q-disabled", TenantID: 1, KnowledgeBaseID: testKB, Slug: "concept/rag", CorrectKey: "A", Status: types.LearningQuizStatusDisabled})
-	if _, err := svc.SubmitAnswer(ctx, testKB, "q-disabled", "A"); err != ErrQuizNotFound {
+	if _, err := svc.SubmitAnswer(ctx, testKB, "q-disabled", "A", ""); err != ErrQuizNotFound {
 		t.Fatalf("disabled question accepted: %v", err)
 	}
 }

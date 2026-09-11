@@ -30,7 +30,13 @@ func (s *Service) RecordWikiRead(ctx context.Context, kbID, slug, tier string) e
 	if err != nil {
 		return err
 	}
-	return s.runSubject(ctx, scope.SubjectID, true, func(ctx context.Context) error { return s.recordWikiRead(ctx, kbID, slug, tier) })
+	epoch, err := s.operationEpoch(ctx, scope.SubjectID)
+	if err != nil {
+		return err
+	}
+	// The interactive caller needs to distinguish a saved read from disabled
+	// telemetry; silently swallowing this outcome produced false UI feedback.
+	return s.repo.WithSubject(ctx, scope.SubjectID, epoch, true, func(ctx context.Context) error { return s.recordWikiRead(ctx, kbID, slug, tier) })
 }
 
 func (s *Service) RecordAgentRead(ctx context.Context, kbID, slug string) error {
@@ -79,7 +85,7 @@ func (s *Service) RecordAnswerTouches(ctx context.Context, message *types.Messag
 	_ = s.runSubject(ctx, principal.StorageID(), true, func(ctx context.Context) error { return s.recordAnswerTouches(ctx, message) })
 }
 
-func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey string) (*AnswerResult, error) {
+func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey, declaredAssistance string) (*AnswerResult, error) {
 	scope, err := resolveReadScope(ctx, kbID)
 	if err != nil {
 		return nil, err
@@ -91,7 +97,7 @@ func (s *Service) SubmitAnswer(ctx context.Context, kbID, itemID, chosenKey stri
 	var result *AnswerResult
 	err = s.repo.WithSubject(ctx, scope.SubjectID, epoch, true, func(ctx context.Context) error {
 		var err error
-		result, err = s.submitAnswer(ctx, kbID, itemID, chosenKey)
+		result, err = s.submitAnswer(ctx, kbID, itemID, chosenKey, declaredAssistance)
 		return err
 	})
 	if errors.Is(err, interfaces.ErrLearningCollectionDisabled) {

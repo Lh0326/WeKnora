@@ -31,12 +31,10 @@
         </div>
         <div class="wa-card-body">
           <div v-if="creating" class="wa-card-loading"><t-loading size="small" /></div>
-          <ChatView v-else-if="sessionId" :session_id="sessionId"
+          <ChatView v-else-if="sessionId" :key="sessionId" :session_id="sessionId"
             agent-id="builtin-wiki-page-assistant"
             :kb-ids="[kbId]" :embedded-mode="true" :host-context="mergedHostContext" />
-          <div v-else class="wa-card-error" @click="createSession">
-            {{ t('knowledgeEditor.wikiBrowser.assistantRetry') }}
-          </div>
+          <div v-else class="wa-card-error" role="alert"><p>{{ sessionError || '正在连接知识助手…' }}</p><button @click="createSession">重新连接</button></div>
         </div>
       </div>
     </transition>
@@ -59,16 +57,19 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, inject } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loading as TLoading } from 'tdesign-vue-next'
 import ChatView from '@/views/chat/index.vue'
 import WikiAssistantMascot from './WikiAssistantMascot.vue'
 import { pupilOffset } from './assistantGaze'
 import {
-  ensureAssistantLearning, invalidateAssistantLearning, assistantLearningFieldsFor,
+  createAssistantLearningContext, snapshotFields,
 } from '../assistantLearningContext'
 import { createSessions, getSession } from '@/api/chat/index'
+import {useAuthStore} from '@/stores/auth'
+import {LEARNING_UPDATED} from '../learning/learningEvents'
+import {learningSessionKey} from '../learning/learningSession'
 
 const props = defineProps<{
   kbId: string
@@ -78,11 +79,19 @@ const props = defineProps<{
 
 const { t } = useI18n()
 
-// The assistant owns ONE global conversation (across knowledge bases,
-// tab switches and reloads): history is preserved until the user explicitly
-// starts a new chat. Module state + localStorage keep it continuous.
+// A conversation persists within the same user, tenant and knowledge base.
+// Changing that scope must discard in-flight context and restore its own session.
 const open = ref(false)
 const creating = ref(false)
+const sessionError=ref('')
+const auth=useAuthStore()
+const scopeKey=computed(()=>`${auth.user?.id||''}:${auth.effectiveTenantId||''}:${props.kbId}`)
+const learningContext=createAssistantLearningContext()
+const learningSession=inject(learningSessionKey,null)
+const activeLearningSession=computed(()=>learningSession?.snapshot.value?.kbId===props.kbId?learningSession.snapshot.value:null)
+let sessionGeneration=0
+const sessionKey=()=>`${SESSION_KEY}:${scopeKey.value}`
+const refreshLearning=(force=false)=>learningContext.ensure(props.kbId,scopeKey.value,force,{trajectoryOnly:!!activeLearningSession.value})
 const sessionId = ref<string>('')
 let sharedSessionId = ''
 const SESSION_KEY = 'weknora_kb_assistant_session'
@@ -94,18 +103,19 @@ const blinking = ref(false)
 /** 学习快照合并进 host-context：助手回答学习情况/建议类问题时引用真实数据 */
 const mergedHostContext = computed<Record<string, string> | null>(() => {
   const base = props.hostContext || {}
-  const learning = assistantLearningFieldsFor(base.current_page_slug || null)
+  const learning = snapshotFields(learningContext.snapshot.value,base.current_page_slug || null,activeLearningSession.value)
   const merged = { ...base, ...(learning || {}) }
   return Object.keys(merged).length ? merged : null
 })
 // 快照刷新：卡片打开 / 换库 / 换页（换页只重算 current_node，无请求）；
 // 卡片开着每 2 分钟静默续期，新问答落账后的建议即随之更新。
-watch(open, (v) => { if (v) ensureAssistantLearning(props.kbId) })
-watch(() => props.kbId, (kb) => ensureAssistantLearning(kb))
+watch(open, (v) => { if (v) refreshLearning() })
+watch(()=>!!activeLearningSession.value,()=>refreshLearning(true))
+watch(scopeKey,()=>{sessionGeneration++;creating.value=false;sessionId.value='';sharedSessionId='';learningContext.reset(scopeKey.value);refreshLearning();if(open.value)restoreOrCreate()})
 let learningTimer = 0
 watch(open, (v) => {
   if (v && !learningTimer) {
-    learningTimer = window.setInterval(() => ensureAssistantLearning(props.kbId), 120_000)
+    learningTimer = window.setInterval(() => refreshLearning(), 120_000)
   } else if (!v && learningTimer) {
     clearInterval(learningTimer)
     learningTimer = 0
@@ -161,46 +171,31 @@ function scheduleBlink() {
 async function createSession() {
   if (creating.value) return
   creating.value = true
+  sessionError.value=''
+  const gen=++sessionGeneration
   try {
     const res = await createSessions({})
-    const id = (res as any)?.data?.id
+    if(gen!==sessionGeneration)return
+    const id = (res as any)?.data?.id ?? (res as any)?.id
     if (!id) throw new Error('no session id')
     sessionId.value = id
     sharedSessionId = id
     // 助手会话自治：全局仅此一条（侧栏同步自服务端会话列表，会显示为
     // 单独的一条"新会话"），仅"新对话"按钮会更换——上下文长期保留。
-    try { localStorage.setItem(SESSION_KEY, id) } catch { /* private mode */ }
+    try { localStorage.setItem(sessionKey(), id) } catch { /* private mode */ }
   } catch (e) {
+    if(gen!==sessionGeneration)return
+    sessionError.value='知识助手连接失败，请检查服务后重试。'
     console.error('[WikiAssistant] session create failed:', e)
     sessionId.value = '' // shows the retry affordance
   } finally {
-    creating.value = false
+    if(gen===sessionGeneration)creating.value = false
   }
 }
 
 async function restoreSession(): Promise<boolean> {
-  try {
-    if (!sharedSessionId) {
-      sharedSessionId = localStorage.getItem(SESSION_KEY) || ''
-      // 迁移旧的按知识库分键缓存（多 KB 时代遗留）：任取其一并清掉旧键
-      if (!sharedSessionId) {
-        for (let i = 0; i < localStorage.length; i++) {
-          const k = localStorage.key(i)
-          if (k && k.startsWith(SESSION_KEY + ':')) {
-            sharedSessionId = localStorage.getItem(k) || ''
-            break
-          }
-        }
-        if (sharedSessionId) {
-          localStorage.setItem(SESSION_KEY, sharedSessionId)
-          for (let i = localStorage.length - 1; i >= 0; i--) {
-            const k = localStorage.key(i)
-            if (k && k.startsWith(SESSION_KEY + ':')) localStorage.removeItem(k)
-          }
-        }
-      }
-    }
-  } catch { /* private mode */ }
+  const gen=sessionGeneration
+  try { sharedSessionId=localStorage.getItem(sessionKey())||'' } catch { return false }
   if (!sharedSessionId) return false
   // 自愈：缓存指向的会话可能已被删除（侧栏清理/数据重置），失效即
   // 丢弃缓存，让调用方自动新建——绝不把用户卡在 404 上。
@@ -208,38 +203,42 @@ async function restoreSession(): Promise<boolean> {
     const res: any = await getSession(sharedSessionId)
     const id = res?.data?.id ?? res?.id
     if (id !== sharedSessionId) throw new Error('session gone')
+    if(gen!==sessionGeneration)return false
     sessionId.value = sharedSessionId
     return true
   } catch {
+    if(gen!==sessionGeneration)return false
     sharedSessionId = ''
     sessionId.value = ''
-    try { localStorage.removeItem(SESSION_KEY) } catch { /* noop */ }
+    try { localStorage.removeItem(sessionKey()) } catch { /* noop */ }
     return false
   }
 }
 
 /** 新对话（用户主动清除上下文）：换一条全新全局会话，旧会话留在历史 */
 function restartSession() {
-  invalidateAssistantLearning()
+  refreshLearning(true)
   sessionId.value = ''
   sharedSessionId = ''
-  try { localStorage.removeItem(SESSION_KEY) } catch { /* noop */ }
+  try { localStorage.removeItem(sessionKey()) } catch { /* noop */ }
   createSession()
 }
 
+async function restoreOrCreate(){const gen=sessionGeneration;const restored=await restoreSession();if(!restored&&gen===sessionGeneration&&!sessionId.value)await createSession()}
+function onLearningUpdate(e:Event){if((e as CustomEvent).detail?.kbId===props.kbId)refreshLearning(true)}
 async function toggle() {
   open.value = !open.value
   if (open.value && !sessionId.value) {
-    const restored = await restoreSession()
-    if (!restored && !sessionId.value) createSession()
+    await restoreOrCreate()
   }
 }
 
 onMounted(() => {
+  window.addEventListener(LEARNING_UPDATED,onLearningUpdate)
   restoreSession()
   // 预热学习快照：不等卡片打开——首条提问发生在打开后的几秒内，
   // 按需拉取会输给打字速度（实测 0.2s 竞态），挂载即取则必然就绪。
-  ensureAssistantLearning(props.kbId)
+  refreshLearning()
   if (!prefersReducedMotion) {
     window.addEventListener('mousemove', onPointerMove, { passive: true })
     scheduleBlink()
@@ -247,6 +246,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  sessionGeneration++;learningContext.reset('')
+  window.removeEventListener(LEARNING_UPDATED,onLearningUpdate)
   window.removeEventListener('mousemove', onPointerMove)
   if (rafId) cancelAnimationFrame(rafId)
   if (blinkTimer) clearTimeout(blinkTimer)
@@ -267,8 +268,9 @@ onBeforeUnmount(() => {
   box-shadow: var(--td-shadow-2);
   cursor: pointer;
   transition: transform 0.18s ease, box-shadow 0.18s ease;
-  animation: wa-breathe 4.6s ease-in-out infinite;
 }
+.wa-ball > .mascot { animation: wa-breathe 4.6s ease-in-out infinite; }
+.wa-widget.open .wa-ball > .mascot { animation: none; }
 .wa-ball:hover { transform: scale(1.08); box-shadow: var(--td-shadow-3); }
 .wa-ball:focus-visible { outline: 2px solid var(--td-brand-color, #07c05f); outline-offset: 2px; }
 .wa-widget.open .wa-ball { animation: none; transform: scale(1.04); }

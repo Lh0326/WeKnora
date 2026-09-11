@@ -109,7 +109,7 @@ func TestQuizVersionCheckedWithoutMaintenance(t *testing.T) {
 			if questions, err := svc.TakeQuiz(ctx, testKB, item.Slug); err != nil || len(questions) != 0 {
 				t.Fatalf("stale question served: %v %v", questions, err)
 			}
-			if _, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A"); !errors.Is(err, ErrQuizNotFound) {
+			if _, err := svc.SubmitAnswer(ctx, testKB, item.ID, "A", ""); !errors.Is(err, ErrQuizNotFound) {
 				t.Fatalf("stale answer scored: %v", err)
 			}
 			if len(repo.quizAttempts) != 0 || len(repo.snapshotEvents()) != 0 {
@@ -136,10 +136,15 @@ func TestQuizRegeneratesSameStemAndHonorsDisabled(t *testing.T) {
 			if err := svc.runQuizPass(t.Context(), kbs.kbs[testKB], "m"); err != nil {
 				t.Fatal(err)
 			}
-			active := 0
+			// Stage 2: regenerated items enter as draft (LLM output is
+			// practice until human review), so the fresh item's lifecycle
+			// status is draft — the regeneration contract itself (same
+			// stem re-adjudicated against new evidence, old key replaced,
+			// disabled veto honored) is unchanged.
+			fresh := 0
 			for _, it := range repo.quizItems {
-				if it.Status == types.LearningQuizStatusActive {
-					active++
+				if it.Status == types.LearningQuizStatusDraft {
+					fresh++
 					if it.CorrectKey != "B" {
 						t.Fatal("old key retained")
 					}
@@ -149,8 +154,8 @@ func TestQuizRegeneratesSameStemAndHonorsDisabled(t *testing.T) {
 			if disabled {
 				want = 0
 			}
-			if active != want {
-				t.Fatalf("active=%d want=%d", active, want)
+			if fresh != want {
+				t.Fatalf("draft=%d want=%d", fresh, want)
 			}
 		})
 	}
@@ -256,7 +261,7 @@ func TestActualServiceRollsBackQuizAndReadOnFoldFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			if kind == "quiz" {
-				_, err = svc.SubmitAnswer(ctx, testKB, "q", "A")
+				_, err = svc.SubmitAnswer(ctx, testKB, "q", "A", "")
 			} else {
 				err = svc.RecordWikiRead(ctx, testKB, "concept/rag", "normal")
 			}
@@ -276,7 +281,7 @@ func TestActualServiceRollsBackQuizAndReadOnFoldFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			if kind == "quiz" {
-				_, err = svc.SubmitAnswer(ctx, testKB, "q", "A")
+				_, err = svc.SubmitAnswer(ctx, testKB, "q", "A", "")
 			} else {
 				err = svc.RecordWikiRead(ctx, testKB, "concept/rag", "normal")
 			}
@@ -361,7 +366,7 @@ func TestActualQuizEvidenceChangeDuringSubmissionRollsBack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.SubmitAnswer(ctx, testKB, item.ID, "A"); !errors.Is(err, ErrQuizNotFound) {
+	if _, err = svc.SubmitAnswer(ctx, testKB, item.ID, "A", ""); !errors.Is(err, ErrQuizNotFound) {
 		t.Fatalf("stale submission accepted: %v", err)
 	}
 	if !changed {
@@ -383,7 +388,7 @@ func TestActualQuizEvidenceChangeDuringSubmissionRollsBack(t *testing.T) {
 	if err = svc.repo.UpsertQuizItem(ctx, item); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = svc.SubmitAnswer(ctx, testKB, item.ID, "A"); err != nil {
+	if _, err = svc.SubmitAnswer(ctx, testKB, item.ID, "A", ""); err != nil {
 		t.Fatalf("positive control: %v", err)
 	}
 }

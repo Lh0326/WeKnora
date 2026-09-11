@@ -57,12 +57,12 @@ func TestDerivePassiveChangesDemoted(t *testing.T) {
 		{Slug: "concept/untouched", PageType: "concept", Title: "未接触节点"},
 	}
 	states := map[string]FoldState{
-		"concept/gone":     demotableState(now, 200*24*time.Hour),
-		"concept/fresh":    demotableState(now, time.Hour),
+		"concept/gone":      demotableState(now, 200*24*time.Hour),
+		"concept/fresh":     demotableState(now, time.Hour),
 		"concept/untouched": {},
 	}
 	summary := derivePassiveChanges(pages, states, map[string][]DirectQuizFact{
-		"concept/gone": masteredFacts(now, 200*24*time.Hour),
+		"concept/gone":  masteredFacts(now, 200*24*time.Hour),
 		"concept/fresh": masteredFacts(now, time.Hour),
 	}, nil, now, 20)
 

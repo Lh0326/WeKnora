@@ -1,22 +1,32 @@
-import { ref } from 'vue'
+import { inject, shallowReadonly, shallowRef, type InjectionKey } from 'vue'
 
-/**
- * Module-scoped host context for the KB knowledge assistant widget.
- *
- * The widget mounts ONCE at the KnowledgeBase root so it stays in the
- * bottom-right corner on every tab (documents / wiki / graph / learning /
- * …) instead of only the wiki view. Whichever tab is active publishes its
- * context into this store, so the assistant — and the widget header's
- * "当前界面" line — always reflects where the user actually is:
- *
- *   - KnowledgeBase's tab watcher publishes the generic scene for
- *     non-wiki tabs (learning / documents / …);
- *   - WikiBrowser (mounted for wiki + graph tabs) publishes the richer
- *     wiki-page context (page title / slug / type) and falls back to the
- *     generic wiki scene when no page is open.
- */
-export const assistantHostContext = ref<Record<string, string> | null>(null)
+/** Each KB screen owns its current page. Cached or detached readers cannot
+ * overwrite the foreground tab or publish a previous account's content. */
+export function createAssistantHost() {
+  const context = shallowRef<Record<string, string> | null>(null)
+  let identity = '', scene = ''
+  function setScope(nextIdentity: string) {
+    if (identity === nextIdentity) return
+    identity = nextIdentity
+    context.value = scene ? { scene } : null
+  }
+  function setScene(nextScene: string) {
+    scene = nextScene
+    context.value = { scene }
+  }
+  function publisher(scenes: string[]) {
+    const owner = identity
+    return (value: Record<string, string>) => {
+      if (owner === identity && scenes.includes(scene)) context.value = { ...value }
+    }
+  }
+  function clear() { identity = ''; scene = ''; context.value = null }
+  return { context: shallowReadonly(context), setScope, setScene, publisher, clear }
+}
 
-export function setAssistantHost(ctx: Record<string, string> | null): void {
-  assistantHostContext.value = ctx
+export const assistantHostKey: InjectionKey<ReturnType<typeof createAssistantHost>> = Symbol('assistant-host')
+
+export function useAssistantHostPublisher(scenes: string[]) {
+  const host = inject(assistantHostKey, null)
+  return host?.publisher(scenes) ?? (() => {})
 }

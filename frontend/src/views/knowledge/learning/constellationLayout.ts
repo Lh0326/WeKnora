@@ -24,6 +24,10 @@
 export type Tier = 'unseen' | 'touched' | 'familiar' | 'mastered'
 
 export interface ConstellationNode {
+  verification_complete?: boolean
+  learning_contacted?: boolean
+  verification_label?: string
+  verification_color?: string
   slug: string
   title?: string
   level: string
