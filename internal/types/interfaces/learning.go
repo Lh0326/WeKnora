@@ -189,18 +189,6 @@ type LearningRepository interface {
 	// DeleteLearningDataByKB removes EVERY subject's learning data inside
 	// one knowledge base — the orphan sweep for KBs that no longer exist.
 	DeleteLearningDataByKB(ctx context.Context, tenantID uint64, knowledgeBaseID string) error
-	// ListMasteryByKB returns every subject's folded rows inside one KB,
-	// deterministically ordered (subject, slug). The knowledge-health
-	// aggregate's only cross-subject read; reachable solely through the
-	// owner/admin-gated health route, so — like ListAllMastery's background
-	// jobs — it is a deliberate subject-less exception, never a handler
-	// parameter away from someone else's data.
-	ListMasteryByKB(ctx context.Context, tenantID uint64, kbID string) ([]types.MasteryState, error)
-	// ListMaintenanceMarks returns the KB's self-assessment events (the
-	// five types whose reason taxonomy carries maintenance semantics)
-	// since the given time, newest first — the health view's content-work
-	// queue. Tenant- and KB-scoped like every query here.
-	ListMaintenanceMarks(ctx context.Context, tenantID uint64, kbID string, since time.Time) ([]types.LearningEvent, error)
 	// AddSkip records one standing "已掌握，不再推荐" declaration for the
 	// scope (idempotent on conflict; createdAt preserved for alias moves).
 	AddSkip(ctx context.Context, scope LearningScope, slug string, createdAt time.Time) error
@@ -371,12 +359,6 @@ type LearningService interface {
 	// facts; scope comes from the authenticated caller alone.
 	ObjectiveView(ctx context.Context, kbID string) (*ObjectiveViewResponse, error)
 	SetNodeState(ctx context.Context, kbID, slug, state string) error
-	// KnowledgeHealth assembles the owner/admin org aggregate for one KB:
-	// coverage counts, expert nodes, single-person and stale-doc risks,
-	// folder roll-ups and recent self-assessment maintenance marks. Fully
-	// deterministic (no LLM); no subject identifier ever leaves the
-	// aggregate — people are counted, never named.
-	KnowledgeHealth(ctx context.Context, kbID string) (*KnowledgeHealth, error)
 }
 
 // ObjectiveEvidenceView is the direct-evidence dimension of one
@@ -567,6 +549,7 @@ type TaskSubmitPayload struct {
 // ObjectiveViewResponse is the stage-1 separated evidence profile of one
 // KB for the authenticated caller.
 type LearningNodeView struct {
+	Estimate          *LearningEstimate     `json:"estimate,omitempty"`
 	Review            *LearningReviewStatus `json:"review,omitempty"`
 	Slug              string                `json:"slug"`
 	Title             string                `json:"title"`
@@ -645,68 +628,6 @@ type ZoneEdge struct {
 	// Kind: "prereq" (LLM-adjudicated prerequisite, solid line) or
 	// "wikilink" (wiki OutLink between node pages, lighter curve).
 	Kind string `json:"kind,omitempty"`
-}
-
-// KnowledgeHealth is the owner/admin org view of one KB's learning state:
-// who-knows-what reduced to counts, plus the risks and maintenance marks
-// an owner can act on. Every member slice is sorted deterministically
-// (count desc, then title, then key) so two opens of the same moment
-// render identically.
-type KnowledgeHealth struct {
-	NodesTotal     int                     `json:"nodes_total"`
-	NodesCovered   int                     `json:"nodes_covered"`
-	SubjectsActive int                     `json:"subjects_active"`
-	Folders        []HealthFolder          `json:"folders"`
-	Experts        []HealthExpert          `json:"experts"`
-	Risks          []HealthRisk            `json:"risks"`
-	Maintenance    []HealthMaintenanceMark `json:"maintenance"`
-}
-
-// HealthFolder rolls one wiki folder up: how many nodes it holds, how many
-// are covered by at least one person, and the deepest familiar bench (the
-// maximum distinct-familiar-people count across its nodes — the folder's
-// bus-factor at a glance). The root folder keeps FolderID "" and an empty
-// FolderName; the client labels it via its root key like the progress tab.
-type HealthFolder struct {
-	FolderID      string `json:"folder_id"`
-	FolderName    string `json:"folder_name"`
-	TotalNodes    int    `json:"total_nodes"`
-	CoveredNodes  int    `json:"covered_nodes"`
-	FamiliarUsers int    `json:"familiar_users"`
-}
-
-// HealthExpert is a node with at least one person in the familiar band.
-type HealthExpert struct {
-	Slug          string `json:"slug"`
-	Title         string `json:"title"`
-	FamiliarCount int    `json:"familiar_count"`
-}
-
-// HealthRisk is one actionable org-level risk. Kind is "single_point" (a
-// node exactly one person is familiar with) or "stale_doc" (a source
-// document everyone learned from and has since forgotten). Key is the node
-// slug or the document id; FamiliarCount/BestPEff mean per-kind: people
-// familiar / people who ever folded evidence on the covering nodes.
-type HealthRisk struct {
-	Kind          string  `json:"kind"`
-	Key           string  `json:"key"`
-	Title         string  `json:"title"`
-	FamiliarCount int     `json:"familiar_count"`
-	BestPEff      float64 `json:"best_p_eff"`
-	Note          string  `json:"note"`
-}
-
-// HealthMaintenanceMark groups the recent self-assessment events of one
-// node by their kind (the raw event type — the down reason taxonomy is
-// what makes them content-maintenance signals). Count/LatestAt describe
-// the group; Title resolves from the live page (empty when the page is
-// gone, the client falls back to the slug).
-type HealthMaintenanceMark struct {
-	Kind     string    `json:"kind"`
-	Slug     string    `json:"slug"`
-	Title    string    `json:"title"`
-	Count    int       `json:"count"`
-	LatestAt time.Time `json:"latest_at"`
 }
 
 // LearningProgress is the tab header: node totals per tier and per folder.
@@ -1018,11 +939,13 @@ type LearningContextCapturer interface {
 
 // AssessmentFreeze contains no challenge or labels. Persist it before presenting a held-out family.
 type AssessmentFreeze struct {
-	SnapshotID             string            `json:"snapshot_id"`
-	KnowledgeBaseID        string            `json:"knowledge_base_id"`
-	PolicyVersion          string            `json:"policy_version"`
-	StateAsOf              time.Time         `json:"state_as_of"`
-	GoalStatesBefore       map[string]string `json:"goal_states_before"`
-	ObjectiveVersions      map[string]string `json:"objective_versions"`
-	EvidenceFamiliesBefore []string          `json:"evidence_families_before"`
+	LearningModelVersion   string                       `json:"learning_model_version"`
+	NodeEstimates          map[string]*LearningEstimate `json:"node_estimates"`
+	SnapshotID             string                       `json:"snapshot_id"`
+	KnowledgeBaseID        string                       `json:"knowledge_base_id"`
+	PolicyVersion          string                       `json:"policy_version"`
+	StateAsOf              time.Time                    `json:"state_as_of"`
+	GoalStatesBefore       map[string]string            `json:"goal_states_before"`
+	ObjectiveVersions      map[string]string            `json:"objective_versions"`
+	EvidenceFamiliesBefore []string                     `json:"evidence_families_before"`
 }

@@ -228,6 +228,14 @@ func (s *Service) recordWikiRead(ctx context.Context, kbID, slug, tier string) e
 	if _, ok := index.pages[slug]; !ok {
 		return ErrWikiReadTarget // not a knowledge node of this KB — not a touch
 	}
+	page, err := s.wikiRepo.GetBySlug(ctx, kbID, slug)
+	if err != nil {
+		return err
+	}
+	if page == nil {
+		return ErrWikiReadTarget
+	}
+	version := nodeContentVersion(page)
 	// Serialize the dedup read, append and fold as one local operation.
 	// Locking only the final fold lets concurrent readers all claim "first".
 	mu := s.lockNode(scope, slug)
@@ -240,11 +248,11 @@ func (s *Service) recordWikiRead(ctx context.Context, kbID, slug, tier string) e
 		return nil // conservative: skip rather than risk farming
 	}
 	if tier == "deep" {
-		return s.recordDeepRead(ctx, scope, slug, prior, now)
+		return s.recordDeepRead(ctx, scope, slug, prior, now, version)
 	}
 	alreadyReadInWindow := false
 	for _, ev := range prior {
-		if ev.Slug != slug || ev.Type != types.LearningEventWikiToolRead {
+		if ev.Slug != slug || ev.Type != types.LearningEventWikiToolRead || (ev.ContentVersion != "" && ev.ContentVersion != version) {
 			continue
 		}
 		if now.Sub(ev.OccurredAt) <= ReadRapidDedup {
@@ -267,6 +275,7 @@ func (s *Service) recordWikiRead(ctx context.Context, kbID, slug, tier string) e
 		KnowledgeBaseID: scope.KnowledgeBaseID,
 		Slug:            slug,
 		Type:            types.LearningEventWikiToolRead,
+		ContentVersion:  version,
 		Weight:          weight,
 		OccurredAt:      now,
 	}); err != nil {
@@ -284,21 +293,32 @@ func (s *Service) recordWikiRead(ctx context.Context, kbID, slug, tier string) e
 // are silent no-ops (the dwell was already credited).
 func (s *Service) recordDeepRead(
 	ctx context.Context, scope interfaces.LearningScope, slug string,
-	prior []types.LearningEvent, now time.Time,
+	prior []types.LearningEvent, now time.Time, version string,
 ) error {
+	var lastDifficulty time.Time
 	for _, ev := range prior {
-		if ev.Slug == slug && ev.Type == types.LearningEventWikiDeepRead &&
-			now.Sub(ev.OccurredAt) <= ReAskWindowHours*time.Hour {
-			return nil // already credited this window
+		if ev.Slug == slug && (ev.Type == types.LearningEventNodeReview || ev.Type == types.LearningEventQuizWrong || ev.Type == types.LearningEventReviewAgain) && ev.OccurredAt.After(lastDifficulty) {
+			lastDifficulty = ev.OccurredAt
 		}
 	}
 	weight := WeightWikiDeepRead
+	for _, ev := range prior {
+		if ev.Slug == slug && ev.Type == types.LearningEventWikiDeepRead &&
+			(ev.ContentVersion == "" || ev.ContentVersion == version) &&
+			now.Sub(ev.OccurredAt) <= ReAskWindowHours*time.Hour {
+			if !ev.OccurredAt.Before(lastDifficulty) {
+				return nil // already credited this window, including any revisit
+			}
+			weight = 0 // retain a revisit after difficulty, without extra old-model credit
+		}
+	}
 	if err := s.repo.AppendEvent(ctx, &types.LearningEvent{
 		TenantID:        scope.TenantID,
 		SubjectID:       scope.SubjectID,
 		KnowledgeBaseID: scope.KnowledgeBaseID,
 		Slug:            slug,
 		Type:            types.LearningEventWikiDeepRead,
+		ContentVersion:  version,
 		Weight:          weight,
 		OccurredAt:      now,
 	}); err != nil {

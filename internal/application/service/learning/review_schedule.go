@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/Tencent/WeKnora/internal/application/service/learning/estimator"
 	"github.com/Tencent/WeKnora/internal/types"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
 	"github.com/google/uuid"
@@ -17,7 +18,12 @@ import (
 // Product adaptations: again -> 10-minute relearning, intervals capped at one
 // year, early successful practice does not lengthen a schedule. Self-report
 // only: these events never contribute objective evidence or mastery weights.
-const ReviewPolicyVersion = "sm2-recall-v1"
+const LegacyReviewPolicyVersion = "sm2-recall-v1"
+const ReviewPolicyVersion = estimator.RecallModelVersion
+
+func supportedReviewPolicy(policy string) bool {
+	return policy == ReviewPolicyVersion || policy == LegacyReviewPolicyVersion
+}
 
 type reviewRecord struct {
 	Policy               string `json:"policy"`
@@ -109,7 +115,7 @@ func projectRecall(events []types.LearningEvent) *recallState {
 			continue
 		}
 		var record reviewRecord
-		if json.Unmarshal(e.ReviewData, &record) != nil || record.Policy != ReviewPolicyVersion || record.Sequence < 1 || e.ContentVersion == "" || e.OccurredAt.IsZero() {
+		if json.Unmarshal(e.ReviewData, &record) != nil || !supportedReviewPolicy(record.Policy) || record.Sequence < 1 || e.ContentVersion == "" || e.OccurredAt.IsZero() {
 			continue
 		}
 		facts = append(facts, fact{e, record})
@@ -131,10 +137,34 @@ func projectRecall(events []types.LearningEvent) *recallState {
 		return a.event.ID < b.event.ID
 	})
 	state := recallState{}
+	recalls := []estimator.RecallFact{}
+	usingFSRS := false
 	for _, f := range facts {
 		state = advanceRecall(state, reviewAction(f.event.Type), f.event.ContentVersion, f.event.OccurredAt)
 		state.Revision = f.event.ID
 		state.sequence = f.record.Sequence
+		state.PolicyVersion = f.record.Policy
+		usingFSRS = usingFSRS || f.record.Policy == ReviewPolicyVersion
+		if rating := map[string]int{"again": 1, "hard": 2, "good": 3, "easy": 4}[reviewAction(f.event.Type)]; rating > 0 {
+			recalls = append(recalls, estimator.RecallFact{ID: f.event.ID, ContentVersion: f.event.ContentVersion, At: f.event.OccurredAt, Rating: rating})
+		}
+	}
+	// Keep legacy due dates until the next user action, as in Anki's normal
+	// migration. Once switched, rebuild from genuine history using FSRS-6.
+	if usingFSRS {
+		// FSRS has no SM-2 ease factor. Report actual recall observations,
+		// including short-step repetitions, rather than the legacy fold's
+		// consecutive successes (which ignore early successful practice).
+		state.Ease = 0
+		state.Repetitions = 0
+		last := facts[len(facts)-1].event.OccurredAt
+		if memory, err := estimator.ProjectRecall(recalls, state.ContentVersion, last, 0.9); err == nil && memory != nil {
+			state.DueAt = memory.DueAt
+			state.IntervalDays = int(math.Round(memory.DueAt.Sub(memory.LastRecallAt).Hours() / 24))
+			state.Repetitions = memory.Observations
+			state.EarlyPractice = false
+		}
+		state.PolicyVersion = ReviewPolicyVersion
 	}
 	return &state
 }

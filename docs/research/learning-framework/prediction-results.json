@@ -1,0 +1,2506 @@
+{
+  "protocol": {
+    "version": "learning-framework-prediction-v1",
+    "frozen_date": "2026-09-12",
+    "purpose": "Compare compact response predictors; no WeKnora DB access or claim of causal learning gains.",
+    "data_commit": "fc592907f41dfa0e71742ed1d24f1f6df08e1ad1",
+    "datasets": {
+      "ct": {
+        "url": "https://raw.githubusercontent.com/CAHLR/pyBKT-examples/fc592907f41dfa0e71742ed1d24f1f6df08e1ad1/data/ct.csv",
+        "status": "exploratory; previous test results already examined"
+      },
+      "as": {
+        "url": "https://raw.githubusercontent.com/CAHLR/pyBKT-examples/fc592907f41dfa0e71742ed1d24f1f6df08e1ad1/data/as.csv",
+        "status": "additional held-out evaluation; schema audit precedes fitting"
+      }
+    },
+    "split": {
+      "unit": "student",
+      "salt": "learning-framework-prediction-v1",
+      "hash": "SHA256 first 8 hexadecimal digits modulo 10",
+      "train_buckets": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "validation_buckets": [
+        6,
+        7
+      ],
+      "test_buckets": [
+        8,
+        9
+      ]
+    },
+    "exclusions": [
+      "missing student or skill",
+      "non-binary first-attempt result",
+      "duplicate event",
+      "multi-skill event; never broadcast one label to multiple skills",
+      "AS non-original or hinted first response when identifiable"
+    ],
+    "ordering": "CT timestamp then numeric row; AS order_id. AS order is an event proxy, not elapsed time.",
+    "candidates": {
+      "global_mean": {
+        "smoothing": [
+          1,
+          1
+        ]
+      },
+      "skill_mean": {
+        "prior_weight": 10
+      },
+      "bkt_default": {
+        "initial": 0.2,
+        "learn": 0.1,
+        "guess": 0.2,
+        "slip": 0.1
+      },
+      "bkt_fitted": {
+        "initial": [
+          0.05,
+          0.2,
+          0.4,
+          0.6,
+          0.8
+        ],
+        "learn": [
+          0.01,
+          0.03,
+          0.08,
+          0.15,
+          0.25
+        ],
+        "guess": [
+          0.05,
+          0.15,
+          0.25,
+          0.35
+        ],
+        "slip": [
+          0.05,
+          0.1,
+          0.2,
+          0.3
+        ],
+        "fit": "training log loss"
+      },
+      "history_logistic": {
+        "features": [
+          "skill intercept",
+          "log1p prior student-skill successes",
+          "log1p prior student-skill failures",
+          "log1p prior student successes",
+          "log1p prior student failures"
+        ],
+        "ridge_lambda": [
+          0.1,
+          1,
+          10,
+          100
+        ],
+        "fit": "training; select lambda on validation log loss; no student intercept"
+      }
+    },
+    "history": "Per-student histories reset across splits; predict before observing each current label. Within held-out students, prior observed labels are allowed for online state updates only.",
+    "selection": "Lowest validation log loss among all candidates. Test never selects hyperparameters or model.",
+    "metrics": [
+      "micro log loss",
+      "user macro log loss",
+      "Brier",
+      "ECE10 and bins",
+      "cold start first event",
+      "seen/unseen training skill groups"
+    ],
+    "uncertainty": {
+      "unit": "student",
+      "bootstrap": 1000,
+      "seed": 20260912,
+      "paired_difference": "selected minus skill mean user macro log loss",
+      "interval": "percentile 2.5/97.5"
+    },
+    "transfer": "Evaluate source-fitted shared history coefficients, global mean, and BKT on the other corpus with all target skill intercepts unknown; target outcomes only update previous-history features, never parameters. Report as stress test, not enterprise transfer evidence.",
+    "negative_control": "Shuffle training labels with seed 20260912, rebuild all label-derived history features, refit history model using selected lambda, evaluate untouched test history. Report even if performance remains strong from skill frequencies.",
+    "deployment_gate": "No public-corpus parameters deployed as local component mastery probabilities. Requires local independent outcome validation and content-quality review.",
+    "raw_data": "Stored only under .local-data; publish aggregate results and hashes, not learner records.",
+    "schema_amendment": "If dataset fields require a change, record it before computing outcome metrics; preserve this protocol and list amendments in results."
+  },
+  "protocol_sha256": "0bfb389f2fd29d47f863772528039bfa2527c76ff43fc8967615a20aecf10146",
+  "schema_sha256": "5157cfd9be31cc6702ecd35e54a55b57123bbebcd9d238f5f019d5fbe3b3fa98",
+  "script_sha256": "0c6d903534cda5cb103b8d3df2a9262e5446bba06e9a538608b7c73bc3d99cc3",
+  "bkt_implementation_sha256": "a2ab4677fb521921c560145e89ddfdaebba18d27de80bfd0b209ef861b62bbe9",
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5"
+  },
+  "corpora": {
+    "ct": {
+      "data": {
+        "name": "ct",
+        "bytes": 4368817,
+        "sha256": "161e598a609ecdf829938f8453c15da445ca0c65558367e95ac9f412929b9e55",
+        "exclusions": {}
+      },
+      "split": {
+        "train": {
+          "events": 9977,
+          "users": 345,
+          "skills": 12
+        },
+        "validation": {
+          "events": 3335,
+          "users": 119,
+          "skills": 12
+        },
+        "test": {
+          "events": 3545,
+          "users": 123,
+          "skills": 12
+        }
+      },
+      "fit": {
+        "bkt": [
+          0.4,
+          0.15,
+          0.35,
+          0.2
+        ],
+        "bkt_training_log_loss": 0.632367922727403,
+        "bkt_grid_size": 400,
+        "history_ridge": 0.1,
+        "history_validation_by_ridge": {
+          "0.1": 0.6025707087232403,
+          "1": 0.6025756083208155,
+          "10": 0.6029543805348264,
+          "100": 0.6085262566420612
+        },
+        "history_shared_beta": [
+          0.36265411751427584,
+          0.6500640670630057,
+          -0.1362713754510336,
+          0.2811509440359473,
+          -0.45779325660404624
+        ],
+        "history_newton_iterations": 6
+      },
+      "validation": {
+        "global_mean": {
+          "n": 3335,
+          "users": 119,
+          "log_loss": 0.6624922011252571,
+          "user_macro_log_loss": 0.6637900434130737,
+          "brier": 0.23482317170600045,
+          "ece10": 0.014007045980967803,
+          "bins": [
+            {
+              "bin": 6,
+              "n": 3335,
+              "predicted": 0.6099809600160337,
+              "observed": 0.6239880059970015
+            }
+          ]
+        },
+        "skill_mean": {
+          "n": 3335,
+          "users": 119,
+          "log_loss": 0.6256700070585719,
+          "user_macro_log_loss": 0.6266376626422528,
+          "brier": 0.21802407415411468,
+          "ece10": 0.02390482817027724,
+          "bins": [
+            {
+              "bin": 3,
+              "n": 308,
+              "predicted": 0.33639291422999146,
+              "observed": 0.2857142857142857
+            },
+            {
+              "bin": 4,
+              "n": 247,
+              "predicted": 0.48347941645942916,
+              "observed": 0.5344129554655871
+            },
+            {
+              "bin": 5,
+              "n": 1194,
+              "predicted": 0.5736624043536845,
+              "observed": 0.609715242881072
+            },
+            {
+              "bin": 6,
+              "n": 131,
+              "predicted": 0.652761903707845,
+              "observed": 0.6335877862595419
+            },
+            {
+              "bin": 7,
+              "n": 1353,
+              "predicted": 0.7085764096442408,
+              "observed": 0.7058388765705839
+            },
+            {
+              "bin": 9,
+              "n": 102,
+              "predicted": 0.9091154961330398,
+              "observed": 0.9313725490196079
+            }
+          ]
+        },
+        "bkt_default": {
+          "n": 3335,
+          "users": 119,
+          "log_loss": 0.6815651957247756,
+          "user_macro_log_loss": 0.6877930394551273,
+          "brier": 0.24358956301850487,
+          "ece10": 0.13307058609349048,
+          "bins": [
+            {
+              "bin": 2,
+              "n": 647,
+              "predicted": 0.28538159894127785,
+              "observed": 0.42194744976816073
+            },
+            {
+              "bin": 3,
+              "n": 895,
+              "predicted": 0.343849462062599,
+              "observed": 0.6078212290502794
+            },
+            {
+              "bin": 4,
+              "n": 37,
+              "predicted": 0.4768149134244341,
+              "observed": 0.6486486486486487
+            },
+            {
+              "bin": 5,
+              "n": 315,
+              "predicted": 0.5343412433062479,
+              "observed": 0.6412698412698413
+            },
+            {
+              "bin": 6,
+              "n": 457,
+              "predicted": 0.6105446419883087,
+              "observed": 0.5973741794310722
+            },
+            {
+              "bin": 7,
+              "n": 175,
+              "predicted": 0.7665573961951482,
+              "observed": 0.7028571428571428
+            },
+            {
+              "bin": 8,
+              "n": 809,
+              "predicted": 0.8701739992561035,
+              "observed": 0.7935723114956736
+            }
+          ]
+        },
+        "bkt_fitted": {
+          "n": 3335,
+          "users": 119,
+          "log_loss": 0.6302427683754727,
+          "user_macro_log_loss": 0.6342450183728436,
+          "brier": 0.2201852862362157,
+          "ece10": 0.041813719909139166,
+          "bins": [
+            {
+              "bin": 4,
+              "n": 630,
+              "predicted": 0.4711758268790647,
+              "observed": 0.4174603174603175
+            },
+            {
+              "bin": 5,
+              "n": 984,
+              "predicted": 0.5409664704807016,
+              "observed": 0.6067073170731707
+            },
+            {
+              "bin": 6,
+              "n": 763,
+              "predicted": 0.6482852846372533,
+              "observed": 0.617300131061599
+            },
+            {
+              "bin": 7,
+              "n": 958,
+              "predicted": 0.7648462215678972,
+              "observed": 0.7828810020876826
+            }
+          ]
+        },
+        "history_logistic": {
+          "n": 3335,
+          "users": 119,
+          "log_loss": 0.6025707087232403,
+          "user_macro_log_loss": 0.6085973104150671,
+          "brier": 0.20864624971792997,
+          "ece10": 0.046797855008078704,
+          "bins": [
+            {
+              "bin": 1,
+              "n": 19,
+              "predicted": 0.17907411514608307,
+              "observed": 0.0
+            },
+            {
+              "bin": 2,
+              "n": 127,
+              "predicted": 0.258236960246457,
+              "observed": 0.2047244094488189
+            },
+            {
+              "bin": 3,
+              "n": 221,
+              "predicted": 0.35176106504575566,
+              "observed": 0.31221719457013575
+            },
+            {
+              "bin": 4,
+              "n": 430,
+              "predicted": 0.4616020065100241,
+              "observed": 0.6093023255813953
+            },
+            {
+              "bin": 5,
+              "n": 600,
+              "predicted": 0.5532404941353721,
+              "observed": 0.5666666666666667
+            },
+            {
+              "bin": 6,
+              "n": 810,
+              "predicted": 0.6504748930997554,
+              "observed": 0.582716049382716
+            },
+            {
+              "bin": 7,
+              "n": 620,
+              "predicted": 0.7503967033806269,
+              "observed": 0.7516129032258064
+            },
+            {
+              "bin": 8,
+              "n": 405,
+              "predicted": 0.8429364382827824,
+              "observed": 0.8666666666666667
+            },
+            {
+              "bin": 9,
+              "n": 103,
+              "predicted": 0.9254063923107014,
+              "observed": 0.9223300970873787
+            }
+          ]
+        }
+      },
+      "selected_on_validation": "history_logistic",
+      "test": {
+        "global_mean": {
+          "n": 3545,
+          "users": 123,
+          "log_loss": 0.6551797317556171,
+          "user_macro_log_loss": 0.6571423614154207,
+          "brier": 0.2312266845657794,
+          "ece10": 0.030357544920496693,
+          "bins": [
+            {
+              "bin": 6,
+              "n": 3545,
+              "predicted": 0.6099809600160336,
+              "observed": 0.6403385049365303
+            }
+          ]
+        },
+        "skill_mean": {
+          "n": 3545,
+          "users": 123,
+          "log_loss": 0.6120244503018829,
+          "user_macro_log_loss": 0.6148533201100473,
+          "brier": 0.2112176659009668,
+          "ece10": 0.045647680523478305,
+          "bins": [
+            {
+              "bin": 3,
+              "n": 308,
+              "predicted": 0.3379520817319235,
+              "observed": 0.32142857142857145
+            },
+            {
+              "bin": 4,
+              "n": 310,
+              "predicted": 0.4838567410327205,
+              "observed": 0.5193548387096775
+            },
+            {
+              "bin": 5,
+              "n": 1360,
+              "predicted": 0.5733539869102201,
+              "observed": 0.586764705882353
+            },
+            {
+              "bin": 6,
+              "n": 171,
+              "predicted": 0.6471538753766576,
+              "observed": 0.5614035087719298
+            },
+            {
+              "bin": 7,
+              "n": 1260,
+              "predicted": 0.7085827158437785,
+              "observed": 0.7928571428571428
+            },
+            {
+              "bin": 9,
+              "n": 136,
+              "predicted": 0.9091154961330394,
+              "observed": 0.8602941176470589
+            }
+          ]
+        },
+        "bkt_default": {
+          "n": 3545,
+          "users": 123,
+          "log_loss": 0.6679815738205319,
+          "user_macro_log_loss": 0.6733313363439941,
+          "brier": 0.23880983457234944,
+          "ece10": 0.12962955410418248,
+          "bins": [
+            {
+              "bin": 2,
+              "n": 656,
+              "predicted": 0.285924540619783,
+              "observed": 0.4679878048780488
+            },
+            {
+              "bin": 3,
+              "n": 982,
+              "predicted": 0.3437141487676996,
+              "observed": 0.6028513238289206
+            },
+            {
+              "bin": 4,
+              "n": 28,
+              "predicted": 0.47919362296569395,
+              "observed": 0.42857142857142855
+            },
+            {
+              "bin": 5,
+              "n": 322,
+              "predicted": 0.5326566430633485,
+              "observed": 0.6180124223602484
+            },
+            {
+              "bin": 6,
+              "n": 475,
+              "predicted": 0.6100329001731449,
+              "observed": 0.5768421052631579
+            },
+            {
+              "bin": 7,
+              "n": 171,
+              "predicted": 0.769801617708703,
+              "observed": 0.7485380116959064
+            },
+            {
+              "bin": 8,
+              "n": 911,
+              "predicted": 0.873026207956874,
+              "observed": 0.8320526893523601
+            }
+          ]
+        },
+        "bkt_fitted": {
+          "n": 3545,
+          "users": 123,
+          "log_loss": 0.6209995513135007,
+          "user_macro_log_loss": 0.6251176066773776,
+          "brier": 0.2163012837488546,
+          "ece10": 0.04774208536492902,
+          "bins": [
+            {
+              "bin": 4,
+              "n": 635,
+              "predicted": 0.473612648603943,
+              "observed": 0.4645669291338583
+            },
+            {
+              "bin": 5,
+              "n": 1091,
+              "predicted": 0.5413974342475077,
+              "observed": 0.6021998166819432
+            },
+            {
+              "bin": 6,
+              "n": 772,
+              "predicted": 0.648902900991349,
+              "observed": 0.594559585492228
+            },
+            {
+              "bin": 7,
+              "n": 1047,
+              "predicted": 0.7677046590698384,
+              "observed": 0.8204393505253104
+            }
+          ]
+        },
+        "history_logistic": {
+          "n": 3545,
+          "users": 123,
+          "log_loss": 0.596618076562628,
+          "user_macro_log_loss": 0.6002537822253172,
+          "brier": 0.20561439240259932,
+          "ece10": 0.051000828475393854,
+          "bins": [
+            {
+              "bin": 1,
+              "n": 9,
+              "predicted": 0.19008625494908402,
+              "observed": 0.0
+            },
+            {
+              "bin": 2,
+              "n": 116,
+              "predicted": 0.2602816938312314,
+              "observed": 0.2413793103448276
+            },
+            {
+              "bin": 3,
+              "n": 203,
+              "predicted": 0.35511983437943817,
+              "observed": 0.3891625615763547
+            },
+            {
+              "bin": 4,
+              "n": 477,
+              "predicted": 0.4627387030128743,
+              "observed": 0.5828092243186582
+            },
+            {
+              "bin": 5,
+              "n": 695,
+              "predicted": 0.5516307697296088,
+              "observed": 0.5338129496402878
+            },
+            {
+              "bin": 6,
+              "n": 808,
+              "predicted": 0.6495514595702794,
+              "observed": 0.5965346534653465
+            },
+            {
+              "bin": 7,
+              "n": 625,
+              "predicted": 0.7503501958898275,
+              "observed": 0.7936
+            },
+            {
+              "bin": 8,
+              "n": 483,
+              "predicted": 0.8427677077533652,
+              "observed": 0.8840579710144928
+            },
+            {
+              "bin": 9,
+              "n": 129,
+              "predicted": 0.9264719601831579,
+              "observed": 0.8449612403100775
+            }
+          ]
+        }
+      },
+      "test_groups": {
+        "first_student_event": {
+          "global_mean": {
+            "n": 123,
+            "users": 123,
+            "log_loss": 0.5670482159087668,
+            "user_macro_log_loss": 0.5670482159087668,
+            "brier": 0.18788101740888746,
+            "ece10": 0.2274174139677062,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 123,
+                "predicted": 0.6099809600160336,
+                "observed": 0.8373983739837398
+              }
+            ]
+          },
+          "skill_mean": {
+            "n": 123,
+            "users": 123,
+            "log_loss": 0.5718801040242336,
+            "user_macro_log_loss": 0.5718801040242336,
+            "brier": 0.19084013866520597,
+            "ece10": 0.2929957145840957,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 4,
+                "predicted": 0.33136893005709966,
+                "observed": 0.0
+              },
+              {
+                "bin": 4,
+                "n": 13,
+                "predicted": 0.47933152221402825,
+                "observed": 0.6923076923076923
+              },
+              {
+                "bin": 5,
+                "n": 97,
+                "predicted": 0.5777165615393532,
+                "observed": 0.8969072164948454
+              },
+              {
+                "bin": 7,
+                "n": 1,
+                "predicted": 0.7098894626506829,
+                "observed": 0.0
+              },
+              {
+                "bin": 9,
+                "n": 8,
+                "predicted": 0.9091154961330395,
+                "observed": 0.875
+              }
+            ]
+          },
+          "bkt_default": {
+            "n": 123,
+            "users": 123,
+            "log_loss": 0.9709569430938381,
+            "user_macro_log_loss": 0.9709569430938381,
+            "brier": 0.3835674796747967,
+            "ece10": 0.49739837398373976,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 123,
+                "predicted": 0.3400000000000001,
+                "observed": 0.8373983739837398
+              }
+            ]
+          },
+          "bkt_fitted": {
+            "n": 123,
+            "users": 123,
+            "log_loss": 0.6544139328980937,
+            "user_macro_log_loss": 0.6544139328980937,
+            "brier": 0.23065609756097552,
+            "ece10": 0.3073983739837396,
+            "bins": [
+              {
+                "bin": 5,
+                "n": 123,
+                "predicted": 0.5300000000000002,
+                "observed": 0.8373983739837398
+              }
+            ]
+          },
+          "history_logistic": {
+            "n": 123,
+            "users": 123,
+            "log_loss": 0.6897412368406419,
+            "user_macro_log_loss": 0.6897412368406419,
+            "brier": 0.24924120664355104,
+            "ece10": 0.3613789133577245,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 3,
+                "predicted": 0.3617207158975086,
+                "observed": 0.0
+              },
+              {
+                "bin": 4,
+                "n": 93,
+                "predicted": 0.485115363923321,
+                "observed": 0.9354838709677419
+              },
+              {
+                "bin": 5,
+                "n": 18,
+                "predicted": 0.5273820928023917,
+                "observed": 0.5
+              },
+              {
+                "bin": 6,
+                "n": 1,
+                "predicted": 0.6442043153099033,
+                "observed": 0.0
+              },
+              {
+                "bin": 9,
+                "n": 8,
+                "predicted": 0.9178863818029358,
+                "observed": 0.875
+              }
+            ]
+          }
+        },
+        "seen_training_skill": {
+          "global_mean": {
+            "n": 3545,
+            "users": 123,
+            "log_loss": 0.6551797317556171,
+            "user_macro_log_loss": 0.6571423614154207,
+            "brier": 0.2312266845657794,
+            "ece10": 0.030357544920496693,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 3545,
+                "predicted": 0.6099809600160336,
+                "observed": 0.6403385049365303
+              }
+            ]
+          },
+          "skill_mean": {
+            "n": 3545,
+            "users": 123,
+            "log_loss": 0.6120244503018829,
+            "user_macro_log_loss": 0.6148533201100473,
+            "brier": 0.2112176659009668,
+            "ece10": 0.045647680523478305,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 308,
+                "predicted": 0.3379520817319235,
+                "observed": 0.32142857142857145
+              },
+              {
+                "bin": 4,
+                "n": 310,
+                "predicted": 0.4838567410327205,
+                "observed": 0.5193548387096775
+              },
+              {
+                "bin": 5,
+                "n": 1360,
+                "predicted": 0.5733539869102201,
+                "observed": 0.586764705882353
+              },
+              {
+                "bin": 6,
+                "n": 171,
+                "predicted": 0.6471538753766576,
+                "observed": 0.5614035087719298
+              },
+              {
+                "bin": 7,
+                "n": 1260,
+                "predicted": 0.7085827158437785,
+                "observed": 0.7928571428571428
+              },
+              {
+                "bin": 9,
+                "n": 136,
+                "predicted": 0.9091154961330394,
+                "observed": 0.8602941176470589
+              }
+            ]
+          },
+          "bkt_default": {
+            "n": 3545,
+            "users": 123,
+            "log_loss": 0.6679815738205319,
+            "user_macro_log_loss": 0.6733313363439941,
+            "brier": 0.23880983457234944,
+            "ece10": 0.12962955410418248,
+            "bins": [
+              {
+                "bin": 2,
+                "n": 656,
+                "predicted": 0.285924540619783,
+                "observed": 0.4679878048780488
+              },
+              {
+                "bin": 3,
+                "n": 982,
+                "predicted": 0.3437141487676996,
+                "observed": 0.6028513238289206
+              },
+              {
+                "bin": 4,
+                "n": 28,
+                "predicted": 0.47919362296569395,
+                "observed": 0.42857142857142855
+              },
+              {
+                "bin": 5,
+                "n": 322,
+                "predicted": 0.5326566430633485,
+                "observed": 0.6180124223602484
+              },
+              {
+                "bin": 6,
+                "n": 475,
+                "predicted": 0.6100329001731449,
+                "observed": 0.5768421052631579
+              },
+              {
+                "bin": 7,
+                "n": 171,
+                "predicted": 0.769801617708703,
+                "observed": 0.7485380116959064
+              },
+              {
+                "bin": 8,
+                "n": 911,
+                "predicted": 0.873026207956874,
+                "observed": 0.8320526893523601
+              }
+            ]
+          },
+          "bkt_fitted": {
+            "n": 3545,
+            "users": 123,
+            "log_loss": 0.6209995513135007,
+            "user_macro_log_loss": 0.6251176066773776,
+            "brier": 0.2163012837488546,
+            "ece10": 0.04774208536492902,
+            "bins": [
+              {
+                "bin": 4,
+                "n": 635,
+                "predicted": 0.473612648603943,
+                "observed": 0.4645669291338583
+              },
+              {
+                "bin": 5,
+                "n": 1091,
+                "predicted": 0.5413974342475077,
+                "observed": 0.6021998166819432
+              },
+              {
+                "bin": 6,
+                "n": 772,
+                "predicted": 0.648902900991349,
+                "observed": 0.594559585492228
+              },
+              {
+                "bin": 7,
+                "n": 1047,
+                "predicted": 0.7677046590698384,
+                "observed": 0.8204393505253104
+              }
+            ]
+          },
+          "history_logistic": {
+            "n": 3545,
+            "users": 123,
+            "log_loss": 0.596618076562628,
+            "user_macro_log_loss": 0.6002537822253172,
+            "brier": 0.20561439240259932,
+            "ece10": 0.051000828475393854,
+            "bins": [
+              {
+                "bin": 1,
+                "n": 9,
+                "predicted": 0.19008625494908402,
+                "observed": 0.0
+              },
+              {
+                "bin": 2,
+                "n": 116,
+                "predicted": 0.2602816938312314,
+                "observed": 0.2413793103448276
+              },
+              {
+                "bin": 3,
+                "n": 203,
+                "predicted": 0.35511983437943817,
+                "observed": 0.3891625615763547
+              },
+              {
+                "bin": 4,
+                "n": 477,
+                "predicted": 0.4627387030128743,
+                "observed": 0.5828092243186582
+              },
+              {
+                "bin": 5,
+                "n": 695,
+                "predicted": 0.5516307697296088,
+                "observed": 0.5338129496402878
+              },
+              {
+                "bin": 6,
+                "n": 808,
+                "predicted": 0.6495514595702794,
+                "observed": 0.5965346534653465
+              },
+              {
+                "bin": 7,
+                "n": 625,
+                "predicted": 0.7503501958898275,
+                "observed": 0.7936
+              },
+              {
+                "bin": 8,
+                "n": 483,
+                "predicted": 0.8427677077533652,
+                "observed": 0.8840579710144928
+              },
+              {
+                "bin": 9,
+                "n": 129,
+                "predicted": 0.9264719601831579,
+                "observed": 0.8449612403100775
+              }
+            ]
+          }
+        },
+        "unseen_training_skill": {
+          "global_mean": {
+            "n": 0,
+            "users": 0,
+            "log_loss": null,
+            "brier": null,
+            "ece10": null
+          },
+          "skill_mean": {
+            "n": 0,
+            "users": 0,
+            "log_loss": null,
+            "brier": null,
+            "ece10": null
+          },
+          "bkt_default": {
+            "n": 0,
+            "users": 0,
+            "log_loss": null,
+            "brier": null,
+            "ece10": null
+          },
+          "bkt_fitted": {
+            "n": 0,
+            "users": 0,
+            "log_loss": null,
+            "brier": null,
+            "ece10": null
+          },
+          "history_logistic": {
+            "n": 0,
+            "users": 0,
+            "log_loss": null,
+            "brier": null,
+            "ece10": null
+          }
+        }
+      },
+      "paired_selected_minus_skill_mean": {
+        "unit": "student",
+        "users": 123,
+        "difference": -0.014599537884730205,
+        "ci95": [
+          -0.023532852760015776,
+          -0.006889893369395287
+        ],
+        "seed": 20260912,
+        "replicates": 1000
+      },
+      "shuffled_training_negative_control": {
+        "n": 3545,
+        "users": 123,
+        "log_loss": 0.6605409304605877,
+        "user_macro_log_loss": 0.6622122913299145,
+        "brier": 0.23376438008945094,
+        "ece10": 0.030979415596312555,
+        "bins": [
+          {
+            "bin": 5,
+            "n": 1256,
+            "predicted": 0.5875426602391141,
+            "observed": 0.6624203821656051
+          },
+          {
+            "bin": 6,
+            "n": 2289,
+            "predicted": 0.6213300089343576,
+            "observed": 0.6282219309742245
+          }
+        ]
+      },
+      "elapsed_seconds": 0.7819999999919673
+    },
+    "as": {
+      "data": {
+        "name": "as",
+        "bytes": 83201940,
+        "sha256": "f22e3fb7872c1784ce93b0f9ebabbe0cbcac4f896fd8b4a11667b9715d77dbdc",
+        "exclusions": {
+          "raw_rows": 525534,
+          "scaffolding_row": 76314,
+          "missing_identity_skill_or_binary_label_row": 16059,
+          "multi_skill_or_conflicting_event": 44974,
+          "rows_in_excluded_events": 97956,
+          "duplicate_rows_collapsed": 120780
+        }
+      },
+      "split": {
+        "train": {
+          "events": 134415,
+          "users": 2385,
+          "skills": 100
+        },
+        "validation": {
+          "events": 39938,
+          "users": 799,
+          "skills": 101
+        },
+        "test": {
+          "events": 40072,
+          "users": 819,
+          "skills": 93
+        }
+      },
+      "fit": {
+        "bkt": [
+          0.8,
+          0.08,
+          0.25,
+          0.2
+        ],
+        "bkt_training_log_loss": 0.5915584735054108,
+        "bkt_grid_size": 400,
+        "history_ridge": 10,
+        "history_validation_by_ridge": {
+          "0.1": 0.5620671744629704,
+          "1": 0.5618578470264193,
+          "10": 0.561654165880539,
+          "100": 0.5636072668330095
+        },
+        "history_shared_beta": [
+          0.25734014151772566,
+          0.5377584198807693,
+          -0.4270083419273621,
+          0.5286846841579335,
+          -0.5485998282370241
+        ],
+        "history_newton_iterations": 6
+      },
+      "validation": {
+        "global_mean": {
+          "n": 39938,
+          "users": 799,
+          "log_loss": 0.6428040126795567,
+          "user_macro_log_loss": 0.6689401276450324,
+          "brier": 0.22525298467485294,
+          "ece10": 0.0031752477460309514,
+          "bins": [
+            {
+              "bin": 6,
+              "n": 39938,
+              "predicted": 0.6605191307647099,
+              "observed": 0.657343883018679
+            }
+          ]
+        },
+        "skill_mean": {
+          "n": 39938,
+          "users": 799,
+          "log_loss": 0.6205488411593333,
+          "user_macro_log_loss": 0.6527174962857188,
+          "brier": 0.2153564988670398,
+          "ece10": 0.008745818743156553,
+          "bins": [
+            {
+              "bin": 1,
+              "n": 143,
+              "predicted": 0.16170604046519071,
+              "observed": 0.21678321678321677
+            },
+            {
+              "bin": 2,
+              "n": 46,
+              "predicted": 0.2853041518166329,
+              "observed": 0.45652173913043476
+            },
+            {
+              "bin": 3,
+              "n": 1030,
+              "predicted": 0.38429670494352075,
+              "observed": 0.39029126213592236
+            },
+            {
+              "bin": 4,
+              "n": 1031,
+              "predicted": 0.4596862954525479,
+              "observed": 0.4296799224054316
+            },
+            {
+              "bin": 5,
+              "n": 4055,
+              "predicted": 0.573308730633795,
+              "observed": 0.5563501849568434
+            },
+            {
+              "bin": 6,
+              "n": 22363,
+              "predicted": 0.6450477713586177,
+              "observed": 0.640880025041363
+            },
+            {
+              "bin": 7,
+              "n": 7036,
+              "predicted": 0.7610638483014759,
+              "observed": 0.748152359295054
+            },
+            {
+              "bin": 8,
+              "n": 4032,
+              "predicted": 0.8339035283215254,
+              "observed": 0.8251488095238095
+            },
+            {
+              "bin": 9,
+              "n": 202,
+              "predicted": 0.917391201782887,
+              "observed": 0.8762376237623762
+            }
+          ]
+        },
+        "bkt_default": {
+          "n": 39938,
+          "users": 799,
+          "log_loss": 0.6465591875953899,
+          "user_macro_log_loss": 0.6527648807885461,
+          "brier": 0.2238694363367449,
+          "ece10": 0.12830777759937068,
+          "bins": [
+            {
+              "bin": 2,
+              "n": 6678,
+              "predicted": 0.2841728940640067,
+              "observed": 0.3682240191674154
+            },
+            {
+              "bin": 3,
+              "n": 7951,
+              "predicted": 0.3405181291566732,
+              "observed": 0.5918752358193938
+            },
+            {
+              "bin": 4,
+              "n": 548,
+              "predicted": 0.46670982174526937,
+              "observed": 0.5875912408759124
+            },
+            {
+              "bin": 5,
+              "n": 3316,
+              "predicted": 0.5296689337579407,
+              "observed": 0.6583232810615199
+            },
+            {
+              "bin": 6,
+              "n": 3156,
+              "predicted": 0.6119363134365765,
+              "observed": 0.7566539923954373
+            },
+            {
+              "bin": 7,
+              "n": 2568,
+              "predicted": 0.7616530552100423,
+              "observed": 0.7390965732087228
+            },
+            {
+              "bin": 8,
+              "n": 15721,
+              "predicted": 0.8812421206877423,
+              "observed": 0.7822021499904587
+            }
+          ]
+        },
+        "bkt_fitted": {
+          "n": 39938,
+          "users": 799,
+          "log_loss": 0.5926974201497472,
+          "user_macro_log_loss": 0.6127158495259899,
+          "brier": 0.20217645728725478,
+          "ece10": 0.030013640887269488,
+          "bins": [
+            {
+              "bin": 3,
+              "n": 3436,
+              "predicted": 0.329170999225435,
+              "observed": 0.2628055878928987
+            },
+            {
+              "bin": 4,
+              "n": 2093,
+              "predicted": 0.435071986276131,
+              "observed": 0.46392737697085523
+            },
+            {
+              "bin": 5,
+              "n": 3702,
+              "predicted": 0.5575582644863863,
+              "observed": 0.5497028633171259
+            },
+            {
+              "bin": 6,
+              "n": 8698,
+              "predicted": 0.6855740594102775,
+              "observed": 0.6176132444240056
+            },
+            {
+              "bin": 7,
+              "n": 22009,
+              "predicted": 0.7843180080791459,
+              "observed": 0.7711390794674906
+            }
+          ]
+        },
+        "history_logistic": {
+          "n": 39938,
+          "users": 799,
+          "log_loss": 0.561654165880539,
+          "user_macro_log_loss": 0.5796967032722075,
+          "brier": 0.18980250502476473,
+          "ece10": 0.006474782971324185,
+          "bins": [
+            {
+              "bin": 0,
+              "n": 202,
+              "predicted": 0.07307418776044795,
+              "observed": 0.0891089108910891
+            },
+            {
+              "bin": 1,
+              "n": 716,
+              "predicted": 0.15607408586029392,
+              "observed": 0.11871508379888268
+            },
+            {
+              "bin": 2,
+              "n": 1215,
+              "predicted": 0.2532569102327738,
+              "observed": 0.22304526748971193
+            },
+            {
+              "bin": 3,
+              "n": 1897,
+              "predicted": 0.3530851346710555,
+              "observed": 0.34053769109119664
+            },
+            {
+              "bin": 4,
+              "n": 3202,
+              "predicted": 0.45522241264138846,
+              "observed": 0.4437851342910681
+            },
+            {
+              "bin": 5,
+              "n": 5423,
+              "predicted": 0.5535598979474808,
+              "observed": 0.5567029319564817
+            },
+            {
+              "bin": 6,
+              "n": 7866,
+              "predicted": 0.6534190209536122,
+              "observed": 0.65535214848716
+            },
+            {
+              "bin": 7,
+              "n": 9133,
+              "predicted": 0.7502177506710601,
+              "observed": 0.7417059016752436
+            },
+            {
+              "bin": 8,
+              "n": 8039,
+              "predicted": 0.8465976749328243,
+              "observed": 0.846747107849235
+            },
+            {
+              "bin": 9,
+              "n": 2245,
+              "predicted": 0.9252914692095017,
+              "observed": 0.9162583518930958
+            }
+          ]
+        }
+      },
+      "selected_on_validation": "history_logistic",
+      "test": {
+        "global_mean": {
+          "n": 40072,
+          "users": 819,
+          "log_loss": 0.6465427298706693,
+          "user_macro_log_loss": 0.6700571443926859,
+          "brier": 0.22705625383649514,
+          "ece10": 0.008792239169581273,
+          "bins": [
+            {
+              "bin": 6,
+              "n": 40072,
+              "predicted": 0.66051913076471,
+              "observed": 0.6517268915951288
+            }
+          ]
+        },
+        "skill_mean": {
+          "n": 40072,
+          "users": 819,
+          "log_loss": 0.6245409687003766,
+          "user_macro_log_loss": 0.6537492100804886,
+          "brier": 0.21733079356717533,
+          "ece10": 0.011099067922780032,
+          "bins": [
+            {
+              "bin": 1,
+              "n": 77,
+              "predicted": 0.15908867061943333,
+              "observed": 0.14285714285714285
+            },
+            {
+              "bin": 2,
+              "n": 24,
+              "predicted": 0.28296723034535065,
+              "observed": 0.4166666666666667
+            },
+            {
+              "bin": 3,
+              "n": 1297,
+              "predicted": 0.3861456501063536,
+              "observed": 0.3855050115651503
+            },
+            {
+              "bin": 4,
+              "n": 1081,
+              "predicted": 0.46411555335573146,
+              "observed": 0.4616096207215541
+            },
+            {
+              "bin": 5,
+              "n": 3937,
+              "predicted": 0.5732492848597333,
+              "observed": 0.5542291084582169
+            },
+            {
+              "bin": 6,
+              "n": 23063,
+              "predicted": 0.6440865189868704,
+              "observed": 0.6374712743355158
+            },
+            {
+              "bin": 7,
+              "n": 6715,
+              "predicted": 0.7605671460701857,
+              "observed": 0.7341772151898734
+            },
+            {
+              "bin": 8,
+              "n": 3724,
+              "predicted": 0.8347501716780886,
+              "observed": 0.8431793770139635
+            },
+            {
+              "bin": 9,
+              "n": 154,
+              "predicted": 0.9174360655344815,
+              "observed": 0.922077922077922
+            }
+          ]
+        },
+        "bkt_default": {
+          "n": 40072,
+          "users": 819,
+          "log_loss": 0.6372469460805954,
+          "user_macro_log_loss": 0.6541514027164411,
+          "brier": 0.21995149062598685,
+          "ece10": 0.12327551315719286,
+          "bins": [
+            {
+              "bin": 2,
+              "n": 7182,
+              "predicted": 0.2838952994775954,
+              "observed": 0.3454469507101086
+            },
+            {
+              "bin": 3,
+              "n": 7808,
+              "predicted": 0.340195765661236,
+              "observed": 0.585297131147541
+            },
+            {
+              "bin": 4,
+              "n": 596,
+              "predicted": 0.46722027953082446,
+              "observed": 0.5704697986577181
+            },
+            {
+              "bin": 5,
+              "n": 3219,
+              "predicted": 0.5281612553712438,
+              "observed": 0.6679092885989437
+            },
+            {
+              "bin": 6,
+              "n": 3020,
+              "predicted": 0.6117722214494836,
+              "observed": 0.7814569536423841
+            },
+            {
+              "bin": 7,
+              "n": 2586,
+              "predicted": 0.7615000706460814,
+              "observed": 0.7235112142304718
+            },
+            {
+              "bin": 8,
+              "n": 15661,
+              "predicted": 0.8815534280118212,
+              "observed": 0.7881999872294234
+            }
+          ]
+        },
+        "bkt_fitted": {
+          "n": 40072,
+          "users": 819,
+          "log_loss": 0.5857001775689582,
+          "user_macro_log_loss": 0.613949293246042,
+          "brier": 0.1990671621533074,
+          "ece10": 0.028256903754116144,
+          "bins": [
+            {
+              "bin": 3,
+              "n": 3966,
+              "predicted": 0.3280182835977962,
+              "observed": 0.24180534543620777
+            },
+            {
+              "bin": 4,
+              "n": 2163,
+              "predicted": 0.43535633726953116,
+              "observed": 0.4521497919556172
+            },
+            {
+              "bin": 5,
+              "n": 3677,
+              "predicted": 0.5567651378206977,
+              "observed": 0.5431057927658417
+            },
+            {
+              "bin": 6,
+              "n": 8615,
+              "predicted": 0.6848170661091894,
+              "observed": 0.6193847939640162
+            },
+            {
+              "bin": 7,
+              "n": 21651,
+              "predicted": 0.7845430444645839,
+              "observed": 0.778070296983973
+            }
+          ]
+        },
+        "history_logistic": {
+          "n": 40072,
+          "users": 819,
+          "log_loss": 0.5524281655872242,
+          "user_macro_log_loss": 0.5798815325926464,
+          "brier": 0.18583497975799826,
+          "ece10": 0.008525664520262504,
+          "bins": [
+            {
+              "bin": 0,
+              "n": 223,
+              "predicted": 0.07664194992753588,
+              "observed": 0.053811659192825115
+            },
+            {
+              "bin": 1,
+              "n": 958,
+              "predicted": 0.15361669980965284,
+              "observed": 0.12317327766179541
+            },
+            {
+              "bin": 2,
+              "n": 1375,
+              "predicted": 0.2544628275771778,
+              "observed": 0.2210909090909091
+            },
+            {
+              "bin": 3,
+              "n": 2289,
+              "predicted": 0.3512213135724557,
+              "observed": 0.3315858453473132
+            },
+            {
+              "bin": 4,
+              "n": 3471,
+              "predicted": 0.45483389331951873,
+              "observed": 0.45318352059925093
+            },
+            {
+              "bin": 5,
+              "n": 5718,
+              "predicted": 0.5524560067710187,
+              "observed": 0.546694648478489
+            },
+            {
+              "bin": 6,
+              "n": 7073,
+              "predicted": 0.6530132142164966,
+              "observed": 0.663791884631698
+            },
+            {
+              "bin": 7,
+              "n": 8337,
+              "predicted": 0.7518477286465254,
+              "observed": 0.7604653952261006
+            },
+            {
+              "bin": 8,
+              "n": 8153,
+              "predicted": 0.8473017981568431,
+              "observed": 0.8485220164356678
+            },
+            {
+              "bin": 9,
+              "n": 2475,
+              "predicted": 0.925595615572473,
+              "observed": 0.9175757575757576
+            }
+          ]
+        }
+      },
+      "test_groups": {
+        "first_student_event": {
+          "global_mean": {
+            "n": 819,
+            "users": 819,
+            "log_loss": 0.7194949844235224,
+            "user_macro_log_loss": 0.7194949844235224,
+            "brier": 0.26224280157007224,
+            "ece10": 0.11839458864016772,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 819,
+                "predicted": 0.6605191307647098,
+                "observed": 0.5421245421245421
+              }
+            ]
+          },
+          "skill_mean": {
+            "n": 819,
+            "users": 819,
+            "log_loss": 0.7059816961652461,
+            "user_macro_log_loss": 0.7059816961652461,
+            "brier": 0.25445766729764435,
+            "ece10": 0.14332583832229281,
+            "bins": [
+              {
+                "bin": 1,
+                "n": 1,
+                "predicted": 0.15116485231926372,
+                "observed": 1.0
+              },
+              {
+                "bin": 2,
+                "n": 2,
+                "predicted": 0.23903309187908606,
+                "observed": 0.0
+              },
+              {
+                "bin": 3,
+                "n": 10,
+                "predicted": 0.3953681605461913,
+                "observed": 0.3
+              },
+              {
+                "bin": 4,
+                "n": 16,
+                "predicted": 0.44328878239450487,
+                "observed": 0.3125
+              },
+              {
+                "bin": 5,
+                "n": 62,
+                "predicted": 0.5776138546974191,
+                "observed": 0.2903225806451613
+              },
+              {
+                "bin": 6,
+                "n": 413,
+                "predicted": 0.6371397737693235,
+                "observed": 0.48668280871670705
+              },
+              {
+                "bin": 7,
+                "n": 199,
+                "predicted": 0.7616280696278633,
+                "observed": 0.628140703517588
+              },
+              {
+                "bin": 8,
+                "n": 115,
+                "predicted": 0.8386238877236829,
+                "observed": 0.782608695652174
+              },
+              {
+                "bin": 9,
+                "n": 1,
+                "predicted": 0.9458603713939953,
+                "observed": 1.0
+              }
+            ]
+          },
+          "bkt_default": {
+            "n": 819,
+            "users": 819,
+            "log_loss": 0.7751035178690617,
+            "user_macro_log_loss": 0.7751035178690617,
+            "brier": 0.2890798534798535,
+            "ece10": 0.20212454212454206,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 819,
+                "predicted": 0.34,
+                "observed": 0.5421245421245421
+              }
+            ]
+          },
+          "bkt_fitted": {
+            "n": 819,
+            "users": 819,
+            "log_loss": 0.7374186722846569,
+            "user_macro_log_loss": 0.7374186722846569,
+            "brier": 0.27009267399267406,
+            "ece10": 0.14787545787545808,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 819,
+                "predicted": 0.6900000000000002,
+                "observed": 0.5421245421245421
+              }
+            ]
+          },
+          "history_logistic": {
+            "n": 819,
+            "users": 819,
+            "log_loss": 0.6694755275790675,
+            "user_macro_log_loss": 0.6694755275790675,
+            "brier": 0.23849855616124374,
+            "ece10": 0.05083029957068658,
+            "bins": [
+              {
+                "bin": 1,
+                "n": 1,
+                "predicted": 0.19388737523678168,
+                "observed": 1.0
+              },
+              {
+                "bin": 3,
+                "n": 4,
+                "predicted": 0.3561914183473066,
+                "observed": 0.5
+              },
+              {
+                "bin": 4,
+                "n": 198,
+                "predicted": 0.48017896464068627,
+                "observed": 0.4797979797979798
+              },
+              {
+                "bin": 5,
+                "n": 282,
+                "predicted": 0.5471215912846981,
+                "observed": 0.42907801418439717
+              },
+              {
+                "bin": 6,
+                "n": 221,
+                "predicted": 0.6606777129919313,
+                "observed": 0.6334841628959276
+              },
+              {
+                "bin": 7,
+                "n": 112,
+                "predicted": 0.743649830311079,
+                "observed": 0.75
+              },
+              {
+                "bin": 8,
+                "n": 1,
+                "predicted": 0.8360489204983995,
+                "observed": 1.0
+              }
+            ]
+          }
+        },
+        "seen_training_skill": {
+          "global_mean": {
+            "n": 40066,
+            "users": 818,
+            "log_loss": 0.6465774446221039,
+            "user_macro_log_loss": 0.6706133919484609,
+            "brier": 0.2270729975583431,
+            "ece10": 0.008844394080239404,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 40066,
+                "predicted": 0.66051913076471,
+                "observed": 0.6516747366844706
+              }
+            ]
+          },
+          "skill_mean": {
+            "n": 40066,
+            "users": 818,
+            "log_loss": 0.6245723886241014,
+            "user_macro_log_loss": 0.6541603239170648,
+            "brier": 0.2173460808730692,
+            "ece10": 0.011151568287751535,
+            "bins": [
+              {
+                "bin": 1,
+                "n": 77,
+                "predicted": 0.15908867061943333,
+                "observed": 0.14285714285714285
+              },
+              {
+                "bin": 2,
+                "n": 24,
+                "predicted": 0.28296723034535065,
+                "observed": 0.4166666666666667
+              },
+              {
+                "bin": 3,
+                "n": 1297,
+                "predicted": 0.3861456501063536,
+                "observed": 0.3855050115651503
+              },
+              {
+                "bin": 4,
+                "n": 1081,
+                "predicted": 0.46411555335573146,
+                "observed": 0.4616096207215541
+              },
+              {
+                "bin": 5,
+                "n": 3937,
+                "predicted": 0.5732492848597333,
+                "observed": 0.5542291084582169
+              },
+              {
+                "bin": 6,
+                "n": 23057,
+                "predicted": 0.6440822428160473,
+                "observed": 0.6373769354209133
+              },
+              {
+                "bin": 7,
+                "n": 6715,
+                "predicted": 0.7605671460701857,
+                "observed": 0.7341772151898734
+              },
+              {
+                "bin": 8,
+                "n": 3724,
+                "predicted": 0.8347501716780886,
+                "observed": 0.8431793770139635
+              },
+              {
+                "bin": 9,
+                "n": 154,
+                "predicted": 0.9174360655344815,
+                "observed": 0.922077922077922
+              }
+            ]
+          },
+          "bkt_default": {
+            "n": 40066,
+            "users": 818,
+            "log_loss": 0.637252896116113,
+            "user_macro_log_loss": 0.6543304071012018,
+            "brier": 0.21995306617889793,
+            "ece10": 0.12325064304307455,
+            "bins": [
+              {
+                "bin": 2,
+                "n": 7182,
+                "predicted": 0.2838952994775954,
+                "observed": 0.3454469507101086
+              },
+              {
+                "bin": 3,
+                "n": 7806,
+                "predicted": 0.3401958158189765,
+                "observed": 0.5851908788111709
+              },
+              {
+                "bin": 4,
+                "n": 596,
+                "predicted": 0.46722027953082446,
+                "observed": 0.5704697986577181
+              },
+              {
+                "bin": 5,
+                "n": 3219,
+                "predicted": 0.5281612553712438,
+                "observed": 0.6679092885989437
+              },
+              {
+                "bin": 6,
+                "n": 3018,
+                "predicted": 0.611777683881349,
+                "observed": 0.7813121272365805
+              },
+              {
+                "bin": 7,
+                "n": 2586,
+                "predicted": 0.7615000706460814,
+                "observed": 0.7235112142304718
+              },
+              {
+                "bin": 8,
+                "n": 15659,
+                "predicted": 0.8815623652978093,
+                "observed": 0.7881729356919344
+              }
+            ]
+          },
+          "bkt_fitted": {
+            "n": 40066,
+            "users": 818,
+            "log_loss": 0.5857440515039378,
+            "user_macro_log_loss": 0.6146928920590512,
+            "brier": 0.19908715661755635,
+            "ece10": 0.02829895863420719,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 3966,
+                "predicted": 0.3280182835977962,
+                "observed": 0.24180534543620777
+              },
+              {
+                "bin": 4,
+                "n": 2163,
+                "predicted": 0.43535633726953116,
+                "observed": 0.4521497919556172
+              },
+              {
+                "bin": 5,
+                "n": 3677,
+                "predicted": 0.5567651378206977,
+                "observed": 0.5431057927658417
+              },
+              {
+                "bin": 6,
+                "n": 8613,
+                "predicted": 0.6848158625949919,
+                "observed": 0.6192964123998607
+              },
+              {
+                "bin": 7,
+                "n": 21647,
+                "predicted": 0.7845445967157533,
+                "observed": 0.7780292881230656
+              }
+            ]
+          },
+          "history_logistic": {
+            "n": 40066,
+            "users": 818,
+            "log_loss": 0.5524533567734959,
+            "user_macro_log_loss": 0.5803688826795569,
+            "brier": 0.1858468634578856,
+            "ece10": 0.008523888878308718,
+            "bins": [
+              {
+                "bin": 0,
+                "n": 223,
+                "predicted": 0.07664194992753588,
+                "observed": 0.053811659192825115
+              },
+              {
+                "bin": 1,
+                "n": 958,
+                "predicted": 0.15361669980965284,
+                "observed": 0.12317327766179541
+              },
+              {
+                "bin": 2,
+                "n": 1375,
+                "predicted": 0.2544628275771778,
+                "observed": 0.2210909090909091
+              },
+              {
+                "bin": 3,
+                "n": 2289,
+                "predicted": 0.3512213135724557,
+                "observed": 0.3315858453473132
+              },
+              {
+                "bin": 4,
+                "n": 3471,
+                "predicted": 0.45483389331951873,
+                "observed": 0.45318352059925093
+              },
+              {
+                "bin": 5,
+                "n": 5716,
+                "predicted": 0.5524525681471671,
+                "observed": 0.5465360391882436
+              },
+              {
+                "bin": 6,
+                "n": 7072,
+                "predicted": 0.6530070662996892,
+                "observed": 0.6637443438914027
+              },
+              {
+                "bin": 7,
+                "n": 8335,
+                "predicted": 0.7518482869791454,
+                "observed": 0.7604079184163167
+              },
+              {
+                "bin": 8,
+                "n": 8152,
+                "predicted": 0.8473067741756244,
+                "observed": 0.8485034347399412
+              },
+              {
+                "bin": 9,
+                "n": 2475,
+                "predicted": 0.925595615572473,
+                "observed": 0.9175757575757576
+              }
+            ]
+          }
+        },
+        "unseen_training_skill": {
+          "global_mean": {
+            "n": 6,
+            "users": 2,
+            "log_loss": 0.4147291913745446,
+            "user_macro_log_loss": 0.4147291913745446,
+            "brier": 0.11524726057674818,
+            "ece10": 0.3394808692352901,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 6,
+                "predicted": 0.6605191307647099,
+                "observed": 1.0
+              }
+            ]
+          },
+          "skill_mean": {
+            "n": 6,
+            "users": 2,
+            "log_loss": 0.4147291913745446,
+            "user_macro_log_loss": 0.4147291913745446,
+            "brier": 0.11524726057674818,
+            "ece10": 0.3394808692352901,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 6,
+                "predicted": 0.6605191307647099,
+                "observed": 1.0
+              }
+            ]
+          },
+          "bkt_default": {
+            "n": 6,
+            "users": 2,
+            "log_loss": 0.5975145922389266,
+            "user_macro_log_loss": 0.5975145922389264,
+            "brier": 0.2094304734701441,
+            "ece10": 0.4149638802889576,
+            "bins": [
+              {
+                "bin": 3,
+                "n": 2,
+                "predicted": 0.3400000000000001,
+                "observed": 1.0
+              },
+              {
+                "bin": 6,
+                "n": 2,
+                "predicted": 0.6035294117647059,
+                "observed": 1.0
+              },
+              {
+                "bin": 8,
+                "n": 2,
+                "predicted": 0.8115789473684212,
+                "observed": 1.0
+              }
+            ]
+          },
+          "bkt_fitted": {
+            "n": 6,
+            "users": 2,
+            "log_loss": 0.292724664420399,
+            "user_macro_log_loss": 0.29272466442039907,
+            "brier": 0.06555079472027468,
+            "ece10": 0.25257156720038815,
+            "bins": [
+              {
+                "bin": 6,
+                "n": 2,
+                "predicted": 0.6900000000000002,
+                "observed": 1.0
+              },
+              {
+                "bin": 7,
+                "n": 4,
+                "predicted": 0.7761426491994177,
+                "observed": 1.0
+              }
+            ]
+          },
+          "history_logistic": {
+            "n": 6,
+            "users": 2,
+            "log_loss": 0.38420982072688464,
+            "user_macro_log_loss": 0.3842098207268846,
+            "brier": 0.10647959314348643,
+            "ece10": 0.31219374711461284,
+            "bins": [
+              {
+                "bin": 5,
+                "n": 2,
+                "predicted": 0.5622835937387581,
+                "observed": 1.0
+              },
+              {
+                "bin": 6,
+                "n": 1,
+                "predicted": 0.6964912818775615,
+                "observed": 1.0
+              },
+              {
+                "bin": 7,
+                "n": 2,
+                "predicted": 0.7495208774525551,
+                "observed": 1.0
+              },
+              {
+                "bin": 8,
+                "n": 1,
+                "predicted": 0.8067372930521346,
+                "observed": 1.0
+              }
+            ]
+          }
+        }
+      },
+      "paired_selected_minus_skill_mean": {
+        "unit": "student",
+        "users": 819,
+        "difference": -0.07386767748784219,
+        "ci95": [
+          -0.08743980094378836,
+          -0.060731458622800966
+        ],
+        "seed": 20260912,
+        "replicates": 1000
+      },
+      "shuffled_training_negative_control": {
+        "n": 40072,
+        "users": 819,
+        "log_loss": 0.6510293036770777,
+        "user_macro_log_loss": 0.6753022012041068,
+        "brier": 0.22905366153931037,
+        "ece10": 0.009019133361743604,
+        "bins": [
+          {
+            "bin": 5,
+            "n": 32,
+            "predicted": 0.5904858861813882,
+            "observed": 0.6875
+          },
+          {
+            "bin": 6,
+            "n": 39879,
+            "predicted": 0.6604575268667416,
+            "observed": 0.6521477469344767
+          },
+          {
+            "bin": 7,
+            "n": 161,
+            "predicted": 0.7076058789490831,
+            "observed": 0.5403726708074534
+          }
+        ]
+      },
+      "elapsed_seconds": 16.90700000000652
+    }
+  },
+  "cross_corpus_stress": {
+    "ct_to_as": {
+      "source_global_mean": {
+        "n": 40072,
+        "users": 819,
+        "log_loss": 0.6500864787045258,
+        "user_macro_log_loss": 0.665886161425219,
+        "brier": 0.22872167317028652,
+        "ece10": 0.04174593157909512,
+        "bins": [
+          {
+            "bin": 6,
+            "n": 40072,
+            "predicted": 0.6099809600160336,
+            "observed": 0.6517268915951288
+          }
+        ]
+      },
+      "source_bkt": {
+        "n": 40072,
+        "users": 819,
+        "log_loss": 0.5983591515419243,
+        "user_macro_log_loss": 0.6163221415034956,
+        "brier": 0.20486977141732307,
+        "ece10": 0.0467063646185899,
+        "bins": [
+          {
+            "bin": 4,
+            "n": 6984,
+            "predicted": 0.4649915239800493,
+            "observed": 0.3420675830469645
+          },
+          {
+            "bin": 5,
+            "n": 9013,
+            "predicted": 0.5384330736707559,
+            "observed": 0.5881504493509375
+          },
+          {
+            "bin": 6,
+            "n": 6188,
+            "predicted": 0.6457766592680159,
+            "observed": 0.7260827407886231
+          },
+          {
+            "bin": 7,
+            "n": 17887,
+            "predicted": 0.7751394923651548,
+            "observed": 0.7789456029518644
+          }
+        ]
+      },
+      "source_shared_history_unknown_skills": {
+        "n": 40072,
+        "users": 819,
+        "log_loss": 0.5902198356699977,
+        "user_macro_log_loss": 0.6014138474919959,
+        "brier": 0.20101403889333494,
+        "ece10": 0.030038675271590008,
+        "bins": [
+          {
+            "bin": 1,
+            "n": 166,
+            "predicted": 0.1744605741093469,
+            "observed": 0.024096385542168676
+          },
+          {
+            "bin": 2,
+            "n": 708,
+            "predicted": 0.2591637183707574,
+            "observed": 0.09463276836158192
+          },
+          {
+            "bin": 3,
+            "n": 1853,
+            "predicted": 0.35769664626645564,
+            "observed": 0.24123043712898004
+          },
+          {
+            "bin": 4,
+            "n": 4213,
+            "predicted": 0.45701818590017756,
+            "observed": 0.4590553050083076
+          },
+          {
+            "bin": 5,
+            "n": 6814,
+            "predicted": 0.5570614349548839,
+            "observed": 0.582917522747285
+          },
+          {
+            "bin": 6,
+            "n": 8140,
+            "predicted": 0.6517566749795054,
+            "observed": 0.6867321867321867
+          },
+          {
+            "bin": 7,
+            "n": 10041,
+            "predicted": 0.7510228429544863,
+            "observed": 0.7526142814460711
+          },
+          {
+            "bin": 8,
+            "n": 7446,
+            "predicted": 0.8426362080964457,
+            "observed": 0.797743755036261
+          },
+          {
+            "bin": 9,
+            "n": 691,
+            "predicted": 0.9142319420778982,
+            "observed": 0.8755426917510853
+          }
+        ]
+      },
+      "target_training_skill_mean_reference": {
+        "n": 40072,
+        "users": 819,
+        "log_loss": 0.6245409687003766,
+        "user_macro_log_loss": 0.6537492100804886,
+        "brier": 0.21733079356717533,
+        "ece10": 0.011099067922780032,
+        "bins": [
+          {
+            "bin": 1,
+            "n": 77,
+            "predicted": 0.15908867061943333,
+            "observed": 0.14285714285714285
+          },
+          {
+            "bin": 2,
+            "n": 24,
+            "predicted": 0.28296723034535065,
+            "observed": 0.4166666666666667
+          },
+          {
+            "bin": 3,
+            "n": 1297,
+            "predicted": 0.3861456501063536,
+            "observed": 0.3855050115651503
+          },
+          {
+            "bin": 4,
+            "n": 1081,
+            "predicted": 0.46411555335573146,
+            "observed": 0.4616096207215541
+          },
+          {
+            "bin": 5,
+            "n": 3937,
+            "predicted": 0.5732492848597333,
+            "observed": 0.5542291084582169
+          },
+          {
+            "bin": 6,
+            "n": 23063,
+            "predicted": 0.6440865189868704,
+            "observed": 0.6374712743355158
+          },
+          {
+            "bin": 7,
+            "n": 6715,
+            "predicted": 0.7605671460701857,
+            "observed": 0.7341772151898734
+          },
+          {
+            "bin": 8,
+            "n": 3724,
+            "predicted": 0.8347501716780886,
+            "observed": 0.8431793770139635
+          },
+          {
+            "bin": 9,
+            "n": 154,
+            "predicted": 0.9174360655344815,
+            "observed": 0.922077922077922
+          }
+        ]
+      }
+    },
+    "as_to_ct": {
+      "source_global_mean": {
+        "n": 3545,
+        "users": 123,
+        "log_loss": 0.6541229367410281,
+        "user_macro_log_loss": 0.6570438870024776,
+        "brier": 0.2307123616909965,
+        "ece10": 0.020180625828179588,
+        "bins": [
+          {
+            "bin": 6,
+            "n": 3545,
+            "predicted": 0.6605191307647099,
+            "observed": 0.6403385049365303
+          }
+        ]
+      },
+      "source_bkt": {
+        "n": 3545,
+        "users": 123,
+        "log_loss": 0.6343311384922535,
+        "user_macro_log_loss": 0.640016332942825,
+        "brier": 0.22188469710613953,
+        "ece10": 0.0563718606067119,
+        "bins": [
+          {
+            "bin": 3,
+            "n": 185,
+            "predicted": 0.339839558058787,
+            "observed": 0.43783783783783786
+          },
+          {
+            "bin": 4,
+            "n": 238,
+            "predicted": 0.4320923569310634,
+            "observed": 0.5
+          },
+          {
+            "bin": 5,
+            "n": 473,
+            "predicted": 0.5597281724231102,
+            "observed": 0.5158562367864693
+          },
+          {
+            "bin": 6,
+            "n": 992,
+            "predicted": 0.687590923495067,
+            "observed": 0.6038306451612904
+          },
+          {
+            "bin": 7,
+            "n": 1657,
+            "predicted": 0.777733810125543,
+            "observed": 0.7404948702474351
+          }
+        ]
+      },
+      "source_shared_history_unknown_skills": {
+        "n": 3545,
+        "users": 123,
+        "log_loss": 0.6260192053057706,
+        "user_macro_log_loss": 0.6291702213382884,
+        "brier": 0.21839272845364022,
+        "ece10": 0.039840310990773856,
+        "bins": [
+          {
+            "bin": 2,
+            "n": 28,
+            "predicted": 0.25835504730030695,
+            "observed": 0.35714285714285715
+          },
+          {
+            "bin": 3,
+            "n": 160,
+            "predicted": 0.3617681962111704,
+            "observed": 0.45625
+          },
+          {
+            "bin": 4,
+            "n": 387,
+            "predicted": 0.45783098628390895,
+            "observed": 0.4702842377260982
+          },
+          {
+            "bin": 5,
+            "n": 858,
+            "predicted": 0.5596672358342436,
+            "observed": 0.6060606060606061
+          },
+          {
+            "bin": 6,
+            "n": 825,
+            "predicted": 0.6522528386404779,
+            "observed": 0.6278787878787879
+          },
+          {
+            "bin": 7,
+            "n": 842,
+            "predicted": 0.7455067589228866,
+            "observed": 0.6935866983372921
+          },
+          {
+            "bin": 8,
+            "n": 417,
+            "predicted": 0.8385837784094045,
+            "observed": 0.8657074340527577
+          },
+          {
+            "bin": 9,
+            "n": 28,
+            "predicted": 0.9139281401214226,
+            "observed": 0.7857142857142857
+          }
+        ]
+      },
+      "target_training_skill_mean_reference": {
+        "n": 3545,
+        "users": 123,
+        "log_loss": 0.6120244503018829,
+        "user_macro_log_loss": 0.6148533201100473,
+        "brier": 0.2112176659009668,
+        "ece10": 0.045647680523478305,
+        "bins": [
+          {
+            "bin": 3,
+            "n": 308,
+            "predicted": 0.3379520817319235,
+            "observed": 0.32142857142857145
+          },
+          {
+            "bin": 4,
+            "n": 310,
+            "predicted": 0.4838567410327205,
+            "observed": 0.5193548387096775
+          },
+          {
+            "bin": 5,
+            "n": 1360,
+            "predicted": 0.5733539869102201,
+            "observed": 0.586764705882353
+          },
+          {
+            "bin": 6,
+            "n": 171,
+            "predicted": 0.6471538753766576,
+            "observed": 0.5614035087719298
+          },
+          {
+            "bin": 7,
+            "n": 1260,
+            "predicted": 0.7085827158437785,
+            "observed": 0.7928571428571428
+          },
+          {
+            "bin": 9,
+            "n": 136,
+            "predicted": 0.9091154961330394,
+            "observed": 0.8602941176470589
+          }
+        ]
+      }
+    }
+  },
+  "limitations": [
+    "CT test has been examined in earlier work; new analysis is exploratory.",
+    "AS label 0 combines first failure and help; not equivalent to independent local checks.",
+    "Single-skill, main-problem subset; not all student activity or all component types.",
+    "Test measures new users on these corpora; unknown-skill groups may be empty and are reported as such.",
+    "Skill intercepts always unknown in transfer stress; no cross-domain parameter refitting.",
+    "Matched distribution prediction is not causal policy improvement or enterprise reading validation.",
+    "No public parameters are deployed to WeKnora component mastery."
+  ]
+}

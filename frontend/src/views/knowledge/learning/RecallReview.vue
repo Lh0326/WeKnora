@@ -2,7 +2,7 @@
  <section class="recall" aria-label="个人间隔复习" :aria-busy="busy">
   <div class="recall-heading"><strong>间隔复习 <span>自愿加入</span></strong><button v-if="status?.active" :disabled="disabled||busy||!!error" @click="submit('pause')">暂停复习</button><button v-else :disabled="disabled||busy||!!error" @click="submit('enroll')">{{ status?'继续间隔复习':'加入间隔复习' }}</button></div>
   <p v-if="status">{{ recallSummary(status) }}</p>
-  <template v-if="!status?.active"><small>简单内容确认已会即可；需要长期记牢的再加入。</small></template>
+  <template v-if="!status?.active"><small>日常阅读会自动更新学习画像；需要长期记牢的内容可以加入复习。</small></template>
   <template v-else-if="stage==='idle'"><button class="recall-primary" :disabled="disabled||busy||!!error" @click="stage='recall'">{{ recallDue(status)?'开始回忆':'提前练习一次' }}</button></template>
   <div v-else class="recall-practice">
    <strong>用自己的话回忆「{{ title }}」</strong>
@@ -13,7 +13,7 @@
   </div>
   <p v-if="notice" role="status">{{ notice }}</p>
   <div v-if="error" role="alert"><p>{{ error }}</p><button v-if="!conflict" :disabled="busy" @click="submit(lastAction)">重试保存本次反馈</button> <button :disabled="busy" @click="reload">重新读取状态</button></div>
-  <details><summary>复习如何安排</summary><p>依据你主动提交的回忆难度调整 SM-2 间隔：首次回忆成功后约 1 天，第二次约 6 天，之后随难度调整，最长 365 天。忘记后约 10 分钟重学。提前成功练习不延长间隔，材料更新会重新起算。这是个人回忆反馈，验证目标与通过记录单独保留。</p></details>
+  <details><summary>复习如何安排</summary><p>FSRS 根据回忆成败、间隔和难度估计记忆稳定性，自动安排下一次复习，目标保持率为 90%，最长间隔 365 天。刚开始可能先安排短时复习；材料更新后重新起算。旧安排在下一次反馈时切换到 FSRS。阅读和“已经熟悉”不会冒充回忆成功，验证记录单独保留。</p></details>
  </section>
 </template>
 <script setup lang="ts">

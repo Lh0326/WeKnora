@@ -10,12 +10,13 @@
   <div ref="pathAnchor"><PathPanel :plan="plan" :busy="busy || actionBusy" @open="emit('open',$event)" @challenge="challenge" @known="markKnown" @skip="skipOnce" /></div>
   <button v-if="excluded.length" class="text-button" :disabled="busy" @click="excluded=[];refresh()">恢复本轮跳过的 {{ excluded.length }} 个知识点</button>
   <section v-if="modules.length" class="module-section" aria-label="模块学习覆盖">
-   <div class="workspace-heading"><h4>模块与盲区</h4><button v-if="moduleId!==null" class="text-button" :disabled="busy" @click="chooseModule(null)">回到全库</button></div>
-   <p class="hint">按待巩固和未掌握数量排序，点击模块集中学习。</p>
+   <div class="workspace-heading"><h4>概念主题与盲区</h4><button v-if="moduleId!==null" class="text-button" :disabled="busy" @click="chooseModule(null)">回到全库</button></div>
+   <p class="hint">主题用于查看相关知识与个人盲区；需要核对具体用法时，可从阅读页回查 Wiki 的来源材料。</p>
    <button v-for="group in modules.slice(0,showAllModules?modules.length:5)" :key="group.id" class="module-row" :class="{selected:moduleId===group.id}" :disabled="busy" @click="chooseModule(group.id)" @mouseenter="emit('highlight',group.id)" @mouseleave="emit('highlight',null)">
-    <span class="module-heading"><strong>{{ group.name }}</strong><small>{{ group.known }}/{{ group.total }} 已会（含自认）</small></span>
-    <span class="module-bar" role="img" :aria-label="`${group.name}：未开始 ${group.counts.unseen}，学习中 ${group.counts.learning}，自认已会 ${group.counts.self_known}，验证通过 ${group.counts.verified}，待巩固 ${group.counts.review}`"><i v-for="state in learningStatesInBar" :key="state" :style="{width:`${group.counts[state]/group.total*100}%`,background:nodeStateColors[state]}" /></span>
-    <span class="module-caption"><span>{{ group.counts.review ? `${group.counts.review} 待巩固 · ` : '' }}{{ group.counts.unseen }} 未开始 · {{ group.counts.learning }} 学习中</span><span>集中学习 →</span></span>
+    <span class="module-heading"><strong>{{ group.name }}</strong><small>{{ group.model?`${group.model.counts.familiar}/${group.total} 检查支持`:`${group.known}/${group.total} 已会（含自认）` }}</small></span>
+    <span v-if="group.model" class="module-bar" role="img" :aria-label="estimateLevels.map(s=>`${estimateLabels[s]} ${group.model!.counts[s]}`).join('，')"><i v-for="state in estimateLevels" :key="state" :style="{width:`${group.model.counts[state]/group.total*100}%`,background:estimateColors[state]}" /></span>
+    <span v-else class="module-bar" role="img" :aria-label="`${group.name}：未开始 ${group.counts.unseen}，学习中 ${group.counts.learning}，自认已会 ${group.counts.self_known}，验证通过 ${group.counts.verified}，待巩固 ${group.counts.review}`"><i v-for="state in learningStatesInBar" :key="state" :style="{width:`${group.counts[state]/group.total*100}%`,background:nodeStateColors[state]}" /></span>
+    <span class="module-caption"><span>{{ group.model?`${group.model.covered} 已接触 · ${group.model.counts.review} 建议巩固`:`${group.counts.unseen} 未开始 · ${group.counts.learning} 学习中` }}</span><span>集中学习 →</span></span>
    </button>
    <button v-if="modules.length>5" class="text-button" @click="showAllModules=!showAllModules">{{ showAllModules?'收起模块':`查看全部 ${modules.length} 个模块` }}</button>
   </section>
@@ -26,7 +27,7 @@
   </div>
   <t-drawer v-model:visible="settingsOpen" header="学习范围" size="480px" :footer="false" @close="cancelSettings">
    <button @click="cancelSettings">返回学习</button>
-   <p class="hint">按你的掌握记录、先修关系和可用时间规划。所有知识点均可学习，没有题库也可直接确认已会。</p>
+   <p class="hint">结合阅读进度、前置关系和可用时间规划。没有题库也能通过阅读自动推进；反馈用于调整推荐。</p>
    <p class="hint">学习模块、目标、深度、时长与记忆偏好会随账号保存；已有基础选项与临时跳过仅影响本轮。</p>
    <p v-if="preferenceNotice" class="hint" role="status">{{ preferenceNotice }}</p>
    <div class="controls">
@@ -77,6 +78,7 @@ import {computed,ref,watch,onMounted,onUnmounted,onActivated,onDeactivated,nextT
 import ObjectiveProgress from './ObjectiveProgress.vue'
 import LearningOverview from './LearningOverview.vue'
 import {groupLearningNodes} from './learningOverview'
+import {estimateLevels,estimateLabels,estimateColors} from './learningEstimates'
 import {LEARNING_UPDATED,notifyLearningUpdated,nodeStateColors} from './learningEvents'
 import PathPanel from './PathPanel.vue'
 import {learningSessionKey} from './learningSession'
@@ -134,7 +136,7 @@ async function refresh(persist=false){
   if(persist){try{const saved=await preferences.save({limit_to_folder:selectedModule!==null,folder_id:selectedModule||'',depth:request.depth,time_budget_minutes:request.time_budget_minutes,use_memory:request.use_memory,goal_objectives:request.goal_objectives});if(gen===generation&&saved){preferenceError.value='';preferenceNotice.value='学习范围已保存，下次打开此知识库时自动恢复。'}}catch(e){if(gen===generation)preferenceError.value=learningPreferenceError(e)}}
  }catch(e){if(gen===generation){sessionUpdate?.fail();plan.value=null;emit('plan',null);error.value=e instanceof Error&&e.message==='backend_version'?'后端尚未更新到支持知识点状态的版本，请重新构建并重启后端。':e instanceof Error&&e.message==='goals_unavailable'?'所选验证目标已变更，请在设置中清空或重新选择目标。':e instanceof Error&&e.message==='module_unavailable'?'所选模块已没有可学习内容，请回到全库重新选择。':'学习数据更新失败，请检查服务并重试。'+(view.value?' 当前仍显示上次读取的记录。':'')}}finally{if(gen===generation)busy.value=false}
 }
-async function markKnown(slug:string){if(actionBusy.value)return;const kb=props.kbId;actionBusy.value=true;try{await setNodeState(kb,slug,'known');if(kb!==props.kbId)return;await refresh();notice.value='已确认学会，知识点已点亮，接下来优先学习其他内容。';notifyLearningUpdated(kb,slug)}catch{error.value='保存失败，尚未标记已会，请重试。'}finally{actionBusy.value=false}}
+async function markKnown(slug:string){if(actionBusy.value)return;const kb=props.kbId;actionBusy.value=true;try{await setNodeState(kb,slug,'known');if(kb!==props.kbId)return;await refresh();notice.value='已保存纠偏，熟悉程度与后续建议已重新估计。';notifyLearningUpdated(kb,slug)}catch{error.value='保存失败，纠偏尚未生效，请重试。'}finally{actionBusy.value=false}}
 function skipOnce(slug:string){excluded.value=[...excluded.value,slug];refresh()}
 let active=true
 // Wake once at the nearest future due time; do not poll the whole KB.

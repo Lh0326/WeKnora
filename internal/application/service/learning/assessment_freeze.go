@@ -56,6 +56,13 @@ func (s *Service) FreezeAssessment(ctx context.Context, kbID string) (*interface
 			}
 		}
 		out = &interfaces.AssessmentFreeze{SnapshotID: uuid.NewString(), KnowledgeBaseID: kbID, PolicyVersion: types.ObjectiveProjectionVersion, GoalStatesBefore: map[string]string{}, ObjectiveVersions: map[string]string{}, EvidenceFamiliesBefore: []string{}}
+		out.LearningModelVersion = NodeEstimateVersion
+		out.NodeEstimates = map[string]*interfaces.LearningEstimate{}
+		for _, node := range view.Nodes {
+			if node.Estimate != nil {
+				out.NodeEstimates[node.Slug] = node.Estimate
+			}
+		}
 		for _, o := range view.Entries {
 			if o.ObjectiveStatus == types.LearningObjectiveStatusPublished && live[o.Slug] {
 				out.GoalStatesBefore[o.ObjectiveID] = o.State

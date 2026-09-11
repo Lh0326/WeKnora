@@ -11,6 +11,9 @@ import (
 // so that a later constants change can never rewrite history: replaying the
 // events must always reproduce the state that was visible at the time.
 const (
+	// Original-document exposure, scoped to a versioned source occurrence.
+	// It counts as human activity but never as concept mastery evidence.
+	LearningEventSourceRead = "source_read"
 	LearningEventNodeRead   = "node_read"
 	LearningEventNodeKnown  = "node_known"
 	LearningEventNodeReview = "node_review"
@@ -761,8 +764,8 @@ func (LearningTaskAttempt) TableName() string { return "learning_task_attempts" 
 // HumanLearningEventTypes is the explicit activity vocabulary. Background
 // projections and agent traces never count as human recency, streak or targets.
 func HumanLearningEventTypes() []string {
-	return []string{LearningEventReviewAgain, LearningEventReviewHard, LearningEventReviewGood, LearningEventReviewEasy, LearningEventNodeRead, LearningEventNodeKnown, LearningEventNodeReview, LearningEventAnswerCite, LearningEventCrossRef, LearningEventReAsk,
-		LearningEventWikiToolRead, LearningEventWikiDeepRead, LearningEventQuizCorrect,
+	return []string{LearningEventComponent, LearningEventReviewAgain, LearningEventReviewHard, LearningEventReviewGood, LearningEventReviewEasy, LearningEventNodeRead, LearningEventNodeKnown, LearningEventNodeReview, LearningEventAnswerCite, LearningEventCrossRef, LearningEventReAsk,
+		LearningEventSourceRead, LearningEventWikiToolRead, LearningEventWikiDeepRead, LearningEventQuizCorrect,
 		LearningEventQuizWrong, LearningEventQuizUnsure, LearningEventSelfAssessUp,
 		LearningEventSelfAssessDownAll, LearningEventSelfAssessDownDocGap,
 		LearningEventSelfAssessDownDocUpdated, LearningEventSelfAssessDownQuizEasy}

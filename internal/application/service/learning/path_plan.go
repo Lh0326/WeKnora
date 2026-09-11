@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
 )
 
 // Stage 3: cold-start and short-path guidance (01 §7). The recommendation
@@ -20,7 +21,7 @@ import (
 // never alter it or invent mastery claims.
 
 // PathPolicyVersion identifies this decision rule set; replays record it.
-const PathPolicyVersion = "path-plan-v6"
+const PathPolicyVersion = "path-plan-v8-evidence"
 
 // Edge relation layers (01 §6.3): only REVIEWED strict prerequisites
 // constrain default eligibility; suggested and related edges never gate.
@@ -96,6 +97,9 @@ type PathPlan struct {
 
 // planInput is everything the pure planner needs.
 type planInput struct {
+	Estimates          map[string]*interfaces.LearningEstimate
+	AsOf               time.Time
+	ExplorationSeed    string
 	RecallDue          map[string]PathReason
 	RecallDueAt        map[string]time.Time
 	Relevance          map[string]pathRelevance
@@ -180,6 +184,9 @@ func planShortPath(in planInput) PathPlan {
 	}
 	lessObj := func(a, b string) bool {
 		oa, ob := in.Objectives[a], in.Objectives[b]
+		if in.Estimates != nil && modelReadValue(in, oa.Slug) != modelReadValue(in, ob.Slug) {
+			return modelReadValue(in, oa.Slug) > modelReadValue(in, ob.Slug)
+		}
 		if in.Relevance[oa.Slug].Priority != in.Relevance[ob.Slug].Priority {
 			return in.Relevance[oa.Slug].Priority > in.Relevance[ob.Slug].Priority
 		}
@@ -334,7 +341,7 @@ func planShortPath(in planInput) PathPlan {
 	// large published objective bank would otherwise consume every slot.
 	requestedReviews := []string{}
 	for slug, needed := range in.NodeReview {
-		if needed && in.Pages[slug] != "" && !in.Skips[slug] && !in.ExcludedSlugs[slug] && (len(in.PageScope) == 0 || in.PageScope[slug]) {
+		if needed && in.RecallDue[slug].Code == "" && in.Pages[slug] != "" && !in.Skips[slug] && !in.ExcludedSlugs[slug] && (len(in.PageScope) == 0 || in.PageScope[slug]) {
 			requestedReviews = append(requestedReviews, slug)
 		}
 	}
@@ -379,6 +386,16 @@ func planShortPath(in planInput) PathPlan {
 			break
 		}
 	}
+	if len(goals) == 0 && len(plan.Steps) == 0 && in.Estimates != nil {
+		if id := modelCheckObjective(in, preds, budget); id != "" {
+			o := in.Objectives[id]
+			if step := add(o, ActionVerify, "plan_reason_model_check", nil, "default"); step != "" {
+				last := &plan.Steps[len(plan.Steps)-1]
+				last.Reason = PathReason{Code: "plan_reason_model_check", Detail: "这一页已阅读；用一道未见过的题补充这个目标的检查证据。", Evidence: []string{id, "fewest_independent_observations_first"}}
+				last.DoneWhen = "回答一道未见过的题；也可直接继续阅读，不要求一次完成目标验证。"
+			}
+		}
+	}
 	for _, id := range goals {
 		o := in.Objectives[id]
 		if reviewCount == 0 && in.ReviewDue[id] && !in.Skips[o.Slug] && !in.ExcludedSlugs[o.Slug] && (in.HasVerification == nil || in.HasVerification[id]) {
@@ -393,6 +410,9 @@ func planShortPath(in planInput) PathPlan {
 	if in.IncludeExploration {
 		candidates := []string{}
 		for slug := range in.Pages {
+			if e := in.Estimates[slug]; e != nil && e.ReadPriority <= 0 && !in.NodeReview[slug] {
+				continue
+			}
 			if (len(in.PageScope) == 0 || in.PageScope[slug]) && !in.Skips[slug] && !in.ExcludedSlugs[slug] && (!in.NodeVerified[slug] || in.NodeReview[slug]) {
 				candidates = append(candidates, slug)
 			}
@@ -406,9 +426,15 @@ func planShortPath(in planInput) PathPlan {
 			if in.NodeReview[a] != in.NodeReview[b] {
 				return in.NodeReview[a]
 			}
-			// Return to the just-read page for an explicit completion choice,
-			// while fresh pages remain available through "换一个".
-			if len(in.Recent) > 0 && (a == in.Recent[0].Slug) != (b == in.Recent[0].Slug) {
+			// Model estimates drive ordinary reading. Legacy snapshots without
+			// estimates retain the previous explicit-confirmation fallback.
+			if in.Estimates != nil {
+				av, bv := modelReadValue(in, a), modelReadValue(in, b)
+				if av != bv {
+					return av > bv
+				}
+			}
+			if in.Estimates == nil && len(in.Recent) > 0 && (a == in.Recent[0].Slug) != (b == in.Recent[0].Slug) {
 				return a == in.Recent[0].Slug
 			}
 			ac, bc := recentFolder != "" && in.PageFolders[a] == recentFolder, recentFolder != "" && in.PageFolders[b] == recentFolder
@@ -423,9 +449,13 @@ func planShortPath(in planInput) PathPlan {
 			}
 			return a < b
 		})
+		explorationSlug := promoteModelExploration(in, candidates)
 		visitingPages := map[string]bool{}
 		var explore func(string) (string, bool)
 		explore = func(slug string) (string, bool) {
+			if e := in.Estimates[slug]; e != nil && e.ReadPriority <= 0 && !in.NodeReview[slug] {
+				return "", true
+			}
 			if in.Skips[slug] || (in.NodeVerified[slug] && !in.NodeReview[slug]) {
 				return "", true
 			}
@@ -464,10 +494,21 @@ func planShortPath(in planInput) PathPlan {
 				reason = "plan_reason_continue_module"
 			}
 			action := ActionRead
-			if in.Exposure[slug] && !in.NodeReview[slug] {
+			if in.Estimates == nil && in.Exposure[slug] && !in.NodeReview[slug] {
 				action, reason = ActionConfirm, "plan_reason_confirm_understanding"
 			}
 			id := add(types.LearningObjective{Slug: slug}, action, reason, deps, "unconfirmed")
+			if id != "" && in.Estimates[slug] != nil && !in.NodeReview[slug] {
+				for i := range plan.Steps {
+					if plan.Steps[i].ID == id {
+						plan.Steps[i].Reason = modelReadReason(in, slug)
+						if slug == explorationSlug {
+							plan.Steps[i].Reason = PathReason{Code: "plan_reason_model_exploration", Detail: "本轮留出一个未接触知识点，帮助发现常用主题之外的空白；仍遵守前置关系与时间预算。", Evidence: []string{PathPolicyVersion}}
+						}
+						plan.Steps[i].DoneWhen = "有效阅读会自动更新阅读进度与下一步；熟悉或困难反馈仅用于调整推荐。"
+					}
+				}
+			}
 			return id, id != ""
 		}
 		for _, slug := range candidates {
@@ -577,7 +618,7 @@ func doneWhenOf(action string) string {
 	case ActionOverview:
 		return "浏览领域地图，了解模块划分"
 	case ActionRead:
-		return "阅读 5 秒自动点亮为已读；理解后可直接确认学会。"
+		return "阅读会自动记录并更新建议；可以按需反馈已经熟悉或仍有困难。"
 	case ActionConfirm:
 		return "确认已会后点亮为绿色并移出待学；有疑问可回看材料或标记需要再学。"
 	case ActionRecall:

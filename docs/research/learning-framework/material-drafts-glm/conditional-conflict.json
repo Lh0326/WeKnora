@@ -1,0 +1,353 @@
+{
+  "source_mode": "offline_evaluation_only",
+  "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+  "generated_at": "2026-09-11T22:34:22.8345132Z",
+  "result": {
+    "policy_version": "kc-source-draft-v1",
+    "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+    "status": "review_required",
+    "review_required": true,
+    "candidates": [
+      {
+        "material": {
+          "key": "normal-release-order",
+          "title": "按测试、批准、部署的顺序执行计划内常规发布",
+          "topic": "发布流程",
+          "condition": "计划内的常规发布；明确不适用于生产故障中的紧急修复",
+          "goal": "在计划内常规发布中，先完成测试并记录结果，再由负责人核对影响范围并批准，最后由发布人员部署；测试没有通过或尚未批准时不部署",
+          "explanation": "常规发布的顺序是固定的三步：完成测试并记录结果、负责人核对影响范围并批准、发布人员部署。该顺序带有否定条件：测试没有通过或尚未批准时，不部署。即使开发人员主观认为改动很小，也不能跳过测试或批准步骤。此流程仅覆盖计划内常规发布，其前提与紧急修复流程不同，不能混用。",
+          "example": "周五计划发布一个新页面，即使开发人员认为改动很小，也要先通过测试，再取得批准，才进入部署。（来源给出的例子）",
+          "minutes": 4,
+          "sources": [
+            {
+              "slug": "workflow/normal",
+              "quote": "本文件仅适用于计划内的常规发布，不适用于生产故障中的紧急修复。",
+              "role": "限定适用条件",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            },
+            {
+              "slug": "workflow/normal",
+              "quote": "常规发布的顺序为：先完成测试并记录结果，再由负责人核对影响范围并批准，最后由发布人员部署。",
+              "role": "支撑流程顺序目标",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            },
+            {
+              "slug": "workflow/normal",
+              "quote": "测试没有通过或尚未批准时，不部署。",
+              "role": "支撑禁止部署的条件",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            },
+            {
+              "slug": "workflow/normal",
+              "quote": "例如周五计划发布一个新页面，即使开发人员认为改动很小，也要先通过测试，再取得批准，才进入部署。",
+              "role": "提供完整例子",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "choose-release-flow-by-condition",
+            "normal-release-post-approval-change"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "normal-release-post-approval-change",
+          "title": "处理常规发布批准后、部署前的代码修改",
+          "topic": "发布流程",
+          "condition": "常规发布已经获得批准，但部署前又修改了代码",
+          "goal": "对修改后的代码重新测试，并提交变更后的影响范围",
+          "explanation": "批准是基于当时测试结果和影响范围作出的。如果在部署前代码又发生了修改，原批准所依据的信息已失效，因此必须重新测试并提交变更后的影响范围，而不能直接沿用原批准进入部署。此规则只针对常规发布中已批准但部署前发生变更的情形。",
+          "example": "假设某常规发布已获负责人批准，部署前开发人员修复了页面上的一个错别字：依据本规则，仍需对修改后的代码重新测试，并提交变更后的影响范围（基于来源规则的假设例子）。",
+          "minutes": 3,
+          "sources": [
+            {
+              "slug": "workflow/normal",
+              "quote": "已经批准但部署前又修改了代码，应重新测试并提交变更后的影响范围。",
+              "role": "支撑重新测试与提交影响范围的目标",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "normal-release-order"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "emergency-fix-deploy-then-review",
+          "title": "按紧急修复流程完成最低必要测试后部署、再补齐正式复核",
+          "topic": "发布流程",
+          "condition": "已宣布进入生产故障响应的紧急修复；不能用于普通需求赶进度",
+          "goal": "由值班负责人确认修复范围，修复者完成最低必要测试后部署，部署后补齐正式复核记录",
+          "explanation": "紧急修复是与常规发布顺序不同的一条流程：值班负责人先确认修复范围，修复者完成最低必要测试后即可以部署，正式复核记录在部署之后补齐。这个例外有严格前提，即已宣布进入生产故障响应的紧急修复，不能用于普通需求赶进度。注意：材料没有说明最低必要测试的具体清单，执行时无法从本材料得知应包含哪些测试项。",
+          "example": "支付服务正在发生生产故障，值班负责人确认修复范围后，修复者完成必要测试并部署，再补齐复核。（来源给出的例子）",
+          "minutes": 4,
+          "sources": [
+            {
+              "slug": "workflow/emergency",
+              "quote": "本文件仅适用于已宣布进入生产故障响应的紧急修复。",
+              "role": "限定适用条件",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "值班负责人先确认修复范围，修复者完成最低必要测试后可以部署；部署后再补齐正式复核记录。",
+              "role": "支撑紧急修复流程顺序目标",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "这个例外不能用于普通需求赶进度。",
+              "role": "支撑否定条件",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "例如支付服务正在发生生产故障，值班负责人确认修复范围后，修复者完成必要测试并部署，再补齐复核。",
+              "role": "提供完整例子",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "材料没有说明最低必要测试的具体清单。",
+              "role": "说明测试清单信息缺失",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "choose-release-flow-by-condition",
+            "normal-release-order"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "choose-release-flow-by-condition",
+          "title": "按前提区分常规发布与紧急修复流程",
+          "topic": "发布流程",
+          "condition": "需要判断某次发布应适用常规发布流程还是紧急修复流程时",
+          "goal": "依据是否处于已宣布的生产故障响应来选择流程：计划内常规发布要求部署前正式批准，紧急修复要求部署后补齐正式复核；不将两种顺序合并为一条无条件的发布顺序",
+          "explanation": "两份材料分别规定了顺序相反的两种流程，各有明确前提：常规发布适用于计划内发布、不适用于生产故障中的紧急修复；紧急修复仅适用于已宣布进入生产故障响应的情形，不适用于普通需求赶进度或计划上线的新功能。因此判断的关键是发布所处的前提，而不是改动大小或时间压力。两种顺序不能合并成一条无条件的发布顺序。",
+          "example": "若只是下周计划上线的新功能，则不适用紧急流程，应按常规发布顺序处理（来源给出的反例）。",
+          "minutes": 4,
+          "sources": [
+            {
+              "slug": "workflow/emergency",
+              "quote": "常规发布要求部署前正式批准，本流程要求部署后补齐正式复核，两种顺序各有明确前提，不能合并成一条无条件的发布顺序。",
+              "role": "支撑两种顺序前提不同、不可合并的目标",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "若只是下周计划上线的新功能，则不适用紧急流程。",
+              "role": "提供不适用紧急流程的例子",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            },
+            {
+              "slug": "workflow/normal",
+              "quote": "本文件仅适用于计划内的常规发布，不适用于生产故障中的紧急修复。",
+              "role": "支撑常规发布的适用边界",
+              "hash": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+            },
+            {
+              "slug": "workflow/emergency",
+              "quote": "这个例外不能用于普通需求赶进度。",
+              "role": "支撑紧急例外的限制条件",
+              "hash": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "emergency-fix-deploy-then-review",
+            "normal-release-order"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      }
+    ],
+    "rejected": [],
+    "source_hashes": {
+      "workflow/emergency": "efdd53944ac49f8835a5ba415e17d99e54b68925d02eb9d46fe1639567d2e9be",
+      "workflow/normal": "616481069c1ec39c31425bd5ee5a1d3bbc1108b479938a1d40b3eb9633d2ec96"
+    },
+    "model_notes": [
+      "workflow/emergency 未说明最低必要测试的具体清单，因此未生成关于测试内容清单的目标。",
+      "workflow/normal 未规定任何具体审批时限，且明确不能据此判断紧急修复的处理顺序，故未生成审批时限相关目标。",
+      "两份材料分别给出部署前批准（常规）与部署后补复核（紧急）两种顺序，前提不同，按条件分列为不同候选，未合并为一条无条件规则，也未替作者消除差异。"
+    ],
+    "model_proposals": [
+      {
+        "key": "normal-release-order",
+        "title": "按测试、批准、部署的顺序执行计划内常规发布",
+        "topic": "发布流程",
+        "condition": "计划内的常规发布；明确不适用于生产故障中的紧急修复",
+        "goal": "在计划内常规发布中，先完成测试并记录结果，再由负责人核对影响范围并批准，最后由发布人员部署；测试没有通过或尚未批准时不部署",
+        "explanation": "常规发布的顺序是固定的三步：完成测试并记录结果、负责人核对影响范围并批准、发布人员部署。该顺序带有否定条件：测试没有通过或尚未批准时，不部署。即使开发人员主观认为改动很小，也不能跳过测试或批准步骤。此流程仅覆盖计划内常规发布，其前提与紧急修复流程不同，不能混用。",
+        "example": "周五计划发布一个新页面，即使开发人员认为改动很小，也要先通过测试，再取得批准，才进入部署。（来源给出的例子）",
+        "minutes": 4,
+        "sources": [
+          {
+            "slug": "workflow/normal",
+            "quote": "本文件仅适用于计划内的常规发布，不适用于生产故障中的紧急修复。",
+            "role": "限定适用条件"
+          },
+          {
+            "slug": "workflow/normal",
+            "quote": "常规发布的顺序为：先完成测试并记录结果，再由负责人核对影响范围并批准，最后由发布人员部署。",
+            "role": "支撑流程顺序目标"
+          },
+          {
+            "slug": "workflow/normal",
+            "quote": "测试没有通过或尚未批准时，不部署。",
+            "role": "支撑禁止部署的条件"
+          },
+          {
+            "slug": "workflow/normal",
+            "quote": "例如周五计划发布一个新页面，即使开发人员认为改动很小，也要先通过测试，再取得批准，才进入部署。",
+            "role": "提供完整例子"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "normal-release-post-approval-change",
+          "choose-release-flow-by-condition"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "normal-release-post-approval-change",
+        "title": "处理常规发布批准后、部署前的代码修改",
+        "topic": "发布流程",
+        "condition": "常规发布已经获得批准，但部署前又修改了代码",
+        "goal": "对修改后的代码重新测试，并提交变更后的影响范围",
+        "explanation": "批准是基于当时测试结果和影响范围作出的。如果在部署前代码又发生了修改，原批准所依据的信息已失效，因此必须重新测试并提交变更后的影响范围，而不能直接沿用原批准进入部署。此规则只针对常规发布中已批准但部署前发生变更的情形。",
+        "example": "假设某常规发布已获负责人批准，部署前开发人员修复了页面上的一个错别字：依据本规则，仍需对修改后的代码重新测试，并提交变更后的影响范围（基于来源规则的假设例子）。",
+        "minutes": 3,
+        "sources": [
+          {
+            "slug": "workflow/normal",
+            "quote": "已经批准但部署前又修改了代码，应重新测试并提交变更后的影响范围。",
+            "role": "支撑重新测试与提交影响范围的目标"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "normal-release-order"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "emergency-fix-deploy-then-review",
+        "title": "按紧急修复流程完成最低必要测试后部署、再补齐正式复核",
+        "topic": "发布流程",
+        "condition": "已宣布进入生产故障响应的紧急修复；不能用于普通需求赶进度",
+        "goal": "由值班负责人确认修复范围，修复者完成最低必要测试后部署，部署后补齐正式复核记录",
+        "explanation": "紧急修复是与常规发布顺序不同的一条流程：值班负责人先确认修复范围，修复者完成最低必要测试后即可以部署，正式复核记录在部署之后补齐。这个例外有严格前提，即已宣布进入生产故障响应的紧急修复，不能用于普通需求赶进度。注意：材料没有说明最低必要测试的具体清单，执行时无法从本材料得知应包含哪些测试项。",
+        "example": "支付服务正在发生生产故障，值班负责人确认修复范围后，修复者完成必要测试并部署，再补齐复核。（来源给出的例子）",
+        "minutes": 4,
+        "sources": [
+          {
+            "slug": "workflow/emergency",
+            "quote": "本文件仅适用于已宣布进入生产故障响应的紧急修复。",
+            "role": "限定适用条件"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "值班负责人先确认修复范围，修复者完成最低必要测试后可以部署；部署后再补齐正式复核记录。",
+            "role": "支撑紧急修复流程顺序目标"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "这个例外不能用于普通需求赶进度。",
+            "role": "支撑否定条件"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "例如支付服务正在发生生产故障，值班负责人确认修复范围后，修复者完成必要测试并部署，再补齐复核。",
+            "role": "提供完整例子"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "材料没有说明最低必要测试的具体清单。",
+            "role": "说明测试清单信息缺失"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "normal-release-order",
+          "choose-release-flow-by-condition"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "choose-release-flow-by-condition",
+        "title": "按前提区分常规发布与紧急修复流程",
+        "topic": "发布流程",
+        "condition": "需要判断某次发布应适用常规发布流程还是紧急修复流程时",
+        "goal": "依据是否处于已宣布的生产故障响应来选择流程：计划内常规发布要求部署前正式批准，紧急修复要求部署后补齐正式复核；不将两种顺序合并为一条无条件的发布顺序",
+        "explanation": "两份材料分别规定了顺序相反的两种流程，各有明确前提：常规发布适用于计划内发布、不适用于生产故障中的紧急修复；紧急修复仅适用于已宣布进入生产故障响应的情形，不适用于普通需求赶进度或计划上线的新功能。因此判断的关键是发布所处的前提，而不是改动大小或时间压力。两种顺序不能合并成一条无条件的发布顺序。",
+        "example": "若只是下周计划上线的新功能，则不适用紧急流程，应按常规发布顺序处理（来源给出的反例）。",
+        "minutes": 4,
+        "sources": [
+          {
+            "slug": "workflow/emergency",
+            "quote": "常规发布要求部署前正式批准，本流程要求部署后补齐正式复核，两种顺序各有明确前提，不能合并成一条无条件的发布顺序。",
+            "role": "支撑两种顺序前提不同、不可合并的目标"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "若只是下周计划上线的新功能，则不适用紧急流程。",
+            "role": "提供不适用紧急流程的例子"
+          },
+          {
+            "slug": "workflow/normal",
+            "quote": "本文件仅适用于计划内的常规发布，不适用于生产故障中的紧急修复。",
+            "role": "支撑常规发布的适用边界"
+          },
+          {
+            "slug": "workflow/emergency",
+            "quote": "这个例外不能用于普通需求赶进度。",
+            "role": "支撑紧急例外的限制条件"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "normal-release-order",
+          "emergency-fix-deploy-then-review"
+        ],
+        "checks": null,
+        "provenance": ""
+      }
+    ]
+  }
+}

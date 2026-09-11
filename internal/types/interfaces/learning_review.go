@@ -25,8 +25,8 @@ type LearningReviewStatus struct {
 	Due            bool      `json:"due"`
 	DueAt          time.Time `json:"due_at"`
 	IntervalDays   int       `json:"interval_days"`
-	Repetitions    int       `json:"repetitions"`
-	Ease           float64   `json:"ease"`
+	Repetitions    int       `json:"repetitions"` // FSRS: actual current-content recalls; legacy: SM-2 repetitions.
+	Ease           float64   `json:"ease"`        // Legacy SM-2 only; zero means not applicable under FSRS.
 	LastRating     string    `json:"last_rating,omitempty"`
 	EarlyPractice  bool      `json:"early_practice"`
 }

@@ -939,42 +939,6 @@ func (r *learningRepository) UpsertTopicMap(ctx context.Context, m *types.Memory
 	}).Create(m).Error
 }
 
-// ListMasteryByKB is the knowledge-health aggregate's one cross-subject
-// read: every person's folded rows of one KB, ordered (subject, slug) so
-// downstream aggregation is input-order independent. Unlike the scoped()
-// queries it carries no subject predicate — the route above it is
-// owner/admin gated and no handler parameter selects a subject at all,
-// which keeps this the same containment story told from the other end.
-func (r *learningRepository) ListMasteryByKB(
-	ctx context.Context, tenantID uint64, kbID string,
-) ([]types.MasteryState, error) {
-	var states []types.MasteryState
-	err := r.database(ctx).
-		Where("tenant_id = ? AND knowledge_base_id = ?", tenantID, kbID).
-		Order("subject_id ASC, slug ASC").
-		Find(&states).Error
-	return states, err
-}
-
-// ListMaintenanceMarks feeds the health view's content-work queue: the
-// KB's self-assessment events inside the visibility window, newest first.
-// Tenant and KB predicates are explicit like every query here; the
-// event-type IN-list is the maintenance vocabulary, not a filter a caller
-// controls.
-func (r *learningRepository) ListMaintenanceMarks(
-	ctx context.Context, tenantID uint64, kbID string, since time.Time,
-) ([]types.LearningEvent, error) {
-	var events []types.LearningEvent
-	err := r.database(ctx).
-		Where(
-			"tenant_id = ? AND knowledge_base_id = ? AND occurred_at >= ? AND event_type IN ?",
-			tenantID, kbID, since, selfAssessEventTypes,
-		).
-		Order("occurred_at DESC").
-		Find(&events).Error
-	return events, err
-}
-
 // AddSkip records one standing skip declaration. On conflict the row is
 // kept as-is (a re-declare must not rewrite the original date); the
 // createdAt parameter exists for the alias-reconcile move, which must

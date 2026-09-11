@@ -899,9 +899,9 @@ import {
   type WikiIndexEntryDTO,
 } from '@/api/wiki'
 import { recordWikiRead, getLearningMastery, getLearningQuiz } from '@/api/learning'
-import { createWikiReadTracker } from './readTracker'
+import { createWikiReadTracker, readingThresholdMs } from './readTracker'
 import NodeLearningControls from '../learning/NodeLearningControls.vue'
-import { notifyLearningUpdated, notifyReadStatus } from '../learning/learningEvents'
+import { notifyLearningUpdated, notifyReadStatus, LEARNING_UPDATED } from '../learning/learningEvents'
 import { masteryRing, nodeFill, newlyLitSlugs, tierColor, type MasteryLevel } from './graphMasteryColors'
 
 const router = useRouter()
@@ -1238,7 +1238,8 @@ const readTracker = createWikiReadTracker((slug, tier) => {
   const kb=props.knowledgeBaseId
   notifyReadStatus(kb,slug,'saving',tier)
   recordWikiRead(kb, slug, tier).then(result=>{if(result.data?.recorded===false){notifyReadStatus(kb,slug,'disabled',tier);return}notifyReadStatus(kb,slug,'saved',tier);notifyLearningUpdated(kb,slug)}).catch(() => notifyReadStatus(kb,slug,'error',tier))
-})
+},()=>readingThresholdMs(activeContextPage.value?.content||''))
+function restartReadingAfterFeedback(event:Event){const d=(event as CustomEvent).detail;if(d?.kbId===props.knowledgeBaseId&&d?.slug===activeContextPage.value?.slug&&d?.action==='review')readTracker.restart()}
 watch(
   () => activeContextPage.value && ['entity','concept'].includes(activeContextPage.value.page_type) ? activeContextPage.value.slug : '',
   (slug) => readTracker.enter(slug),
@@ -5160,12 +5161,14 @@ onMounted(() => {
   loadStats()
   if (props.view === 'graph') loadGraph()
   readTracker.start()
+  window.addEventListener(LEARNING_UPDATED,restartReadingAfterFeedback)
 })
 
 onActivated(()=>{readTracker.start();const p=activeContextPage.value;readTracker.enter(p&&['entity','concept'].includes(p.page_type)?p.slug:'')})
 onDeactivated(()=>readTracker.stop())
 onUnmounted(() => {
   readTracker.stop()
+  window.removeEventListener(LEARNING_UPDATED,restartReadingAfterFeedback)
   if (statsTimer) {
     clearInterval(statsTimer)
   }

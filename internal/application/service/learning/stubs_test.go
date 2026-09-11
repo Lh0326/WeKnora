@@ -697,46 +697,6 @@ func (s *stubLearningRepo) ListMastery(_ context.Context, scope interfaces.Learn
 	return out, nil
 }
 
-// ListMasteryByKB filters strictly by the caller's tenant+kb arguments and
-// mirrors the repository's (subject, slug) ordering, so tests prove the
-// aggregation sees only rows of THIS scope even with foreign rows stored.
-func (s *stubLearningRepo) ListMasteryByKB(_ context.Context, tenantID uint64, kbID string) ([]types.MasteryState, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []types.MasteryState
-	for _, row := range s.mastery {
-		if row.TenantID == tenantID && row.KnowledgeBaseID == kbID {
-			out = append(out, *row)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].SubjectID != out[j].SubjectID {
-			return out[i].SubjectID < out[j].SubjectID
-		}
-		return out[i].Slug < out[j].Slug
-	})
-	return out, nil
-}
-
-// ListMaintenanceMarks filters by tenant+kb, the self-assess vocabulary and
-// the since cutoff, newest first — the repository contract in miniature.
-func (s *stubLearningRepo) ListMaintenanceMarks(_ context.Context, tenantID uint64, kbID string, since time.Time) ([]types.LearningEvent, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []types.LearningEvent
-	for _, e := range s.events {
-		if e.TenantID != tenantID || e.KnowledgeBaseID != kbID {
-			continue
-		}
-		if !strings.HasPrefix(e.Type, "self_assess_") || e.OccurredAt.Before(since) {
-			continue
-		}
-		out = append(out, e)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].OccurredAt.After(out[j].OccurredAt) })
-	return out, nil
-}
-
 func (s *stubLearningRepo) ListSelfAssess(_ context.Context, scope interfaces.LearningScope) (map[string]interfaces.SelfAssessMark, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

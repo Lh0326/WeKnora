@@ -103,6 +103,7 @@ const blinking = ref(false)
 /** 学习快照合并进 host-context：助手回答学习情况/建议类问题时引用真实数据 */
 const mergedHostContext = computed<Record<string, string> | null>(() => {
   const base = props.hostContext || {}
+  if (base.scene === 'component-learning') return {...base}
   const learning = snapshotFields(learningContext.snapshot.value,base.current_page_slug || null,activeLearningSession.value)
   const merged = { ...base, ...(learning || {}) }
   return Object.keys(merged).length ? merged : null
@@ -126,6 +127,7 @@ onBeforeUnmount(() => { if (learningTimer) clearInterval(learningTimer) })
 /** 顶栏第二行：告诉用户"助手看得见你所在的界面"，问题可以基于当前页提出 */
 const sceneLabel = computed(() => {
   const scene = props.hostContext?.scene || ''
+  if (scene === 'component-learning') return '个人目标学习'
   const title = props.hostContext?.current_page_title || ''
   if (scene === 'wiki-page' && title) return t('knowledgeEditor.wikiBrowser.assistantSceneWikiPage', { title })
   if (scene === 'wiki' || scene === 'graph') return t('knowledgeEditor.wikiBrowser.assistantSceneWiki')

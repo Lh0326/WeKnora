@@ -1,0 +1,21 @@
+{
+  "source_mode": "offline_evaluation_only",
+  "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+  "generated_at": "2026-09-11T22:34:31.4303117Z",
+  "result": {
+    "policy_version": "kc-source-draft-v1",
+    "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+    "status": "no_supported_candidates",
+    "review_required": true,
+    "candidates": [],
+    "rejected": [],
+    "source_hashes": {
+      "workflow/incomplete": "57ddf330781d6167663e3ecc307041bca1b26d1e4c71b16451609f3667eeb3c7"
+    },
+    "model_notes": [
+      "页面 workflow/incomplete（“尚未给出规则的待办”）明确说明：仅有“待整理材料 X 的异常处理规范”这一标题，没有定义、操作步骤、判断条件或例子，且“此处不能据此确定任何处理顺序”。来源信息不足以支持任何完整的学习目标、适用条件或解释，因此不生成候选目标。",
+      "输入页面还自我声明为“刻意缺失信息的样本”，属于测试性/占位性内容，无可引用的规则性文字用于构造 sources 引文。"
+    ],
+    "model_proposals": []
+  }
+}

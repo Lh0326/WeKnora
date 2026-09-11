@@ -8,7 +8,7 @@
     <p class="reason">{{ current.reason?.detail || reasonLabel(current.reason?.code) }}</p>
     <p v-if="current.requires" class="reason">先完成：{{ requiresLabel(current.requires) }}</p>
     <button class="primary" :disabled="busy" @click="canChallenge ? emit('challenge',current.slug,current.objective!) : emit('open',current.slug)">{{ canChallenge ? '开始验证' : current.action==='recall'?'开始回忆':current.action==='confirm' ? '回看并确认理解' : '开始阅读' }} <span>→</span></button>
-    <div class="secondary-actions"><button v-if="current.action!=='recall'" :disabled="busy" @click="emit('known',current.slug)">我已学会，点亮此节点</button><span v-else>可在知识点中暂停复习</span><button :disabled="busy" @click="emit('skip',current.slug)">换一个</button></div>
+    <div class="secondary-actions"><button v-if="current.action!=='recall'" :disabled="busy" @click="emit('known',current.slug)">已经熟悉？减少重复推荐</button><span v-else>可在知识点中暂停复习</span><button :disabled="busy" @click="emit('skip',current.slug)">换一个</button></div>
     <p class="done-when">{{ current.done_when }}</p>
    </article>
    <ol v-if="upcoming.length" class="upcoming" aria-label="接下来学习什么">

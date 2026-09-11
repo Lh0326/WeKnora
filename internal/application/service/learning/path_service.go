@@ -189,14 +189,19 @@ func (s *Service) planInputOf(ctx context.Context, kbID string, req ColdStartReq
 		nodeEntries = append(nodeEntries, interfaces.ObjectiveViewEntry{Slug: o.Slug, ObjectiveStatus: o.Status, State: states[id].State})
 	}
 	nodes := deriveLearningNodes(pageList, nodeEntries, events, skipMarks)
+	estimates := deriveNodeEstimates(pageList, events, attempts, taskAttempts, objectives, time.Now())
+	attachNodeEstimates(nodes, estimates)
 	skips, exposure, nodeReview, nodeVerified := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	lastExposure := map[string]time.Time{}
 	recallDue := map[string]PathReason{}
 	recallDueAt := map[string]time.Time{}
 	for _, n := range nodes {
-		skips[n.Slug] = n.State == "self_known"
-		exposure[n.Slug] = n.Reads+n.Cites > 0 || n.State == "verified"
-		nodeReview[n.Slug] = n.State == "review"
+		skips[n.Slug] = n.Estimate != nil && (n.Estimate.Level == "familiar" || n.Estimate.Level == "self_reported")
+		if n.Review != nil && n.Review.Active && !n.Review.Due && n.Estimate != nil && n.Estimate.Memory != nil {
+			skips[n.Slug] = true // wait for the memory model's next recall time
+		}
+		exposure[n.Slug] = n.Estimate != nil && (n.Estimate.Coverage >= 1 || n.Estimate.SelfReport == "known") || n.State == "verified"
+		nodeReview[n.Slug] = (n.Estimate != nil && n.Estimate.Level == "review") || n.Updated
 		nodeVerified[n.Slug] = n.State == "verified"
 		lastExposure[n.Slug] = n.LastReadAt
 		if n.Review != nil && n.Review.Active && n.Review.Due {
@@ -302,13 +307,22 @@ func (s *Service) planInputOf(ctx context.Context, kbID string, req ColdStartReq
 	}
 	docOrder := s.docOrderRanks(ctx, kbID)
 	relevance, personalization := s.pathRelevanceOf(ctx, scope, pageList, req.UseMemory)
+	goalIDs := scopedGoalIDs(req, pubByID, pageScope)
+	if len(req.GoalObjectives) == 0 && !req.FastTrack {
+		// A published bank must not turn ordinary reading into mandatory
+		// completion of every verification contract. The model may suggest
+		// one informative check; explicitly selected objectives retain theirs.
+		goalIDs = nil
+	}
 
 	return planInput{
 		TenantID: scope.TenantID, KBID: scope.KnowledgeBaseID,
+		Estimates: estimates,
+		AsOf:      time.Now(), ExplorationSeed: scope.SubjectID + "|" + scope.KnowledgeBaseID + "|" + time.Now().UTC().Format("2006-01-02"),
 		IncludeExploration: true, PageScope: pageScope, PageMinutes: pageMinutes, PageFolders: pageFolders, NodeReview: nodeReview, NodeVerified: nodeVerified,
 		GoalsResolved: true, HasVerification: hasBank, Pages: pages, Objectives: pubByID, ObjBySlug: objBySlug, States: states,
 		StrictEdges: strict, DocOrder: docOrder, Skips: skips, Exposure: exposure,
-		Recent: recent, UserGoals: scopedGoalIDs(req, pubByID, pageScope),
+		Recent: recent, UserGoals: goalIDs,
 		TimeBudgetMinutes: req.TimeBudgetMin, FastTrack: req.FastTrack,
 		RecallDue: recallDue, RecallDueAt: recallDueAt, FailedRecently: failedRecently,
 		Relevance: relevance, Personalization: personalization,

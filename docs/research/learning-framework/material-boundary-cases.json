@@ -1,0 +1,11 @@
+{
+  "protocol": "材料候选与验证协议.md",
+  "source_file": "material-boundary-sources.json",
+  "sample_type": "author-created synthetic boundary cases; not independent semantic evaluation",
+  "cases": [
+    {"id":"same-word-different-scope","slugs":["concurrency/mutex"],"limit":4,"requirements":["本地同一进程计数和跨机器领取分开或明确辨析，不能混用保证","本地计数的保护包含读取与写回，不只写回","跨机器任务领取不推演成具备故障恢复或幂等保证"]},
+    {"id":"cross-source-same-rule","slugs":["statistics/average","statistics/weighted-mean"],"limit":4,"requirements":["识别同一个按人数加权合并规则，不能重复建两个同目标同条件单元","合并单元保留两个来源","条件至少保留组间不重叠、量表相同、没有缺失；66、70 的计算正确","不知道人数时不编造总体均值"]},
+    {"id":"conditional-conflict","slugs":["workflow/normal","workflow/emergency"],"limit":4,"requirements":["常规发布和故障紧急修复条件分开","不能把批准顺序合并为无条件规则","紧急修复不免除必要测试，不擅自编具体清单"]},
+    {"id":"insufficient-context","slugs":["workflow/incomplete"],"limit":4,"requirements":["返回零候选并说明信息不足，不把标题扩写为假流程"]}
+  ]
+}

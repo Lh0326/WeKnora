@@ -147,62 +147,6 @@ export interface PassiveChangesSummary {
   items: PassiveChange[];
 }
 
-// ---- knowledge health (owner/admin 组织视角总览) ----
-
-/** 目录粒度覆盖度；根目录的 folder_id/folder_name 均为空串（前端用 rootUnit 文案标注）。 */
-export interface HealthFolderCoverage {
-  folder_id: string;
-  folder_name: string;
-  total_nodes: number;
-  covered_nodes: number;
-  familiar_users: number;
-}
-
-export interface HealthExpert {
-  slug: string;
-  title: string;
-  familiar_count: number;
-}
-
-export type HealthRiskKind = 'single_point' | 'stale_doc';
-
-export interface HealthRisk {
-  kind: HealthRiskKind;
-  /** single_point=节点 slug；stale_doc=文档 id。 */
-  key: string;
-  title: string;
-  familiar_count: number;
-  best_p_eff: number;
-  /** 后端英文兜底说明——仅日志排查用，绝不直接展示给用户（含义经 i18n 的 kind 渲染）。 */
-  note: string;
-}
-
-export type HealthMaintenanceKind =
-  | 'self_assess_up'
-  | 'self_assess_down_all'
-  | 'self_assess_down_doc_gap'
-  | 'self_assess_down_doc_updated'
-  | 'self_assess_down_quiz_easy';
-
-export interface HealthMaintenanceMark {
-  kind: HealthMaintenanceKind;
-  slug: string;
-  title: string;
-  count: number;
-  latest_at: string;
-}
-
-/** 知识健康总览：所有切片由服务端保证非 null 且已排序（count 降序 → 标题）。 */
-export interface KnowledgeHealth {
-  nodes_total: number;
-  nodes_covered: number;
-  subjects_active: number;
-  folders: HealthFolderCoverage[];
-  experts: HealthExpert[];
-  risks: HealthRisk[];
-  maintenance: HealthMaintenanceMark[];
-}
-
 interface Envelope<T> {
   success: boolean;
   data: T;
@@ -262,11 +206,6 @@ export function getLearningZoneMap(kbId: string) {
 // 遗忘动态：非用户操作（被动）导致的档位/掌握度变化，读时派生。
 export function getLearningChanges(kbId: string, limit = 20) {
   return get<Envelope<PassiveChangesSummary>>(`/api/v1/learning/kb/${kbId}/changes?limit=${limit}`);
-}
-
-// 知识健康：owner/admin 专属（其余角色 403，前端只在 canManage 时调用并对错误静默降级）。
-export function getKnowledgeHealth(kbId: string) {
-  return get<Envelope<KnowledgeHealth>>(`/api/v1/learning/kb/${kbId}/health`);
 }
 
 export function getLearningQuiz(kbId: string, slug: string) {

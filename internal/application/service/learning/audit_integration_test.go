@@ -205,12 +205,25 @@ func TestAuditProgressAndFreezeUseFullLiveUniverse(t *testing.T) {
 	if len(frozen.GoalStatesBefore) != 2 || len(frozen.EvidenceFamiliesBefore) != 1 || frozen.EvidenceFamiliesBefore[0] != "exposed" {
 		t.Fatalf("freeze lost unseen objectives or practice exposure: %+v", frozen)
 	}
+	if frozen.LearningModelVersion != NodeEstimateVersion || len(frozen.NodeEstimates) == 0 {
+		t.Fatal("pre-assessment snapshot omitted the learning model", frozen)
+	}
+	for _, estimate := range frozen.NodeEstimates {
+		if estimate.ContentVersion == "" || estimate.ModelVersion != NodeEstimateVersion {
+			t.Fatal("unversioned model snapshot", estimate)
+		}
+	}
 	if _, e = s.FreezeAssessment(collectorCtx(1, "bob"), testKB); e != nil {
 		t.Fatal(e)
 	}
 	bob, e := s.FreezeAssessment(collectorCtx(1, "bob"), testKB)
 	if e != nil || len(bob.EvidenceFamiliesBefore) != 0 {
 		t.Fatal("freeze leaked another participant")
+	}
+	for _, estimate := range bob.NodeEstimates {
+		if estimate.Opportunities != 0 || estimate.Answers != 0 || estimate.Corrections != 0 {
+			t.Fatal("model snapshot leaked another participant", estimate)
+		}
 	}
 }
 

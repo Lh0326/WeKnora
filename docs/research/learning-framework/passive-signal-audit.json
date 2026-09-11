@@ -1,0 +1,86 @@
+{
+  "before": [
+    {
+      "checks": 0,
+      "days": 0,
+      "index": 0.2,
+      "level": "unseen",
+      "lower": 0.1,
+      "upper": 0.35
+    },
+    {
+      "checks": 0,
+      "days": 1,
+      "index": 0.30024827267630205,
+      "level": "learning",
+      "lower": 0.21277930676083978,
+      "upper": 0.4314517215494954
+    },
+    {
+      "checks": 0,
+      "days": 3,
+      "index": 0.46463254907326806,
+      "level": "familiar",
+      "lower": 0.3977116177074266,
+      "upper": 0.5650139461220304
+    },
+    {
+      "checks": 0,
+      "days": 30,
+      "index": 0.9855884811924144,
+      "level": "familiar",
+      "lower": 0.9837870413414662,
+      "upper": 0.9882906409688366
+    },
+    {
+      "checks": 0,
+      "days": 365,
+      "index": 0.999999999,
+      "level": "familiar",
+      "lower": 0.999999999,
+      "upper": 0.999999999
+    }
+  ],
+  "after": [
+    {
+      "checks": 0,
+      "days": 0,
+      "index": 0.2,
+      "level": "unseen",
+      "lower": 0.1,
+      "upper": 0.35
+    },
+    {
+      "checks": 0,
+      "days": 1,
+      "index": 0.2,
+      "level": "learning",
+      "lower": 0.1,
+      "upper": 0.35
+    },
+    {
+      "checks": 0,
+      "days": 3,
+      "index": 0.2,
+      "level": "learning",
+      "lower": 0.1,
+      "upper": 0.35
+    },
+    {
+      "checks": 0,
+      "days": 30,
+      "index": 0.2,
+      "level": "learning",
+      "lower": 0.1,
+      "upper": 0.35
+    },
+    {
+      "checks": 0,
+      "days": 365,
+      "index": 0.2,
+      "level": "learning",
+      "lower": 0.1,
+      "upper": 0.35
+    }
+  ]
+}

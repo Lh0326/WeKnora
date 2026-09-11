@@ -8,7 +8,7 @@ export function recallSummary(status?:LearningReviewStatus):string{
  if(!status.active)return '已暂停复习推荐；历史反馈保留，可随时继续。'
  if(status.content_changed)return '材料已更新；核对新内容后，本次反馈会重新安排间隔。'
  if(recallDue(status))return '本次复习已到期，先尝试回忆，再核对材料。'
- return `下次复习：${new Date(status.due_at).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${status.interval_days?`间隔 ${status.interval_days} 天`:'短时重学'}`
+ return `下次复习：${new Date(status.due_at).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${status.interval_days?`间隔 ${status.interval_days} 天`:'短时复习'}`
 }
 
 /** One mounted account/KB/node owns a submission. A lost response retries the

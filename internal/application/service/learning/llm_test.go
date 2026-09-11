@@ -72,9 +72,11 @@ type stubModelService struct {
 	// from an empty context and must inject the KB's tenant before any
 	// model call (GetChatModel panics without one).
 	tenantOK bool
+	idsSeen  []string
 }
 
-func (s *stubModelService) GetChatModel(ctx context.Context, _ string) (chat.Chat, error) {
+func (s *stubModelService) GetChatModel(ctx context.Context, modelID string) (chat.Chat, error) {
+	s.idsSeen = append(s.idsSeen, modelID)
 	if _, ok := types.TenantIDFromContext(ctx); ok {
 		s.tenantOK = true
 	}

@@ -1,6 +1,7 @@
 import {shallowRef} from 'vue'
 import type {ObjectiveViewResponse,LearningPathPlan} from '@/api/learning/objectives'
 import {summarizeNodes} from './learning/learningOverview'
+import {summarizeEstimates,estimateLabels,estimateExplanation} from './learning/learningEstimates'
 import {nodeStateLabels} from './learning/learningEvents'
 import {recallDue,recallSummary} from './learning/recallFeedback'
 import {pathActionLabel,pathReasonLabel} from './learning/pathLabels'
@@ -12,13 +13,19 @@ export function snapshotFields(snapshot:AssistantLearningSnapshot|null,slug:stri
  const fields:Record<string,string>={}
  const view=session?session.view:snapshot?.view
  const plan=session?session.plan:snapshot?.plan
- fields.learning_ui='当前可用操作：点击知识点阅读；「标记已读」；「我已学会，点亮」；「需要再学」。只有存在已审核验证目标及可用题目时才显示验证入口，请勿虚构「练一练」按钮。当前状态以本次 kb_progress 和 current_node 为准，轨迹是历史操作；后来标记已读或需要再学会撤销先前自认已会，不能据此推断保存失败。'
+ fields.learning_ui='有效阅读自动更新阅读进度与下一步，不提高能力估计，无需逐页确认。可选纠偏按钮为「纠正：已经熟悉」「纠正：仍有困难」，另有「标记已读」。只有存在已审核验证目标及可用题目时才显示验证入口，请勿虚构按钮。没有题库只影响客观验证，用户仍可反馈「已经熟悉」；不得把无需确认说成无法纠偏。模型估计、自评和验证事实分别说明；以当前快照为准，不以历史轨迹覆盖当前状态。'
  if(view?.nodes){
-  fields.recall_schedule=`主动加入间隔复习 ${view.nodes.filter(n=>n.review?.active).length} 个；到期 ${view.nodes.filter(n=>recallDue(n.review)).length} 个。界面提供「加入间隔复习」「开始回忆」和四档自评反馈，SM-2 安排只用于个人复习，不产生客观验证证据。`
+  fields.recall_schedule=`主动加入间隔复习 ${view.nodes.filter(n=>n.review?.active).length} 个；到期 ${view.nodes.filter(n=>recallDue(n.review)).length} 个。界面提供「加入间隔复习」「开始回忆」和四档自评反馈，FSRS-6 自动安排个人复习，不产生客观验证证据；旧 SM-2 安排在下一次反馈时切换。`
   if(slug)fields.current_recall=recallSummary(view.nodes.find(n=>n.slug===slug)?.review)
   const s=summarizeNodes(view.nodes)
   fields.kb_progress=`知识点 ${s.total} 个；已接触 ${s.covered}；未开始 ${s.counts.unseen}；学习中 ${s.counts.learning}；自认已会 ${s.counts.self_known}；验证通过 ${s.counts.verified}；待巩固 ${s.counts.review}。自认和验证分别统计，不能换算为掌握概率。`
   if(slug){const n=view.nodes.find(n=>n.slug===slug);fields.current_node=n?`${nodeStateLabels[n.state]}；阅读记录 ${n.reads} 条；引用 ${n.cites} 条；验证目标 ${n.objective_verified}/${n.objective_total}${n.updated?'；内容已变化，需要重新确认':''}`:'当前知识点没有学习记录'}
+  if(view.nodes.some(n=>n.estimate)){
+   const model=summarizeEstimates(view.nodes)
+   fields.kb_progress=`知识点 ${model.total} 个；客观验证通过 ${model.verified} 个。当前学习阶段与待巩固数量以 model_progress 为准；历史声明不能覆盖当前阅读进度与检查事实。`
+   fields.model_progress=`算法画像：${model.covered}/${model.total} 已接触；检查支持 ${model.counts.familiar}；自认熟悉 ${model.counts.self_reported}；建议巩固 ${model.counts.review}。${model.uncertain} 个节点缺少独立作答依据。阅读和自评不改变表现指数；没有独立检查时不显示能力数值。仅已作答目标的指数未完成本地概率校准，不代表整页掌握，不能把参数敏感性范围称为置信区间；FSRS 只预测已有回忆记录的材料保持率。推荐使用已提供的同一份路径，不要求用户逐页确认。`
+   if(slug){const n=view.nodes.find(n=>n.slug===slug);if(n?.estimate)fields.current_node=`${estimateLabels[n.estimate.level]}；${estimateExplanation(n)}；已审核目标 ${n.objective_verified}/${n.objective_total} 通过。`}
+  }
  }else fields.kb_progress='学习状态暂不可用，不能推断用户尚未学习。'
  if(session){
   const req=session.request
@@ -54,6 +61,6 @@ async function fetchSnapshot(kbId:string,options:AssistantSnapshotOptions={}):Pr
  const {getLearningTimeline}=await import('@/api/learning')
  const [view,plan,events]=await Promise.allSettled([options.trajectoryOnly?Promise.resolve(null):getObjectiveView(kbId),options.trajectoryOnly?Promise.resolve(null):postShortPath(kbId,{depth:'aware',time_budget_minutes:15}),getLearningTimeline(kbId,1,8)])
  const timeline:any=events.status==='fulfilled'?((events.value as any).data??events.value):[]
- const labels:Record<string,string>={node_known:'确认已会',node_review:'需要再学',node_read:'标记已读',wiki_tool_read:'阅读',wiki_deep_read:'深入阅读',quiz_correct:'答对',quiz_wrong:'答错',answer_cite:'问答引用'}
+ const labels:Record<string,string>={source_read:'原文已读',node_known:'确认已会',node_review:'需要再学',node_read:'标记已读',wiki_tool_read:'阅读',wiki_deep_read:'深入阅读',quiz_correct:'答对',quiz_wrong:'答错',answer_cite:'问答引用'}
  return {view:view.status==='fulfilled'?view.value:null,plan:plan.status==='fulfilled'?plan.value:null,trajectory:Array.isArray(timeline)?'以下历史记录按时间从新到旧排列：'+timeline.slice(0,8).map(e=>`${e.occurred_at||''} ${labels[e.event_type]||'学习活动'}「${e.title||e.slug}」`).join('；'):''}
 }

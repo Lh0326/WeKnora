@@ -1,0 +1,881 @@
+{
+  "greedy_total_regret": 22756,
+  "protocol": "关联与路径实施协议.md",
+  "scale": [
+    {
+      "greedy": 13834,
+      "nodes": 20,
+      "plan": {
+        "policy_version": "kc-dependency-budget-v1",
+        "exact": false,
+        "expanded": 9288,
+        "candidates": 20,
+        "utility": 14132,
+        "upper_bound": 14742,
+        "check_budget": 3,
+        "notice": "本轮采用有界搜索；顺序满足当前约束，但不保证全局最优。"
+      },
+      "seconds": 0.0025031,
+      "steps": 12
+    },
+    {
+      "greedy": 12930,
+      "nodes": 40,
+      "plan": {
+        "policy_version": "kc-dependency-budget-v1",
+        "exact": false,
+        "expanded": 19684,
+        "candidates": 40,
+        "utility": 14121,
+        "upper_bound": 18174,
+        "check_budget": 3,
+        "notice": "本轮采用有界搜索；顺序满足当前约束，但不保证全局最优。"
+      },
+      "seconds": 0.0127175,
+      "steps": 12
+    },
+    {
+      "greedy": 13232,
+      "nodes": 100,
+      "plan": {
+        "policy_version": "kc-dependency-budget-v1",
+        "exact": false,
+        "expanded": 70012,
+        "candidates": 100,
+        "utility": 13952,
+        "upper_bound": 24928,
+        "check_budget": 3,
+        "notice": "本轮采用有界搜索；顺序满足当前约束，但不保证全局最优。"
+      },
+      "seconds": 0.0299676,
+      "steps": 12
+    },
+    {
+      "greedy": 16811,
+      "nodes": 500,
+      "plan": {
+        "policy_version": "kc-dependency-budget-v1",
+        "exact": false,
+        "expanded": 250000,
+        "candidates": 500,
+        "utility": 16811,
+        "upper_bound": 40932,
+        "check_budget": 3,
+        "notice": "本轮采用有界搜索；顺序满足当前约束，但不保证全局最优。"
+      },
+      "seconds": 0.1483859,
+      "steps": 12
+    }
+  ],
+  "scope": "algorithmic synthetic evaluation under declared utility; not measured learning gains",
+  "search_total_regret": 0,
+  "seed": 20260912,
+  "sha256": {
+    "component_plan.go": "c9a262e35a5bf5d7cf799914da7f682a8b93145f044f88aac9fd6fdaad7754fb",
+    "component_plan_test.go": "38a595ba89f408d279f30dae74cda1fbb5857093d3d662acb83570b3fb5ed99f",
+    "关联与路径实施协议.md": "b3036449a16fe5b00be61608c3f4e61fd65edc3b5fea127a12bf7812d207adbb"
+  },
+  "small_trials": [
+    {
+      "budget": 13,
+      "greedy": 5856,
+      "nodes": 9,
+      "oracle": 6374,
+      "search": 6374,
+      "trial": 0
+    },
+    {
+      "budget": 13,
+      "greedy": 6599,
+      "nodes": 9,
+      "oracle": 6599,
+      "search": 6599,
+      "trial": 1
+    },
+    {
+      "budget": 15,
+      "greedy": 4987,
+      "nodes": 9,
+      "oracle": 5708,
+      "search": 5708,
+      "trial": 2
+    },
+    {
+      "budget": 8,
+      "greedy": 2631,
+      "nodes": 10,
+      "oracle": 2631,
+      "search": 2631,
+      "trial": 3
+    },
+    {
+      "budget": 10,
+      "greedy": 3224,
+      "nodes": 10,
+      "oracle": 3239,
+      "search": 3239,
+      "trial": 4
+    },
+    {
+      "budget": 6,
+      "greedy": 1691,
+      "nodes": 8,
+      "oracle": 1691,
+      "search": 1691,
+      "trial": 5
+    },
+    {
+      "budget": 20,
+      "greedy": 5557,
+      "nodes": 9,
+      "oracle": 6510,
+      "search": 6510,
+      "trial": 6
+    },
+    {
+      "budget": 11,
+      "greedy": 5138,
+      "nodes": 8,
+      "oracle": 5138,
+      "search": 5138,
+      "trial": 7
+    },
+    {
+      "budget": 16,
+      "greedy": 6567,
+      "nodes": 8,
+      "oracle": 6567,
+      "search": 6567,
+      "trial": 8
+    },
+    {
+      "budget": 13,
+      "greedy": 4065,
+      "nodes": 8,
+      "oracle": 4321,
+      "search": 4321,
+      "trial": 9
+    },
+    {
+      "budget": 14,
+      "greedy": 4899,
+      "nodes": 8,
+      "oracle": 5230,
+      "search": 5230,
+      "trial": 10
+    },
+    {
+      "budget": 18,
+      "greedy": 8020,
+      "nodes": 10,
+      "oracle": 8020,
+      "search": 8020,
+      "trial": 11
+    },
+    {
+      "budget": 19,
+      "greedy": 9777,
+      "nodes": 10,
+      "oracle": 9777,
+      "search": 9777,
+      "trial": 12
+    },
+    {
+      "budget": 20,
+      "greedy": 5953,
+      "nodes": 9,
+      "oracle": 6448,
+      "search": 6448,
+      "trial": 13
+    },
+    {
+      "budget": 20,
+      "greedy": 6488,
+      "nodes": 8,
+      "oracle": 6525,
+      "search": 6525,
+      "trial": 14
+    },
+    {
+      "budget": 18,
+      "greedy": 6700,
+      "nodes": 10,
+      "oracle": 6864,
+      "search": 6864,
+      "trial": 15
+    },
+    {
+      "budget": 11,
+      "greedy": 3632,
+      "nodes": 9,
+      "oracle": 3938,
+      "search": 3938,
+      "trial": 16
+    },
+    {
+      "budget": 4,
+      "greedy": 3669,
+      "nodes": 8,
+      "oracle": 3669,
+      "search": 3669,
+      "trial": 17
+    },
+    {
+      "budget": 11,
+      "greedy": 2630,
+      "nodes": 8,
+      "oracle": 3702,
+      "search": 3702,
+      "trial": 18
+    },
+    {
+      "budget": 10,
+      "greedy": 2480,
+      "nodes": 10,
+      "oracle": 2480,
+      "search": 2480,
+      "trial": 19
+    },
+    {
+      "budget": 18,
+      "greedy": 6868,
+      "nodes": 8,
+      "oracle": 6868,
+      "search": 6868,
+      "trial": 20
+    },
+    {
+      "budget": 18,
+      "greedy": 8407,
+      "nodes": 10,
+      "oracle": 8582,
+      "search": 8582,
+      "trial": 21
+    },
+    {
+      "budget": 4,
+      "greedy": 2796,
+      "nodes": 10,
+      "oracle": 2796,
+      "search": 2796,
+      "trial": 22
+    },
+    {
+      "budget": 11,
+      "greedy": 6590,
+      "nodes": 9,
+      "oracle": 6868,
+      "search": 6868,
+      "trial": 23
+    },
+    {
+      "budget": 11,
+      "greedy": 4739,
+      "nodes": 10,
+      "oracle": 5335,
+      "search": 5335,
+      "trial": 24
+    },
+    {
+      "budget": 11,
+      "greedy": 5135,
+      "nodes": 10,
+      "oracle": 5184,
+      "search": 5184,
+      "trial": 25
+    },
+    {
+      "budget": 15,
+      "greedy": 7516,
+      "nodes": 10,
+      "oracle": 7516,
+      "search": 7516,
+      "trial": 26
+    },
+    {
+      "budget": 14,
+      "greedy": 3227,
+      "nodes": 8,
+      "oracle": 4408,
+      "search": 4408,
+      "trial": 27
+    },
+    {
+      "budget": 15,
+      "greedy": 4584,
+      "nodes": 9,
+      "oracle": 4584,
+      "search": 4584,
+      "trial": 28
+    },
+    {
+      "budget": 6,
+      "greedy": 3052,
+      "nodes": 10,
+      "oracle": 3052,
+      "search": 3052,
+      "trial": 29
+    },
+    {
+      "budget": 20,
+      "greedy": 8692,
+      "nodes": 9,
+      "oracle": 8868,
+      "search": 8868,
+      "trial": 30
+    },
+    {
+      "budget": 15,
+      "greedy": 3814,
+      "nodes": 8,
+      "oracle": 4803,
+      "search": 4803,
+      "trial": 31
+    },
+    {
+      "budget": 6,
+      "greedy": 1900,
+      "nodes": 8,
+      "oracle": 2015,
+      "search": 2015,
+      "trial": 32
+    },
+    {
+      "budget": 7,
+      "greedy": 3236,
+      "nodes": 10,
+      "oracle": 3236,
+      "search": 3236,
+      "trial": 33
+    },
+    {
+      "budget": 7,
+      "greedy": 3349,
+      "nodes": 8,
+      "oracle": 4254,
+      "search": 4254,
+      "trial": 34
+    },
+    {
+      "budget": 16,
+      "greedy": 6388,
+      "nodes": 8,
+      "oracle": 6388,
+      "search": 6388,
+      "trial": 35
+    },
+    {
+      "budget": 11,
+      "greedy": 5269,
+      "nodes": 8,
+      "oracle": 5269,
+      "search": 5269,
+      "trial": 36
+    },
+    {
+      "budget": 8,
+      "greedy": 3735,
+      "nodes": 8,
+      "oracle": 4251,
+      "search": 4251,
+      "trial": 37
+    },
+    {
+      "budget": 12,
+      "greedy": 5631,
+      "nodes": 10,
+      "oracle": 5631,
+      "search": 5631,
+      "trial": 38
+    },
+    {
+      "budget": 9,
+      "greedy": 6390,
+      "nodes": 10,
+      "oracle": 6390,
+      "search": 6390,
+      "trial": 39
+    },
+    {
+      "budget": 6,
+      "greedy": 2882,
+      "nodes": 9,
+      "oracle": 2882,
+      "search": 2882,
+      "trial": 40
+    },
+    {
+      "budget": 11,
+      "greedy": 3954,
+      "nodes": 8,
+      "oracle": 3954,
+      "search": 3954,
+      "trial": 41
+    },
+    {
+      "budget": 12,
+      "greedy": 4065,
+      "nodes": 8,
+      "oracle": 4065,
+      "search": 4065,
+      "trial": 42
+    },
+    {
+      "budget": 20,
+      "greedy": 7571,
+      "nodes": 10,
+      "oracle": 7571,
+      "search": 7571,
+      "trial": 43
+    },
+    {
+      "budget": 6,
+      "greedy": 3780,
+      "nodes": 8,
+      "oracle": 3886,
+      "search": 3886,
+      "trial": 44
+    },
+    {
+      "budget": 12,
+      "greedy": 4749,
+      "nodes": 9,
+      "oracle": 4749,
+      "search": 4749,
+      "trial": 45
+    },
+    {
+      "budget": 20,
+      "greedy": 5864,
+      "nodes": 10,
+      "oracle": 5981,
+      "search": 5981,
+      "trial": 46
+    },
+    {
+      "budget": 9,
+      "greedy": 4968,
+      "nodes": 8,
+      "oracle": 5061,
+      "search": 5061,
+      "trial": 47
+    },
+    {
+      "budget": 8,
+      "greedy": 3233,
+      "nodes": 8,
+      "oracle": 3495,
+      "search": 3495,
+      "trial": 48
+    },
+    {
+      "budget": 17,
+      "greedy": 6897,
+      "nodes": 9,
+      "oracle": 6897,
+      "search": 6897,
+      "trial": 49
+    },
+    {
+      "budget": 16,
+      "greedy": 6685,
+      "nodes": 10,
+      "oracle": 6715,
+      "search": 6715,
+      "trial": 50
+    },
+    {
+      "budget": 15,
+      "greedy": 5412,
+      "nodes": 8,
+      "oracle": 5800,
+      "search": 5800,
+      "trial": 51
+    },
+    {
+      "budget": 13,
+      "greedy": 2490,
+      "nodes": 8,
+      "oracle": 4092,
+      "search": 4092,
+      "trial": 52
+    },
+    {
+      "budget": 8,
+      "greedy": 3241,
+      "nodes": 10,
+      "oracle": 3241,
+      "search": 3241,
+      "trial": 53
+    },
+    {
+      "budget": 5,
+      "greedy": 3119,
+      "nodes": 10,
+      "oracle": 3119,
+      "search": 3119,
+      "trial": 54
+    },
+    {
+      "budget": 13,
+      "greedy": 6579,
+      "nodes": 10,
+      "oracle": 6579,
+      "search": 6579,
+      "trial": 55
+    },
+    {
+      "budget": 18,
+      "greedy": 7443,
+      "nodes": 10,
+      "oracle": 7923,
+      "search": 7923,
+      "trial": 56
+    },
+    {
+      "budget": 5,
+      "greedy": 397,
+      "nodes": 8,
+      "oracle": 1208,
+      "search": 1208,
+      "trial": 57
+    },
+    {
+      "budget": 7,
+      "greedy": 3970,
+      "nodes": 10,
+      "oracle": 3970,
+      "search": 3970,
+      "trial": 58
+    },
+    {
+      "budget": 15,
+      "greedy": 4189,
+      "nodes": 8,
+      "oracle": 4263,
+      "search": 4263,
+      "trial": 59
+    },
+    {
+      "budget": 9,
+      "greedy": 4378,
+      "nodes": 9,
+      "oracle": 4378,
+      "search": 4378,
+      "trial": 60
+    },
+    {
+      "budget": 4,
+      "greedy": 2229,
+      "nodes": 8,
+      "oracle": 2229,
+      "search": 2229,
+      "trial": 61
+    },
+    {
+      "budget": 20,
+      "greedy": 7858,
+      "nodes": 8,
+      "oracle": 7858,
+      "search": 7858,
+      "trial": 62
+    },
+    {
+      "budget": 16,
+      "greedy": 6702,
+      "nodes": 10,
+      "oracle": 6982,
+      "search": 6982,
+      "trial": 63
+    },
+    {
+      "budget": 12,
+      "greedy": 7731,
+      "nodes": 9,
+      "oracle": 7855,
+      "search": 7855,
+      "trial": 64
+    },
+    {
+      "budget": 19,
+      "greedy": 6443,
+      "nodes": 9,
+      "oracle": 6443,
+      "search": 6443,
+      "trial": 65
+    },
+    {
+      "budget": 14,
+      "greedy": 6277,
+      "nodes": 8,
+      "oracle": 6277,
+      "search": 6277,
+      "trial": 66
+    },
+    {
+      "budget": 16,
+      "greedy": 7177,
+      "nodes": 9,
+      "oracle": 7177,
+      "search": 7177,
+      "trial": 67
+    },
+    {
+      "budget": 8,
+      "greedy": 2899,
+      "nodes": 9,
+      "oracle": 3463,
+      "search": 3463,
+      "trial": 68
+    },
+    {
+      "budget": 8,
+      "greedy": 2473,
+      "nodes": 9,
+      "oracle": 2783,
+      "search": 2783,
+      "trial": 69
+    },
+    {
+      "budget": 8,
+      "greedy": 5049,
+      "nodes": 8,
+      "oracle": 5049,
+      "search": 5049,
+      "trial": 70
+    },
+    {
+      "budget": 17,
+      "greedy": 6999,
+      "nodes": 8,
+      "oracle": 7015,
+      "search": 7015,
+      "trial": 71
+    },
+    {
+      "budget": 19,
+      "greedy": 3402,
+      "nodes": 10,
+      "oracle": 6335,
+      "search": 6335,
+      "trial": 72
+    },
+    {
+      "budget": 6,
+      "greedy": 2965,
+      "nodes": 8,
+      "oracle": 2965,
+      "search": 2965,
+      "trial": 73
+    },
+    {
+      "budget": 20,
+      "greedy": 10420,
+      "nodes": 9,
+      "oracle": 10420,
+      "search": 10420,
+      "trial": 74
+    },
+    {
+      "budget": 10,
+      "greedy": 3662,
+      "nodes": 9,
+      "oracle": 3662,
+      "search": 3662,
+      "trial": 75
+    },
+    {
+      "budget": 6,
+      "greedy": 1812,
+      "nodes": 10,
+      "oracle": 1812,
+      "search": 1812,
+      "trial": 76
+    },
+    {
+      "budget": 7,
+      "greedy": 3451,
+      "nodes": 8,
+      "oracle": 3451,
+      "search": 3451,
+      "trial": 77
+    },
+    {
+      "budget": 17,
+      "greedy": 4790,
+      "nodes": 8,
+      "oracle": 4943,
+      "search": 4943,
+      "trial": 78
+    },
+    {
+      "budget": 7,
+      "greedy": 1549,
+      "nodes": 9,
+      "oracle": 2419,
+      "search": 2419,
+      "trial": 79
+    },
+    {
+      "budget": 5,
+      "greedy": 3137,
+      "nodes": 8,
+      "oracle": 3137,
+      "search": 3137,
+      "trial": 80
+    },
+    {
+      "budget": 10,
+      "greedy": 4550,
+      "nodes": 9,
+      "oracle": 4550,
+      "search": 4550,
+      "trial": 81
+    },
+    {
+      "budget": 19,
+      "greedy": 8127,
+      "nodes": 10,
+      "oracle": 8139,
+      "search": 8139,
+      "trial": 82
+    },
+    {
+      "budget": 9,
+      "greedy": 2954,
+      "nodes": 10,
+      "oracle": 3241,
+      "search": 3241,
+      "trial": 83
+    },
+    {
+      "budget": 6,
+      "greedy": 3204,
+      "nodes": 8,
+      "oracle": 3204,
+      "search": 3204,
+      "trial": 84
+    },
+    {
+      "budget": 13,
+      "greedy": 2877,
+      "nodes": 9,
+      "oracle": 2925,
+      "search": 2925,
+      "trial": 85
+    },
+    {
+      "budget": 13,
+      "greedy": 6147,
+      "nodes": 10,
+      "oracle": 6170,
+      "search": 6170,
+      "trial": 86
+    },
+    {
+      "budget": 5,
+      "greedy": 1489,
+      "nodes": 9,
+      "oracle": 2573,
+      "search": 2573,
+      "trial": 87
+    },
+    {
+      "budget": 16,
+      "greedy": 5847,
+      "nodes": 9,
+      "oracle": 5847,
+      "search": 5847,
+      "trial": 88
+    },
+    {
+      "budget": 11,
+      "greedy": 3738,
+      "nodes": 10,
+      "oracle": 3738,
+      "search": 3738,
+      "trial": 89
+    },
+    {
+      "budget": 8,
+      "greedy": 3985,
+      "nodes": 10,
+      "oracle": 3985,
+      "search": 3985,
+      "trial": 90
+    },
+    {
+      "budget": 16,
+      "greedy": 6899,
+      "nodes": 9,
+      "oracle": 6899,
+      "search": 6899,
+      "trial": 91
+    },
+    {
+      "budget": 12,
+      "greedy": 2460,
+      "nodes": 10,
+      "oracle": 2753,
+      "search": 2753,
+      "trial": 92
+    },
+    {
+      "budget": 19,
+      "greedy": 7094,
+      "nodes": 10,
+      "oracle": 7550,
+      "search": 7550,
+      "trial": 93
+    },
+    {
+      "budget": 13,
+      "greedy": 5203,
+      "nodes": 9,
+      "oracle": 5345,
+      "search": 5345,
+      "trial": 94
+    },
+    {
+      "budget": 15,
+      "greedy": 8031,
+      "nodes": 10,
+      "oracle": 8031,
+      "search": 8031,
+      "trial": 95
+    },
+    {
+      "budget": 6,
+      "greedy": 2586,
+      "nodes": 10,
+      "oracle": 2728,
+      "search": 2728,
+      "trial": 96
+    },
+    {
+      "budget": 14,
+      "greedy": 4977,
+      "nodes": 9,
+      "oracle": 5167,
+      "search": 5167,
+      "trial": 97
+    },
+    {
+      "budget": 14,
+      "greedy": 4836,
+      "nodes": 10,
+      "oracle": 4836,
+      "search": 4836,
+      "trial": 98
+    },
+    {
+      "budget": 13,
+      "greedy": 3832,
+      "nodes": 9,
+      "oracle": 4850,
+      "search": 4850,
+      "trial": 99
+    }
+  ],
+  "strict_improvements": 50
+}

@@ -1,0 +1,294 @@
+{
+  "kind": "parameter_sensitivity_not_learning_outcomes",
+  "model": "bkt-reading-envelope-v2",
+  "rows": [
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.29335784623075845,
+      "parameter_min": 0.16370246194055266,
+      "parameter_max": 0.43481904447170433
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.44450190037981197,
+      "parameter_min": 0.28134762500642596,
+      "parameter_max": 0.6060960037393472
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.6060919954859543,
+      "parameter_min": 0.4391433199168181,
+      "parameter_max": 0.7547444266447603
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.7483884525003162,
+      "parameter_min": 0.6102843460263574,
+      "parameter_max": 0.8602328808508074
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.3332548943069688,
+      "parameter_min": 0.18496927196263233,
+      "parameter_max": 0.4859137605737367
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.49174588851278683,
+      "parameter_min": 0.3121925206655743,
+      "parameter_max": 0.6540268667895196
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.6517884128869254,
+      "parameter_min": 0.47583340973049154,
+      "parameter_max": 0.7908297983804716
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.784558431942305,
+      "parameter_min": 0.64483349759291,
+      "parameter_max": 0.8831992845949457
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.35407598687000824,
+      "parameter_min": 0.19647038889358098,
+      "parameter_max": 0.5120992359119817
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.5150532698026402,
+      "parameter_min": 0.32841663398834997,
+      "parameter_max": 0.6773354866529285
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.6729857086538826,
+      "parameter_min": 0.4944482409894759,
+      "parameter_max": 0.8076326913043861
+    },
+    {
+      "reading_discount": 0.1,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.800425138285309,
+      "parameter_min": 0.6617134370101719,
+      "parameter_max": 0.893580532360918
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.3311879394542501,
+      "parameter_min": 0.18384309900644036,
+      "parameter_max": 0.48329588202197976
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.4893841422721369,
+      "parameter_min": 0.31058693362445355,
+      "parameter_max": 0.6516513500504927
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.6495940908515078,
+      "parameter_min": 0.47396616837239386,
+      "parameter_max": 0.7890906879718544
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.7828854481268746,
+      "parameter_min": 0.6431167533455184,
+      "parameter_max": 0.882113682975324
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.419695256247692,
+      "parameter_min": 0.23474430877129923,
+      "parameter_max": 0.5922790076932353
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.5833438873891745,
+      "parameter_min": 0.3802314488979416,
+      "parameter_max": 0.7439387253510062
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.7308702665593292,
+      "parameter_min": 0.5509676644472068,
+      "parameter_max": 0.8531707158475675
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.8413583162868308,
+      "parameter_min": 0.7104824646922367,
+      "parameter_max": 0.9207686140856814
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.4622898371597002,
+      "parameter_min": 0.2614560825510164,
+      "parameter_max": 0.642231689536456
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.6240692516926629,
+      "parameter_min": 0.41453061452964607,
+      "parameter_max": 0.7821450452192106
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.7628536771547461,
+      "parameter_min": 0.5861034187195504,
+      "parameter_max": 0.8777568888877997
+    },
+    {
+      "reading_discount": 0.25,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.8626938240367232,
+      "parameter_min": 0.7390481752983137,
+      "parameter_max": 0.9348993941464886
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.3888316104288392,
+      "parameter_min": 0.21633872113010455,
+      "parameter_max": 0.5550280907742602
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.5521356480261574,
+      "parameter_min": 0.3557211776158922,
+      "parameter_max": 0.7138496006177065
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.7051381684650728,
+      "parameter_min": 0.5247704077935064,
+      "parameter_max": 0.8330364582287973
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 1,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.8235604426577292,
+      "parameter_min": 0.6883271148380968,
+      "parameter_max": 0.9089142275257667
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.5348308373104836,
+      "parameter_min": 0.31103967887303924,
+      "parameter_max": 0.722939320720645
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.6880941315708298,
+      "parameter_min": 0.4744931581939714,
+      "parameter_max": 0.8391930139690177
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.8099958173296815,
+      "parameter_min": 0.6436017089087791,
+      "parameter_max": 0.9125665523903022
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 5,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.8927398890460942,
+      "parameter_min": 0.7831601846363125,
+      "parameter_max": 0.9542847554766528
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 1,
+      "mean_index": 0.5966460750411314,
+      "parameter_min": 0.35829750823424567,
+      "parameter_max": 0.7866697267134352
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 2,
+      "mean_index": 0.7382481584425569,
+      "parameter_min": 0.5275685276048601,
+      "parameter_max": 0.8805989321378472
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 4,
+      "mean_index": 0.8446361865227677,
+      "parameter_min": 0.6907297683489949,
+      "parameter_max": 0.9365090207052182
+    },
+    {
+      "reading_discount": 0.5,
+      "full_reading_days": 10,
+      "self_report_likelihood_ratio": 8,
+      "mean_index": 0.9138712598258711,
+      "parameter_min": 0.8170788511324262,
+      "parameter_max": 0.9672136929826124
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import type { LearningNodeView } from '@/api/learning/objectives'
+import {summarizeEstimates} from './learningEstimates'
 
 export const learningStates = ['unseen', 'learning', 'self_known', 'verified', 'review'] as const
 export type LearningState = typeof learningStates[number]
@@ -35,6 +36,6 @@ export function groupLearningNodes(nodes: LearningNodeView[]) {
     if (!groups.has(key)) groups.set(key, { id: key, name: node.folder_name || '未分组知识', nodes: [] })
     groups.get(key)!.nodes.push(node)
   }
-  return [...groups.values()].map(g => ({ ...g, ...summarizeNodes(g.nodes) }))
-    .sort((a, b) => b.counts.review - a.counts.review || b.pending - a.pending || a.name.localeCompare(b.name))
+  return [...groups.values()].map(g => ({ ...g, ...summarizeNodes(g.nodes), model:g.nodes.some(n=>n.estimate)?summarizeEstimates(g.nodes):null }))
+    .sort((a, b) => (b.model?.counts.review??b.counts.review) - (a.model?.counts.review??a.counts.review) || (b.model?b.model.total-b.model.counts.familiar:b.pending) - (a.model?a.model.total-a.model.counts.familiar:a.pending) || a.name.localeCompare(b.name))
 }

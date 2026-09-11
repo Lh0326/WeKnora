@@ -1,5 +1,6 @@
 <template>
-  <section class="overview" aria-label="个人知识掌握概览">
+  <ModelOverview v-if="nodes.some(n=>n.estimate)" :nodes="nodes" @open="emit('open',$event)" />
+  <section v-else class="overview" aria-label="个人知识掌握概览">
     <div class="overview-top">
       <div class="coverage-ring" :style="{background:ringGradient}" role="img" :aria-label="`已会覆盖：自认已会 ${summary.counts.self_known}，验证通过 ${summary.counts.verified}，共 ${summary.total} 个知识点`">
         <div><strong>{{ summary.total ? Math.round(summary.known / summary.total * 100) : 0 }}<small>%</small></strong><span>已会覆盖</span></div>
@@ -28,6 +29,7 @@
 </template>
 <script setup lang="ts">
 import {computed,ref,watch} from 'vue'
+import ModelOverview from './ModelOverview.vue'
 import type {LearningNodeView} from '@/api/learning/objectives'
 import {learningStates,summarizeNodes,learningFocus,type LearningState} from './learningOverview'
 import {nodeStateColors,nodeStateLabels} from './learningEvents'

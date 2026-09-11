@@ -1,0 +1,255 @@
+{
+  "source_mode": "offline_evaluation_only",
+  "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+  "generated_at": "2026-09-11T22:33:44.4100749Z",
+  "result": {
+    "policy_version": "kc-source-draft-v1",
+    "model_id": "4f0e5d9c-5a44-47a8-834c-ce4170f8be40",
+    "status": "review_required",
+    "review_required": true,
+    "candidates": [
+      {
+        "material": {
+          "key": "combined-mean-weighted-by-size",
+          "title": "按人数加权计算两小组的合并平均分",
+          "topic": "统计",
+          "condition": "每位成员只有一个分数，两个小组互不重叠，分数使用相同量表，并且没有缺失值",
+          "goal": "给定各组的人数与平均分，能按人数加权计算合并后的平均分，并说明人数不同时为什么不能把两个组均值直接平均",
+          "explanation": "在上述条件下，合并平均分等于各组平均分乘以各组人数后求和，再除以总人数，这与先合并所有成员分数再求平均相同。人数不同导致每个组在总体中占的比重不同，因此把两个组均值直接平均会得到错误结果。",
+          "example": "甲组 2 人、平均分 90，乙组 8 人、平均分 60，合并平均分为 (2×90+8×60)/(2+8)=66，而不是把两个均值直接平均得到的 75；类似地，小组丙 3 人均分 80、小组丁 1 人均分 40 时，总体均分为 (3×80+1×40)/4=70。",
+          "minutes": 4,
+          "sources": [
+            {
+              "slug": "statistics/weighted-mean",
+              "quote": "在每人一个分数、组间成员互不重叠、使用同一量表且没有缺失的条件下，合并平均分等于各组平均分乘以各组人数后求和，再除以总人数。这称为按人数加权平均，与先合并所有成员分数再求平均相同。",
+              "role": "给出按人数加权平均的一般公式表述及其与逐人合并求平均的等价性",
+              "hash": "4467a05457c221e580e32e3ac55df5e15669babe5022611e858ea3e056d07c3c"
+            },
+            {
+              "slug": "statistics/average",
+              "quote": "合并后的平均分是 (2×90+8×60)/(2+8)=66，不能把两个组均值直接平均成 75。人数不同导致每个组在总体中占的比重不同。",
+              "role": "给出人数不同时直接平均导致错误的具体算例并解释原因",
+              "hash": "d2fe61ada91fc30510195ccf003076d492e772151a82db6be16df836499c05a8"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "equal-size-direct-average-equivalence",
+            "means-without-sizes-undetermined",
+            "overlapping-members-double-counting"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "equal-size-direct-average-equivalence",
+          "title": "两组人数相等时直接平均组均值与加权结果相同的条件",
+          "topic": "统计",
+          "condition": "两个小组人数相等，且成员不重复、量表相同、没有缺失、人数统计正确",
+          "goal": "能判断何时可以把两个组均值直接平均得到合并均值，并列出该等价所依赖的条件",
+          "explanation": "如果两个小组人数相等，直接平均两个组均值与按人数加权的结果相同；这项结论依赖成员不重复、量表相同、没有缺失和人数统计正确，任一条件不满足时不能沿用该简化做法。",
+          "example": "基于来源规则的假设例子：两组各 5 人，均分分别为 80 和 60，直接平均得 (80+60)/2=70；按人数加权同样为 (5×80+5×60)/(5+5)=70，两者一致。",
+          "minutes": 2,
+          "sources": [
+            {
+              "slug": "statistics/average",
+              "quote": "如果两个小组人数相等，直接平均两个组均值与按人数加权的结果相同。这项结论依赖成员不重复、量表相同、没有缺失和人数统计正确。",
+              "role": "给出人数相等时两种算法等价及其成立条件",
+              "hash": "d2fe61ada91fc30510195ccf003076d492e772151a82db6be16df836499c05a8"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "combined-mean-weighted-by-size"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "means-without-sizes-undetermined",
+          "title": "仅知两个组均值而不知人数时无法确定合并均值",
+          "topic": "统计",
+          "condition": "只知道两个小组各自的平均分，不知道各组人数",
+          "goal": "能说明为什么仅有两个组均值不足以确定合并后的平均分，并指出该案例分数均值的解释边界",
+          "explanation": "仅知道两个均值却不知道人数，不能确定合并均值，因为各组人数决定其在总体中的比重；此外，这里不讨论缺失值填补，也不能用这个分数均值推出成员的整体工作能力。",
+          "example": "基于来源规则的假设例子：已知两组均值为 90 和 60，若两组人数为 2 人和 8 人，合并均值为 66；若两组人数相等（各 5 人），合并均值为 75；人数未知时无法在这类结果中作出确定。",
+          "minutes": 2,
+          "sources": [
+            {
+              "slug": "statistics/average",
+              "quote": "仅知道两个均值却不知道人数，不能确定合并均值。这里不讨论缺失值填补，也不能用这个分数均值推出成员的整体工作能力。",
+              "role": "给出信息不足时结论不可确定以及分数均值的解释边界",
+              "hash": "d2fe61ada91fc30510195ccf003076d492e772151a82db6be16df836499c05a8"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "combined-mean-weighted-by-size",
+            "equal-size-direct-average-equivalence"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      },
+      {
+        "material": {
+          "key": "overlapping-members-double-counting",
+          "title": "成员重复出现在两组时不能直接套用加权公式",
+          "topic": "统计",
+          "condition": "有成员同时出现在两个小组（组间成员重叠）",
+          "goal": "能识别成员重叠时按人数加权公式会重复计入该成员，并说明须先明确去重后的统计口径",
+          "explanation": "若一个人同时出现在两组，这个公式会把此人重复计入，人数与分数都会被多算；必须先明确去重后的统计口径，不能直接套用加权公式。",
+          "example": "基于来源规则的假设例子：若某人同时出现在小组丙和小组丁，直接套用 (3×80+1×40)/4=70 会把此人计入两次，须先明确去重后的统计口径再重新统计人数与分数。",
+          "minutes": 2,
+          "sources": [
+            {
+              "slug": "statistics/weighted-mean",
+              "quote": "若一个人同时出现在两组，这个公式会把此人重复计入，必须先明确去重后的统计口径，不能直接套用。",
+              "role": "给出成员重叠时公式失效的情形与处理前置要求",
+              "hash": "4467a05457c221e580e32e3ac55df5e15669babe5022611e858ea3e056d07c3c"
+            }
+          ],
+          "prerequisites": [],
+          "related": [
+            "combined-mean-weighted-by-size"
+          ],
+          "checks": [],
+          "provenance": "模型生成的来源候选；仅通过机械校验，尚未完成内容复核。",
+          "material_status": "draft"
+        },
+        "warnings": [
+          "引文存在仅证明可追溯；目标、条件、解释和例子仍需逐项核对。"
+        ]
+      }
+    ],
+    "rejected": [],
+    "source_hashes": {
+      "statistics/average": "d2fe61ada91fc30510195ccf003076d492e772151a82db6be16df836499c05a8",
+      "statistics/weighted-mean": "4467a05457c221e580e32e3ac55df5e15669babe5022611e858ea3e056d07c3c"
+    },
+    "model_notes": [
+      "两个来源对合并平均分规则的条件与公式表述一致（同义且用途一致），故在 combined-mean-weighted-by-size 中合并并保留两个来源，未发现来源冲突。",
+      "来源未提供人数相等或成员重叠情形下的数值算例，equal-size-direct-average-equivalence、means-without-sizes-undetermined 与 overlapping-members-double-counting 的例子均标注为基于来源规则的假设例子，并遵守各自条件。",
+      "无可靠依据设定先修目标，故未设置先修；候选间的先后关系仅以 related 作为建议。",
+      "来源中『不能用分数均值推出成员的整体工作能力』和『不讨论缺失值填补』作为解释边界并入 means-without-sizes-undetermined 的解释，未单独生成候选。"
+    ],
+    "model_proposals": [
+      {
+        "key": "combined-mean-weighted-by-size",
+        "title": "按人数加权计算两小组的合并平均分",
+        "topic": "统计",
+        "condition": "每位成员只有一个分数，两个小组互不重叠，分数使用相同量表，并且没有缺失值",
+        "goal": "给定各组的人数与平均分，能按人数加权计算合并后的平均分，并说明人数不同时为什么不能把两个组均值直接平均",
+        "explanation": "在上述条件下，合并平均分等于各组平均分乘以各组人数后求和，再除以总人数，这与先合并所有成员分数再求平均相同。人数不同导致每个组在总体中占的比重不同，因此把两个组均值直接平均会得到错误结果。",
+        "example": "甲组 2 人、平均分 90，乙组 8 人、平均分 60，合并平均分为 (2×90+8×60)/(2+8)=66，而不是把两个均值直接平均得到的 75；类似地，小组丙 3 人均分 80、小组丁 1 人均分 40 时，总体均分为 (3×80+1×40)/4=70。",
+        "minutes": 4,
+        "sources": [
+          {
+            "slug": "statistics/weighted-mean",
+            "quote": "在每人一个分数、组间成员互不重叠、使用同一量表且没有缺失的条件下，合并平均分等于各组平均分乘以各组人数后求和，再除以总人数。这称为按人数加权平均，与先合并所有成员分数再求平均相同。",
+            "role": "给出按人数加权平均的一般公式表述及其与逐人合并求平均的等价性"
+          },
+          {
+            "slug": "statistics/average",
+            "quote": "合并后的平均分是 (2×90+8×60)/(2+8)=66，不能把两个组均值直接平均成 75。人数不同导致每个组在总体中占的比重不同。",
+            "role": "给出人数不同时直接平均导致错误的具体算例并解释原因"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "equal-size-direct-average-equivalence",
+          "means-without-sizes-undetermined",
+          "overlapping-members-double-counting"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "equal-size-direct-average-equivalence",
+        "title": "两组人数相等时直接平均组均值与加权结果相同的条件",
+        "topic": "统计",
+        "condition": "两个小组人数相等，且成员不重复、量表相同、没有缺失、人数统计正确",
+        "goal": "能判断何时可以把两个组均值直接平均得到合并均值，并列出该等价所依赖的条件",
+        "explanation": "如果两个小组人数相等，直接平均两个组均值与按人数加权的结果相同；这项结论依赖成员不重复、量表相同、没有缺失和人数统计正确，任一条件不满足时不能沿用该简化做法。",
+        "example": "基于来源规则的假设例子：两组各 5 人，均分分别为 80 和 60，直接平均得 (80+60)/2=70；按人数加权同样为 (5×80+5×60)/(5+5)=70，两者一致。",
+        "minutes": 2,
+        "sources": [
+          {
+            "slug": "statistics/average",
+            "quote": "如果两个小组人数相等，直接平均两个组均值与按人数加权的结果相同。这项结论依赖成员不重复、量表相同、没有缺失和人数统计正确。",
+            "role": "给出人数相等时两种算法等价及其成立条件"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "combined-mean-weighted-by-size"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "means-without-sizes-undetermined",
+        "title": "仅知两个组均值而不知人数时无法确定合并均值",
+        "topic": "统计",
+        "condition": "只知道两个小组各自的平均分，不知道各组人数",
+        "goal": "能说明为什么仅有两个组均值不足以确定合并后的平均分，并指出该案例分数均值的解释边界",
+        "explanation": "仅知道两个均值却不知道人数，不能确定合并均值，因为各组人数决定其在总体中的比重；此外，这里不讨论缺失值填补，也不能用这个分数均值推出成员的整体工作能力。",
+        "example": "基于来源规则的假设例子：已知两组均值为 90 和 60，若两组人数为 2 人和 8 人，合并均值为 66；若两组人数相等（各 5 人），合并均值为 75；人数未知时无法在这类结果中作出确定。",
+        "minutes": 2,
+        "sources": [
+          {
+            "slug": "statistics/average",
+            "quote": "仅知道两个均值却不知道人数，不能确定合并均值。这里不讨论缺失值填补，也不能用这个分数均值推出成员的整体工作能力。",
+            "role": "给出信息不足时结论不可确定以及分数均值的解释边界"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "combined-mean-weighted-by-size",
+          "equal-size-direct-average-equivalence"
+        ],
+        "checks": null,
+        "provenance": ""
+      },
+      {
+        "key": "overlapping-members-double-counting",
+        "title": "成员重复出现在两组时不能直接套用加权公式",
+        "topic": "统计",
+        "condition": "有成员同时出现在两个小组（组间成员重叠）",
+        "goal": "能识别成员重叠时按人数加权公式会重复计入该成员，并说明须先明确去重后的统计口径",
+        "explanation": "若一个人同时出现在两组，这个公式会把此人重复计入，人数与分数都会被多算；必须先明确去重后的统计口径，不能直接套用加权公式。",
+        "example": "基于来源规则的假设例子：若某人同时出现在小组丙和小组丁，直接套用 (3×80+1×40)/4=70 会把此人计入两次，须先明确去重后的统计口径再重新统计人数与分数。",
+        "minutes": 2,
+        "sources": [
+          {
+            "slug": "statistics/weighted-mean",
+            "quote": "若一个人同时出现在两组，这个公式会把此人重复计入，必须先明确去重后的统计口径，不能直接套用。",
+            "role": "给出成员重叠时公式失效的情形与处理前置要求"
+          }
+        ],
+        "prerequisites": null,
+        "related": [
+          "combined-mean-weighted-by-size"
+        ],
+        "checks": null,
+        "provenance": ""
+      }
+    ]
+  }
+}

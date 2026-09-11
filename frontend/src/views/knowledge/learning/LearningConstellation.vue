@@ -1,11 +1,18 @@
 <template>
   <div class="constellation-wrap">
+    <div class="cs-toolbar" role="group" aria-label="星图视角">
+      <span class="cs-interaction-hint">拖动旋转 · 点击节点阅读</span>
+      <button type="button" aria-label="缩小星图" title="缩小" :disabled="zoom <= 0.6" @click="adjustZoom(1 / 1.2)">−</button>
+      <button type="button" aria-label="放大星图" title="放大" :disabled="zoom >= 1.8" @click="adjustZoom(1.2)">＋</button>
+      <button type="button" aria-label="复位星图视角" @click="resetView">复位</button>
+    </div>
     <svg :viewBox="`0 0 ${SIZE} ${SIZE}`" class="constellation-svg" :class="{ grabbing: dragging }" role="application"
       :aria-label="$t('knowledgeEditor.learningTab.constellationTitle')"
       @wheel.prevent="onWheel" @selectstart.prevent
       @pointerdown="onPointerDown" @pointermove="onPointerMove" @pointerup="onPointerUp" @pointercancel="onPointerUp"
       @dblclick.prevent="resetView">
       <defs>
+        <marker id="cs-prerequisite-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#79a498" /></marker>
         <radialGradient id="cs-bg" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stop-color="rgba(7, 192, 95, 0.07)" />
           <stop offset="70%" stop-color="rgba(7, 192, 95, 0.02)" />
@@ -26,7 +33,9 @@
       <!-- 关系线：先修实线、wiki细线、跨区虚线。悬停时相关线亮绿、其余半隐；星尘折起时其连线不画 -->
       <line v-for="e in edgeViews" :key="`e-${e.key}`" class="cs-edge"
         :x1="e.x1" :y1="e.y1" :x2="e.x2" :y2="e.y2"
-        :class="{ cross: e.cross && !e.lit, lit: e.lit, wikilink: e.wikilink && !e.lit, dim: e.dim }"
+        :class="{ cross: !components && e.cross && !e.lit, lit: e.lit, wikilink: e.wikilink && !e.lit, dim: e.dim }"
+        :stroke-dasharray="components && e.wikilink ? '3 4' : undefined"
+        :marker-end="components && !e.wikilink ? 'url(#cs-prerequisite-arrow)' : undefined"
         :stroke-width="e.lit ? 2 : e.wikilink ? 0.7 : 1"
         :opacity="e.dim ? 0.10 : e.lit ? 0.95 : undefined" />
 
@@ -34,7 +43,7 @@
       <g class="cs-hub">
         <circle :cx="SIZE / 2" :cy="SIZE / 2" r="40" class="cs-hub-disc" />
         <text :x="SIZE / 2" :y="SIZE / 2 - 4" text-anchor="middle" class="cs-hub-num">{{ verification && nodes.some(n => n.verification_label === '验证状态暂不可用') ? '—' : `${litCount}/${totalCount}` }}</text>
-        <text :x="SIZE / 2" :y="SIZE / 2 + 14" text-anchor="middle" class="cs-hub-sub">{{ verification ? '已接触的知识点' : $t('knowledgeEditor.learningTab.constellationLit') }}</text>
+        <text :x="SIZE / 2" :y="SIZE / 2 + 14" text-anchor="middle" class="cs-hub-sub">{{ components ? '已接触目标' : verification ? '已接触的知识点' : $t('knowledgeEditor.learningTab.constellationLit') }}</text>
       </g>
 
       <!-- 星尘：折起的未接触微点云（无标签、不挡交互） -->
@@ -48,6 +57,7 @@
         tabindex="0" role="button" :aria-label="p.tooltip"
         @click.stop="onNodeClick(p.slug)"
         @keydown.enter.prevent="emit('open', p.slug)"
+        @keydown.space.prevent="emit('open', p.slug)"
         @pointerenter="hovered = p.slug" @pointerleave="hovered = null">
         <circle class="cs-node-hit" :cx="p.x" :cy="p.y" :r="p.r + 7" />
         <circle v-if="p.recent" class="cs-ping" :cx="p.x" :cy="p.y" :r="p.r + 3" />
@@ -56,7 +66,7 @@
           :fill="p.fill" :stroke-dasharray="p.lowConf ? '2 3' : 'none'"
           :opacity="p.opacity" />
         <text v-if="p.showLabel" :x="p.x" :y="p.y + p.r + 13" text-anchor="middle" class="cs-node-label"
-          :font-size="10" :opacity="p.opacity">{{ p.label }}</text>
+          :opacity="p.dim ? 0.3 : 1">{{ p.label }}</text>
         <title>{{ p.tooltip }}</title>
       </g>
 
@@ -74,15 +84,20 @@
         :x="z.x" :y="z.y" text-anchor="middle" :opacity="z.dim ? 0.3 : 0.78">{{ z.name }}</text>
     </svg>
     <div class="cs-caption" :class="{'verification-caption':verification}">
-      <div v-if="verification" class="verification-legend"><span><i style="background:#c9ced5"></i>未开始</span><span><i style="background:#5c9dce"></i>学习中</span><span><i style="background:#64b991"></i>自认已会</span><span><i style="background:#148452"></i>验证通过</span><span><i style="background:#d59b35"></i>待巩固</span></div>
-      <div>{{ verification ? '点击阅读 · 自认已会可移出待学 · 验证通过单独标记' : $t('knowledgeEditor.learningTab.constellationHint3d') }}</div>
+      <div v-if="components" class="verification-legend"><span v-for="(label,level) in componentLabels" :key="level"><i :style="{background:componentColors[level]}"></i>{{ label }}</span></div>
+      <div v-else-if="estimated" class="verification-legend"><span><i style="background:#a7afb8"></i>未接触</span><span><i style="background:#9bbfc6"></i>初步接触</span><span><i style="background:#59aa9a"></i>已阅读</span><span><i style="background:#77ab77"></i>自认熟悉</span><span><i style="background:#168357"></i>检查支持</span><span><i style="background:#b58124"></i>建议巩固</span></div>
+      <div v-else-if="verification" class="verification-legend"><span><i style="background:#c9ced5"></i>未开始</span><span><i style="background:#5c9dce"></i>学习中</span><span><i style="background:#64b991"></i>自认已会</span><span><i style="background:#148452"></i>验证通过</span><span><i style="background:#d59b35"></i>待巩固</span></div>
+      <div v-if="verification" class="cs-recommendation-key"><i></i>外圈标记为本轮路径中的模块推荐</div>
+      <div v-if="components">箭头表示学习前置 · 虚线表示相关，不代表先后</div>
+      <div>{{ components ? '颜色反映目标状态 · 阅读自动更新 · 检查证据单独记录' : estimated ? '颜色反映学习状态 · 阅读自动更新 · 检查证据单独记录' : verification ? '点击阅读 · 自认已会可移出待学 · 验证通过单独标记' : $t('knowledgeEditor.learningTab.constellationHint3d') }}</div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { componentColors, componentLabels } from './componentPresentation'
 import {
   layoutConstellation3, nodeLabel, truncateLabel, partitionDust, labelPriority, cullLabels, labelUnits,
   projectPoint, ringPoints, DEFAULT_VIEW,
@@ -95,6 +110,8 @@ const props = defineProps<{
   zones: ZoneAxis[]
   highlightZone?: string | null
   verification?: boolean
+  estimated?: boolean
+  components?: boolean
 }>()
 const emit = defineEmits<{ (e: 'open', slug: string): void }>()
 const { t } = useI18n()
@@ -130,20 +147,25 @@ function tierColor(tier: Tier): string {
 
 const zoom = ref(1)
 const yaw = ref(INITIAL_YAW)
-const pitch = ref(INITIAL_PITCH)
+const pitch = ref(props.components ? 0.95 : INITIAL_PITCH)
+watch(() => props.components, () => resetView())
 const hovered = ref<string | null>(null)
 const dragging = ref(false)
 const expandedDust = ref<Set<string>>(new Set())
 
 function onWheel(e: WheelEvent) {
   const dy = e.deltaY * (e.deltaMode === 1 ? 33 : 1)
-  zoom.value = Math.max(0.6, Math.min(1.8, zoom.value * Math.exp(-dy * 0.0012)))
+  adjustZoom(Math.exp(-dy * 0.0012))
+}
+
+function adjustZoom(factor: number) {
+  zoom.value = Math.max(0.6, Math.min(1.8, zoom.value * factor))
 }
 
 function resetView() {
   zoom.value = 1
   yaw.value = INITIAL_YAW
-  pitch.value = INITIAL_PITCH
+  pitch.value = props.components ? 0.95 : INITIAL_PITCH
 }
 
 // ---- 拖拽旋转：水平拖=yaw、垂直拖=pitch（俯仰钳位），>4px 判拖拽并抑制节点 click ----
@@ -332,7 +354,7 @@ const nodeViews = computed<NodeView[]>(() => {
   // 标签预算：优先级排序 + 贪心矩形避让（含中心枢纽与外圈分区名障碍），悬停节点钉住必显。
   const pinned = hovered.value
   const rimObstacles = zoneLabelViews.value.map((z) => {
-    const w = labelUnits(z.name) * 10
+    const w = labelUnits(z.name) * 12
     return { x0: z.x - w / 2 - 2, x1: z.x + w / 2 + 2, y0: z.y - 9, y1: z.y + 3 }
   })
   const keep = cullLabels(
@@ -340,7 +362,7 @@ const nodeViews = computed<NodeView[]>(() => {
       slug: v.slug,
       x: v.x,
       y: v.y + v.r + 13,
-      widthPx: labelUnits(v.label) * 10,
+      widthPx: labelUnits(v.label) * 12,
       priority: labelPriority({
         tier: v.tier, faded: v.faded, recent: v.recent, isNext: v.isNext,
         selfAssess: v.selfAssess, skipped: v.skipped, evidence: v.evidence,
@@ -370,8 +392,10 @@ const edgeViews = computed<EdgeView[]>(() => {
     const dim = !!hovered.value && !hoverLit
     const pa = proj(a.pos)
     const pb = proj(b.pos)
+    const distance = Math.hypot(pb.x-pa.x, pb.y-pa.y)
+    const inset = props.components && e.kind !== 'wikilink' ? Math.min(15, distance/3) : 0
     out.push({
-      key: `${e.from}->${e.to}`, x1: pa.x, y1: pa.y, x2: pb.x, y2: pb.y,
+      key: `${e.kind}:${e.from}->${e.to}`, x1: pa.x, y1: pa.y, x2: pb.x-(pb.x-pa.x)*inset/(distance||1), y2: pb.y-(pb.y-pa.y)*inset/(distance||1),
       cross, lit: hoverLit || zoneLit, wikilink: e.kind === 'wikilink', dim,
     })
   }
@@ -500,8 +524,15 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
 
 <style scoped>
 .constellation-wrap { position: relative; height: 100%; width: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.cs-toolbar { display: flex; flex: none; align-items: center; gap: 6px; width: 100%; flex-wrap: wrap; }
+.cs-interaction-hint { flex: 1; font-size: 11px; color: var(--td-text-color-secondary, #666); }
+.cs-toolbar button { border: 1px solid var(--td-component-border, #ddd); background: var(--td-bg-color-container, #fff); color: var(--td-text-color-secondary, #555); border-radius: 5px; min-width: 28px; padding: 4px 6px; font-size: 12px; cursor: pointer; }
+.cs-toolbar button:hover { border-color: var(--td-brand-color, #07c05f); }
+.cs-toolbar button:disabled { cursor: default; opacity: 0.4; }
+.cs-recommendation-key { display: flex; align-items: center; gap: 5px; }
+.cs-recommendation-key i { display: inline-block; width: 9px; height: 9px; border: 1px solid #049b38; border-radius: 50%; }
 .constellation-svg {
-  width: 100%; height: 100%; max-width: none; display: block;
+  width: 100%; flex: 1; min-height: 0; max-width: none; display: block;
   cursor: grab; touch-action: none;
   -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
@@ -510,7 +541,7 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
 @keyframes cs-bg-breathe { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
 .cs-separator { stroke: rgba(125, 145, 165, 0.12); stroke-width: 1; pointer-events: none; }
 .cs-ring-guide { fill: none; stroke-width: 1; stroke-dasharray: 3 6; opacity: 0.25; pointer-events: none; }
-.cs-edge { stroke: rgba(125, 145, 165, 0.30); }
+.cs-edge { stroke: rgba(125, 145, 165, 0.46); }
 .cs-edge.cross { stroke-dasharray: 5 5; }
 .cs-edge.wikilink { opacity: 0.45; }
 .cs-edge.lit { stroke: var(--td-brand-color, #07c05f); opacity: 0.95; }
@@ -526,7 +557,7 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
 .cs-dust-chip:focus-visible circle { stroke: var(--td-brand-color, #07c05f); stroke-width: 2; }
 .cs-dust-chip.dim { opacity: 0.45; }
 .cs-zone-rim {
-  font-size: 10px; fill: var(--td-text-color-placeholder, #999); font-weight: 500;
+  font-size: 12px; fill: var(--td-text-color-secondary, #666); font-weight: 500;
   paint-order: stroke; stroke: var(--td-bg-color-container, #fff); stroke-width: 3px; stroke-linejoin: round;
   pointer-events: none; -webkit-user-select: none; user-select: none;
 }
@@ -537,7 +568,7 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
 .cs-node-disc { stroke: rgba(0, 0, 0, 0.12); stroke-width: 0.5; }
 .cs-node:hover .cs-node-disc { stroke: var(--td-brand-color, #07c05f); stroke-width: 2; }
 .cs-node-label {
-  font-size: 10px; fill: var(--td-text-color-secondary, #555); font-weight: 500;
+  font-size: 12px; fill: var(--td-text-color-primary, #333); font-weight: 500;
   paint-order: stroke; stroke: var(--td-bg-color-container, #fff); stroke-width: 3px; stroke-linejoin: round;
   pointer-events: none;
   -webkit-user-select: none; user-select: none;
@@ -549,7 +580,7 @@ function selfAssessLine(m: { direction: string; event_type: string }): string {
 /* 近学光环：低透明度缓呼吸（曾经的强脉冲扩散在多实体时令人眼花——
    刻意压到"有呼吸感即可"，配合球体整体不显死寂） */
 @keyframes cs-ping { 0%, 100% { transform: scale(0.92); opacity: 0.30; } 50% { transform: scale(1.16); opacity: 0.10; } }
-.cs-caption { position: absolute; left: 4px; bottom: 2px; font-size: 11px; color: var(--td-text-color-placeholder, #999); max-width: 46%; text-align: left; pointer-events: none; }
+.cs-caption { flex: none; align-self: flex-start; font-size: 11px; color: var(--td-text-color-placeholder, #999); max-width: 100%; text-align: left; pointer-events: none; padding: 4px 0; }
 .cs-caption.verification-caption{max-width:95%;line-height:1.7;color:var(--td-text-color-secondary,#666)}.verification-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-bottom:3px}.verification-legend span{display:inline-flex;align-items:center;gap:4px}.verification-legend i{width:7px;height:7px;border-radius:50%;display:inline-block;flex-shrink:0}
 @media (prefers-reduced-motion: reduce) {
   .cs-bg, .cs-ping, .cs-next-ring { animation: none; }

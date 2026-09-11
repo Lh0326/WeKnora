@@ -1,5 +1,6 @@
 import type { ObjectiveViewResponse } from '@/api/learning/objectives'
 import {nodeStateLabels,nodeStateColors} from './learningEvents'
+import {estimateLabels,estimateColors,estimateExplanation} from './learningEstimates'
 import type { ConstellationNode } from './constellationLayout'
 
 /** Display projection only. Activity, self-report and legacy scores never certify a page. */
@@ -12,6 +13,7 @@ export function projectObjectiveNodes(nodes: ConstellationNode[], view: Objectiv
  const workflow = new Map((view?.nodes||[]).map(n=>[n.slug,n]))
  return nodes.map(node => {
   const fact = workflow.get(node.slug)
+  if(fact?.estimate){const e=fact.estimate;return {...node,level:e.level==='familiar'?'familiar':e.level==='unseen'?'unseen':'touched',p_eff:undefined,skipped:false,self_assess:undefined,low_confidence:false,last_evidence_at:undefined,last_activity_at:undefined,evidence_count:fact.reads+fact.cites,verification_complete:fact.state==='verified',learning_contacted:e.level!=='unseen',verification_label:`${estimateLabels[e.level]} · ${estimateExplanation(fact)}${fact.state==='verified'?' · 目标验证通过':''}`,verification_color:estimateColors[e.level]}}
   if(fact){return {...node,level:fact.state==='verified'?'mastered':fact.state==='self_known'?'familiar':fact.state==='unseen'?'unseen':'touched',p_eff:undefined,skipped:false,self_assess:undefined,low_confidence:false,last_evidence_at:undefined,last_activity_at:undefined,evidence_count:fact.reads+fact.cites,verification_complete:fact.state==='verified',learning_contacted:fact.state!=='unseen',verification_label:`${nodeStateLabels[fact.state]} · 阅读 ${fact.reads} 次${fact.updated?' · 内容已更新':''}${fact.objective_total?` · ${fact.objective_verified}/${fact.objective_total} 个目标验证通过`:''}`,verification_color:nodeStateColors[fact.state]}}
 
   const entries = bySlug.get(node.slug) ?? []

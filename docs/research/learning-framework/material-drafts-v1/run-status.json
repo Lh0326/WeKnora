@@ -1,0 +1,18 @@
+[
+  {
+    "exit": 1,
+    "case": "same-word-different-scope"
+  },
+  {
+    "exit": 1,
+    "case": "cross-source-same-rule"
+  },
+  {
+    "exit": 1,
+    "case": "conditional-conflict"
+  },
+  {
+    "exit": 1,
+    "case": "insufficient-context"
+  }
+]

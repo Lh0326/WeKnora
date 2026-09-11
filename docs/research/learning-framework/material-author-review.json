@@ -1,0 +1,151 @@
+{
+  "reviewer": "prototype author (Codex), not an independent evaluator",
+  "original_inputs": "material-boundary-sources.json",
+  "original_outputs": "material-drafts-glm",
+  "reviewed_sources": "material-boundary-sources-reviewed.json",
+  "reviewed_pack": "material-boundary-reviewed-pack.json",
+  "limitations": [
+    "合成来源由同一作者编写；不足信息样本带有显式线索，不能当作盲测拒判能力。",
+    "原始统计来源存在遗漏特例的问题；原文及原模型输出保留，修订另存。",
+    "无独立学习者，无学习时间或保持收益结论。"
+  ],
+  "candidate_count": 11,
+  "mechanically_rejected": 0,
+  "author_revision_count": 5,
+  "insufficient_context_candidates": 0,
+  "reviews": [
+    {
+      "case": "same-word-different-scope",
+      "key": "mutex-shared-counter-region",
+      "initial_decision": "needs_revision",
+      "issue_type": "language_error",
+      "reason": "解释出现“不加锁就遵守”的病句，妨碍理解。",
+      "edits": [
+        {
+          "field": "explanation",
+          "before": "只要有一方不加锁就遵守，约定就会被破坏。",
+          "after": "只要有一方不遵守加锁约定，该保护就不能保证成立。"
+        }
+      ]
+    },
+    {
+      "case": "same-word-different-scope",
+      "key": "task-service-atomic-claim",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "same-word-different-scope",
+      "key": "lock-scope-local-vs-service",
+      "initial_decision": "needs_revision",
+      "issue_type": "unsupported_reverse_claim",
+      "reason": "将“不能套用保证”扩成反向否定；来源没有论证其他任务服务设计能否保护计数器。",
+      "edits": [
+        {
+          "field": "explanation",
+          "before": "同样，任务服务的领取规则也不是同进程共享计数器场景所用的保护方式。",
+          "after": "本材料只约定任务服务用于领取任务，没有给出它保护该计数器读写的设计；不能据此推断这种保护已经成立。"
+        },
+        {
+          "field": "example",
+          "before": "反之，把任务服务领取规则当作保护同进程计数器读、算、写回的手段，同样属于把一种方案的保证套给另一种。",
+          "after": "本材料没有给出任务服务保护同进程计数器读写的设计；遇到这一主张，应要求补充具体机制和依据，而非推断所有此类设计都不可能。"
+        }
+      ]
+    },
+    {
+      "case": "cross-source-same-rule",
+      "key": "combined-mean-weighted-by-size",
+      "initial_decision": "needs_revision",
+      "issue_type": "sufficient_vs_necessary",
+      "reason": "人数不等并不必然使直接平均的数值错误；两组均值相等是反例。",
+      "edits": [
+        {
+          "field": "goal",
+          "before": "并说明人数不同时为什么不能把两个组均值直接平均",
+          "after": "并说明为什么一般需要按人数加权，以及均值相等时的特例"
+        },
+        {
+          "field": "explanation",
+          "before": "人数不同导致每个组在总体中占的比重不同，因此把两个组均值直接平均会得到错误结果。",
+          "after": "人数不同导致每个组在总体中占的比重不同，因此不能保证直接平均两个组均值能得到正确结果；均值恰好相同时两种算法仍相同。一般情况应按人数加权。"
+        }
+      ]
+    },
+    {
+      "case": "cross-source-same-rule",
+      "key": "equal-size-direct-average-equivalence",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "cross-source-same-rule",
+      "key": "means-without-sizes-undetermined",
+      "initial_decision": "needs_revision",
+      "issue_type": "source_omitted_exception",
+      "reason": "原始自编来源本身漏写“两均值不同”；模型沿用后遗漏均值相等的可确定特例。先修来源，再修候选。",
+      "edits": [
+        {
+          "field": "condition",
+          "before": "只知道两个小组各自的平均分，不知道各组人数",
+          "after": "只知道两个小组各自不同的平均分，不知道各组人数；每人一个分数、成员不重复、同量表且无缺失"
+        },
+        {
+          "field": "explanation",
+          "before": "仅知道两个均值却不知道人数，不能确定合并均值",
+          "after": "仅知道两个不同的均值却不知道人数，不能确定合并均值"
+        }
+      ]
+    },
+    {
+      "case": "cross-source-same-rule",
+      "key": "overlapping-members-double-counting",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "conditional-conflict",
+      "key": "normal-release-order",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "conditional-conflict",
+      "key": "normal-release-post-approval-change",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "conditional-conflict",
+      "key": "emergency-fix-deploy-then-review",
+      "initial_decision": "no_issue_found_by_author",
+      "issue_type": null,
+      "reason": "作者本次未发现来源对应错误；不等于已证明语义正确。",
+      "edits": []
+    },
+    {
+      "case": "conditional-conflict",
+      "key": "choose-release-flow-by-condition",
+      "initial_decision": "needs_revision",
+      "issue_type": "scope_needs_restriction",
+      "reason": "选择规则需要限定在来源已覆盖的两类情况；不应把其他发布情形自动归入其中。",
+      "edits": [
+        {
+          "field": "condition",
+          "before": "需要判断某次发布应适用常规发布流程还是紧急修复流程时",
+          "after": "发布已明确属于计划内常规发布或已宣布的生产故障紧急修复，需辨析这两类流程时；其他情形需要补充适用规则"
+        }
+      ]
+    }
+  ]
+}

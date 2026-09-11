@@ -37,6 +37,7 @@ export interface ObjectiveViewEntry {
 }
 
 export interface LearningNodeView {
+ estimate?:LearningEstimate;
  review?:LearningReviewStatus;
  slug:string; title:string; folder_id:string; folder_name:string;
  state:'unseen'|'learning'|'self_known'|'verified'|'review'; reads:number;cites:number;
@@ -96,6 +97,12 @@ export interface ColdStartRequest {
   depth?: string
   time_budget_minutes?: number
   fast_track?: boolean
+}
+export type EstimateLevel = 'unseen'|'introduced'|'developing'|'self_reported'|'familiar'|'review'
+export interface LearningEstimate {
+ model_version:string;content_version?:string;level:EstimateLevel;familiarity:number;lower:number;upper:number;
+ performance_observed?:boolean;self_report?:string;read_priority?:number;coverage:number;opportunities:number;expected_gain:number;information_gain?:number;answers:number;corrections:number;basis:string;last_study_at?:string;last_answer_at?:string;last_answer_prediction?:number;
+ memory?:{model_version:string;stability:number;difficulty:number;retrievability:number;due_at:string;observations:number};
 }
 export type RecallAction='enroll'|'pause'|'again'|'hard'|'good'|'easy'
 export interface LearningReviewStatus {

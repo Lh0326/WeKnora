@@ -2421,7 +2421,7 @@ async function createNewSession(value: string): Promise<void> {
            失活实例的 DOM 被摘除，星图常驻动画（呼吸/闪烁）不占渲染预算 -->
       <div v-if="isWiki" v-show="activeKbTab === 'learning'" class="learning-main-area">
         <KeepAlive :key="learningAccount" :max="2">
-          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="learningIdentity" :knowledge-base-id="kbId" :can-manage="canManage"
+          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="learningIdentity" :knowledge-base-id="kbId"
             @open-source-doc="openSourceDoc" />
         </KeepAlive>
       </div>

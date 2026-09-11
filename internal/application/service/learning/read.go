@@ -2,6 +2,7 @@ package learning
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math/rand"
 	"sort"
@@ -917,6 +918,26 @@ func (s *Service) Timeline(ctx context.Context, kbID string, page, pageSize int)
 		if p := pagesBySlug[e.Slug]; p != nil {
 			item.Title = p.Title
 			item.PageType = p.PageType
+		}
+		if e.Type == types.LearningEventComponent {
+			var record componentFact
+			if json.Unmarshal(e.ReviewData, &record) == nil {
+				item.Title = record.Title
+				labels := map[string]string{"open": "打开目标", "read": "阅读推进", "check": "情境检查", "known": "自认熟悉", "difficult": "反馈困难", "recall": "回忆复习"}
+				item.Title += " · " + labels[record.Action]
+			}
+		}
+		if e.Type == types.LearningEventSourceRead {
+			var record struct {
+				DocumentTitle string   `json:"document_title"`
+				Heading       []string `json:"heading"`
+			}
+			if json.Unmarshal(e.ReviewData, &record) == nil {
+				item.Title = record.DocumentTitle
+				if len(record.Heading) > 0 {
+					item.Title += " · " + record.Heading[len(record.Heading)-1]
+				}
+			}
 		}
 		out = append(out, item)
 	}

@@ -30,6 +30,10 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.GET("/zone-map", g.KBAccessRead("kb_id"), learningHandler.ZoneMap)
 	kbGroup.GET("/assessment-freeze", g.KBAccessRead("kb_id"), learningHandler.FreezeAssessment)
 	kbGroup.GET("/objectives", g.KBAccessRead("kb_id"), learningHandler.ObjectiveView)
+	kbGroup.GET("/components", g.KBAccessRead("kb_id"), learningHandler.ComponentView)
+	kbGroup.POST("/components/action", g.KBAccessRead("kb_id"), learningHandler.ComponentAction)
+	kbGroup.POST("/components/import", g.KBAccessWrite("kb_id"), learningHandler.ImportComponents)
+	kbGroup.POST("/components/draft", g.KBAccessWrite("kb_id"), learningHandler.DraftComponents)
 	kbGroup.POST("/path", g.KBAccessRead("kb_id"), learningHandler.ShortPath)
 	kbGroup.GET("/plan-preferences", g.KBAccessRead("kb_id"), learningHandler.GetPlanPreferences)
 	kbGroup.PUT("/plan-preferences", g.KBAccessRead("kb_id"), learningHandler.UpdatePlanPreferences)
@@ -53,15 +57,4 @@ func RegisterLearningRoutes(r *gin.RouterGroup, learningHandler *handler.Learnin
 	kbGroup.POST("/skip", g.KBAccessRead("kb_id"), learningHandler.RecordSkip)
 	kbGroup.GET("/timeline", g.KBAccessRead("kb_id"), learningHandler.Timeline)
 
-	// Knowledge health is the owner/admin org aggregate (cross-subject
-	// counts, risks, maintenance marks) — a different audience from every
-	// route above, so it deliberately leaves the viewer group AND the
-	// api-key wrapper: same JWT-only + OwnedWikiKBOrAdmin + KBAccessRead
-	// matrix as the KB activity feed (RegisterKnowledgeBaseActivityRoutes),
-	// because no existing API-key capability grants an audit-like surface.
-	// KBAccessRead also rewrites the effective tenant, the only identity
-	// the aggregate needs — subjects are counted, never named, so there is
-	// no subject parameter to forge anywhere on this path.
-	healthGroup := r.Group("/learning/kb/:kb_id", g.OwnedWikiKBOrAdmin(), g.KBAccessRead("kb_id"))
-	healthGroup.GET("/health", learningHandler.KnowledgeHealth)
 }

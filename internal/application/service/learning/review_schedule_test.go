@@ -64,7 +64,7 @@ func TestRecallPauseSourceChangeAndDeterministicReplay(t *testing.T) {
 	actions := []string{"enroll", "good", "pause", "enroll"}
 	events := []types.LearningEvent{}
 	for i, action := range actions {
-		data, _ := json.Marshal(reviewRecord{Policy: ReviewPolicyVersion, Sequence: i + 1})
+		data, _ := json.Marshal(reviewRecord{Policy: LegacyReviewPolicyVersion, Sequence: i + 1})
 		events = append(events, types.LearningEvent{ID: uuid.NewString(), Slug: "a", Type: reviewActionTypes[action], ContentVersion: "v1", OccurredAt: at.Add(time.Duration(i) * time.Minute), ReviewData: data})
 	}
 	state := projectRecall(events)
@@ -120,7 +120,7 @@ func exerciseRecallDatabaseLoop(t *testing.T, s *Service, db *gorm.DB) {
 	}
 	goodInput := recallInput(slug, "good", enrolled)
 	good, err := s.UpdateReviewSchedule(ctx, testKB, goodInput)
-	if err != nil || good.Due || good.IntervalDays != 1 {
+	if err != nil || good.Due || good.PolicyVersion != ReviewPolicyVersion || time.Until(good.DueAt) < 9*time.Minute || time.Until(good.DueAt) > 11*time.Minute {
 		t.Fatalf("good: %+v %v", good, err)
 	}
 	if _, err = s.UpdateReviewSchedule(ctx, testKB, recallInput(slug, "easy", enrolled)); !errors.Is(err, interfaces.ErrLearningReviewConflict) {
@@ -163,7 +163,7 @@ func exerciseRecallDatabaseLoop(t *testing.T, s *Service, db *gorm.DB) {
 		}
 	}
 	restored, err := s.UpdateReviewSchedule(ctx, testKB, recallInput(slug, "good", lapse))
-	if err != nil || !restored.EarlyPractice {
+	if err != nil || restored.EarlyPractice || restored.PolicyVersion != ReviewPolicyVersion || restored.Due || !restored.DueAt.After(lapse.DueAt) {
 		t.Fatalf("early re-learn: %+v %v", restored, err)
 	}
 	view, _ = s.ObjectiveView(ctx, testKB)
@@ -267,7 +267,7 @@ func TestRecallSourceChangeCannotUseWarmNavigationCache(t *testing.T) {
 		t.Fatal("reload missed new material", changed)
 	}
 	saved, err := s.UpdateReviewSchedule(ctx, testKB, recallInput(slug, "good", changed))
-	if err != nil || saved.ContentChanged || saved.IntervalDays != 1 || saved.Repetitions != 1 {
+	if err != nil || saved.ContentChanged || saved.PolicyVersion != ReviewPolicyVersion || time.Until(saved.DueAt) < 9*time.Minute || time.Until(saved.DueAt) > 11*time.Minute || saved.Repetitions != 1 {
 		t.Fatalf("new material did not restart series: %+v %v", saved, err)
 	}
 	wiki.addPage("another-kb", testWikiPage("concept/foreign", nil, nil))
@@ -351,7 +351,8 @@ func TestRecallServicePlanClosesForKnownNodeWithoutQuestionBank(t *testing.T) {
 	req := interfaces.ColdStartRequestPayload{GoalSlugs: []string{slug}, TimeBudgetMin: 5, UseMemory: &useMemory}
 	plan, err := s.ShortPath(ctx, testKB, req)
 	if err != nil || len(plan.Steps) != 1 || plan.Steps[0].Action != ActionRecall || plan.Steps[0].Slug != slug || plan.Steps[0].Reason.Detail == "" {
-		t.Fatalf("known node did not enter voluntary recall: %+v %v", plan, err)
+		view, viewErr := s.ObjectiveView(ctx, testKB)
+		t.Fatalf("known node did not enter voluntary recall: %+v %v; enrolled=%+v; view=%+v %v", plan, err, enrolled, view.Nodes, viewErr)
 	}
 	if _, err = s.UpdateReviewSchedule(ctx, testKB, recallInput(slug, "good", enrolled)); err != nil {
 		t.Fatal(err)
@@ -391,5 +392,24 @@ func TestRecallPathWorksWithoutBankAndRespectsScopeBudgetAndExclusion(t *testing
 	in.TimeBudgetMinutes = 1
 	if p := planShortPath(in); len(p.Steps) != 0 {
 		t.Fatal(p)
+	}
+}
+
+func TestFSRSStatusCountsShortStepRecallsWithoutLegacyEase(t *testing.T) {
+	at := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+	events := []types.LearningEvent{}
+	for i, action := range []string{"enroll", "good", "hard", "again", "pause"} {
+		data, _ := json.Marshal(reviewRecord{Policy: ReviewPolicyVersion, Sequence: i + 1})
+		events = append(events, types.LearningEvent{ID: uuid.NewString(), Type: reviewActionTypes[action], ContentVersion: "v1", OccurredAt: at.Add(time.Duration(i) * time.Minute), ReviewData: data})
+	}
+	got := projectRecall(events)
+	if got == nil || got.Active || got.Repetitions != 3 || got.Ease != 0 || got.PolicyVersion != ReviewPolicyVersion || got.EarlyPractice || !got.DueAt.After(at.Add(3*time.Minute)) {
+		t.Fatalf("FSRS status retained SM-2 metadata or lost short-step reviews: %+v", got)
+	}
+	data, _ := json.Marshal(reviewRecord{Policy: ReviewPolicyVersion, Sequence: 6})
+	events = append(events, types.LearningEvent{ID: uuid.NewString(), Type: types.LearningEventReviewEnroll, ContentVersion: "v2", OccurredAt: at.Add(time.Hour), ReviewData: data})
+	got = projectRecall(events)
+	if !got.Active || got.Repetitions != 0 || got.Ease != 0 || !got.DueAt.Equal(at.Add(time.Hour)) {
+		t.Fatalf("changed content inherited old recall evidence: %+v", got)
 	}
 }

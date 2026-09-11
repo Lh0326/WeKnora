@@ -101,6 +101,7 @@ func (s *Service) ObjectiveView(ctx context.Context, kbID string) (*interfaces.O
 		return nil, err
 	}
 	resp.Nodes = deriveLearningNodes(pages, resp.Entries, events, skips)
+	attachNodeEstimates(resp.Nodes, deriveNodeEstimates(pages, events, attempts, taskAttempts, objectives, time.Now()))
 	// Folder names must come from the actual wiki directory, not optional
 	// generated category metadata. One batch lookup serves the whole KB.
 	if folders, folderErr := s.wikiRepo.ListAllFolders(ctx, kbID); folderErr == nil {

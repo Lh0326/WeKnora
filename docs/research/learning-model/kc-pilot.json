@@ -1,0 +1,520 @@
+{
+  "components": [
+    {
+      "key": "facts-and-state",
+      "title": "区分事件与状态",
+      "topic": "度量基础",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能判断一次学习事实应保留在哪里，以及状态异常时如何恢复。",
+      "explanation": "事件记录发生了什么，状态记录目前怎样理解这些事实。初版报告将学习事件设为只追加的事实来源，把累计结果保存在可重算的状态表中。二者各有职责：事实用于追溯和重放，状态用于快速展示。修改模型参数后，可以重算状态；不能为了让状态看起来正确而改写原始事件。",
+      "example": "例如用户先阅读、再答题，留下两条事实。页面统计因程序错误显示为零，应使用已有事件重建状态。重建不应制造第三次阅读，也不应将原来的答错记录改成答对。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/event-sourcing-metrics",
+          "quote": "状态可随时从事件重放重建，支持对账、回填及调参重算。",
+          "role": "事实与派生状态的职责"
+        },
+        {
+          "slug": "concept/logit-accumulation",
+          "quote": "（包含类型、权重、时间、溯源ID），事件表只追加、不修改。",
+          "role": "同一原则的另一处说明"
+        }
+      ],
+      "prerequisites": [],
+      "related": [],
+      "checks": [
+        {
+          "id": "facts-and-state-1",
+          "family": "facts-and-state-scenario-1",
+          "question": "状态缓存损坏，但原始学习事件仍在，应优先怎样恢复？",
+          "options": {
+            "A": "把事件全部删掉",
+            "B": "用原事件重算状态",
+            "C": "把所有节点设成已会",
+            "D": "请模型猜一个分数"
+          },
+          "answer": "B",
+          "explanation": "状态是派生结果，应从保留的原始事实重算。"
+        },
+        {
+          "id": "facts-and-state-2",
+          "family": "facts-and-state-scenario-2",
+          "question": "更换权重后要比较两套模型，哪种做法能保留可追溯性？",
+          "options": {
+            "A": "重放同一批原始事件",
+            "B": "将旧答错改成答对",
+            "C": "覆盖旧事件的发生时间",
+            "D": "只保留最后一个分数"
+          },
+          "answer": "A",
+          "explanation": "同一批事实可在不同模型下重放，避免同时改变数据和算法。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "exposure-and-check",
+      "title": "区分接触与理解",
+      "topic": "度量基础",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能区分阅读触达和检查结果分别能够支持什么结论。",
+      "explanation": "阅读、被引用或被助手检索，首先说明材料被接触，不能单独证明学习者理解了具体目标。初版报告将自然交互视为间接信号，用有来源的检查补充直接观察。围绕具体目标记录时，需要区分阅读覆盖与检查表现：阅读记录接触和学习进度，检查记录题目条件下的表现。两者都需要说明依据，不能将一次触达直接显示为能力认证。",
+      "example": "某页同时介绍事件存储与状态重建。用户读了整页，并做对一道“从事件恢复状态”的题，只能给这个目标增加对应证据，不能顺便判定用户也会设计事件存储表。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/grounded-quiz",
+          "quote": "填补了度量层自然交互信号均为间接信号的缺口。",
+          "role": "检查对间接信号的补充"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "facts-and-state"
+      ],
+      "checks": [
+        {
+          "id": "exposure-and-check-1",
+          "family": "exposure-and-check-scenario-1",
+          "question": "助手为了回答问题检索了材料，能据此确定用户已经理解吗？",
+          "options": {
+            "A": "能，检索等于学习",
+            "B": "能，引用越多掌握越深",
+            "C": "不能，仍缺少用户理解的观察",
+            "D": "能，模型可以代替作答"
+          },
+          "answer": "C",
+          "explanation": "助手访问材料不是学习者的理解证据。"
+        },
+        {
+          "id": "exposure-and-check-2",
+          "family": "exposure-and-check-scenario-2",
+          "question": "一页含两个目标，只检查通过其中一个，另一个应怎样处理？",
+          "options": {
+            "A": "同步设为已掌握",
+            "B": "保持其独立状态与不确定性",
+            "C": "删除另一个目标",
+            "D": "随机给出概率"
+          },
+          "answer": "B",
+          "explanation": "检查要与实际覆盖的目标对应，不能按来源页面广播通过结论。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "evidence-vs-semantic",
+      "title": "分清两种关联职责",
+      "topic": "关联判断",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能为引用触达和话题语义对齐选择合适的关联通道。",
+      "explanation": "初版报告的证据通道比较引用与来源的交集，用于确定触达了哪些材料；语义通道把话题匹配到候选知识节点。引用交集并不自动解决同义或同名异用问题，语义相似也不能自动证明用户掌握。两个通道可以配合使用，但需要分别记录它们的依据和不确定性。",
+      "example": "回答引用了文档甲的一个段落，可以确定该段落被使用；要判断用户所问的“状态恢复”是否对应另一个文档中的同一学习目标，还要核对语义和适用条件，不能仅凭共同词语合并。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/dual-channel-association",
+          "quote": "仅作为掌握度事件的唯一主数据源，不允许承担语义对齐职责。",
+          "role": "初版证据通道的职责边界"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "exposure-and-check"
+      ],
+      "checks": [
+        {
+          "id": "evidence-vs-semantic-1",
+          "family": "evidence-vs-semantic-scenario-1",
+          "question": "要确认回答使用了哪些来源，最直接的依据是？",
+          "options": {
+            "A": "用户昵称",
+            "B": "回答引用与材料溯源的交集",
+            "C": "材料的阅读次数",
+            "D": "模型生成的熟悉度"
+          },
+          "answer": "B",
+          "explanation": "引用集合与来源的对应关系可以确定材料触达。"
+        },
+        {
+          "id": "evidence-vs-semantic-2",
+          "family": "evidence-vs-semantic-scenario-2",
+          "question": "两个话题标题相近，但应用条件不同，应首先怎样做？",
+          "options": {
+            "A": "按标题立即合并",
+            "B": "任选一个节点",
+            "C": "核对语义与适用条件再决定",
+            "D": "把两个都判成已掌握"
+          },
+          "answer": "C",
+          "explanation": "语义对齐需要判断条件，标题相似只是候选线索。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "mapping-abstention",
+      "title": "识别应当拒判的映射",
+      "topic": "关联判断",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能在候选不充分或匹配不可靠时保留未确定状态。",
+      "explanation": "语义关联应允许没有可靠答案。初版报告先召回候选，再限制模型在候选内选择，并过滤低置信结果。这里的门槛是原报告的工程选择，不是正确率保证。没有足够证据时保留未确定，比把学习记录强行归给错误目标更便于后续修正。",
+      "example": "用户提到“上下文”，库内同时有提示词上下文与程序调用上下文。提问没有说明适用场景时，系统可以保留两个候选但暂不将掌握证据挂到任何一个，待后续明确来源再对齐。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/dual-channel-association",
+          "quote": "LLM 仅接受候选集内的 slug，越界输出直接丢弃，且允许拒判。",
+          "role": "候选边界与拒判规则"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "evidence-vs-semantic"
+      ],
+      "checks": [
+        {
+          "id": "mapping-abstention-1",
+          "family": "mapping-abstention-scenario-1",
+          "question": "模型返回了不在候选集内的知识节点，应如何处理？",
+          "options": {
+            "A": "直接接受",
+            "B": "丢弃越界结果",
+            "C": "把节点名截短后接受",
+            "D": "给所有候选都加分"
+          },
+          "answer": "B",
+          "explanation": "候选约束要求拒绝越界输出。"
+        },
+        {
+          "id": "mapping-abstention-2",
+          "family": "mapping-abstention-scenario-2",
+          "question": "只知道用户说“上下文”，无法区分两个用途，什么做法更合适？",
+          "options": {
+            "A": "保留未确定，等待条件或来源",
+            "B": "默认挂到热门节点",
+            "C": "把两个目标合并",
+            "D": "把相似度当作掌握度"
+          },
+          "answer": "A",
+          "explanation": "证据不足时拒判能避免错误归因；不能用热度替代适用条件。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "related-vs-prerequisite",
+      "title": "区分相关与先修",
+      "topic": "学习顺序",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能判断知识连线是否足以支持学习先后关系。",
+      "explanation": "Wiki 链接或文档共现通常说明相关，并不说明必须先学谁。初版报告将候选关系分成先修、相关和无关系，仅将被认定为先修的关系用于顺序约束。原型中的先修判断仍需要材料支撑。星图上看到一条线时，应先了解连线类型，再决定它是否限制当前学习顺序。",
+      "example": "两个概念在同一段落中作比较，可以画相关线帮助辨析；如果材料明确说明某个计算必须先取得另一步的结果，才有理由把后者设为前置学习目标。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/prerequisite-inference",
+          "quote": "由于 Wiki 双链只表达“相关”不表达“先学谁”",
+          "role": "关联与先修的区别"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "mapping-abstention"
+      ],
+      "checks": [
+        {
+          "id": "related-vs-prerequisite-1",
+          "family": "related-vs-prerequisite-scenario-1",
+          "question": "两个节点存在 Wiki 双链，能直接将其用作先修约束吗？",
+          "options": {
+            "A": "总能",
+            "B": "不能，仍需判断依赖方向与依据",
+            "C": "按字母顺序即可",
+            "D": "节点越热门越先学"
+          },
+          "answer": "B",
+          "explanation": "相关关系本身不携带学习依赖方向。"
+        },
+        {
+          "id": "related-vs-prerequisite-2",
+          "family": "related-vs-prerequisite-scenario-2",
+          "question": "哪个证据更能支持“先学甲，再学乙”？",
+          "options": {
+            "A": "甲乙名称长度相同",
+            "B": "甲乙属于同一目录",
+            "C": "乙的操作明确使用甲的结果",
+            "D": "甲的颜色更深"
+          },
+          "answer": "C",
+          "explanation": "乙依赖甲的结果，是构造先修候选的实质依据。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "decay-at-read",
+      "title": "理解读取时衰减",
+      "topic": "度量基础",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能说明惰性衰减在何时计算、为何不必持续改写学习事实。",
+      "explanation": "初版报告的惰性衰减是在读取状态时，结合距上次触达的时间和稳定性计算有效值。时间增加可以改变当前估计，却不意味着又发生了一次学习事件。这样可以保留原始事实，并在查询时取得与当前时间对应的状态。这里描述的是初版指数衰减模型，不能将其称为完整 FSRS 实现。",
+      "example": "同一份学习记录在今天和一周后被查询，原始事件完全相同；由于时间间隔不同，计算出的保持估计可以不同。这种差异应作为时间影响解释，不应插入一条虚构的“答错”事件。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/lazy-decay",
+          "quote": "惰性衰减是不依赖后台定时任务，而在读取时根据时间差与稳定性参数动态计算有效掌握概率的机制。",
+          "role": "计算时机"
+        },
+        {
+          "slug": "concept/event-sourcing-metrics",
+          "quote": "查询图谱或推荐时，应用惰性衰减公式计算有效概率",
+          "role": "与事件折叠的分工"
+        }
+      ],
+      "prerequisites": [
+        "facts-and-state"
+      ],
+      "related": [],
+      "checks": [
+        {
+          "id": "decay-at-read-1",
+          "family": "decay-at-read-scenario-1",
+          "question": "经过一周没有新学习事件，查询时的保持估计可以变化吗？",
+          "options": {
+            "A": "不可以",
+            "B": "可以，由读取时的时间差计算",
+            "C": "必须先伪造答错事件",
+            "D": "必须改写原始作答"
+          },
+          "answer": "B",
+          "explanation": "时间变化影响派生估计，不需要改写事实。"
+        },
+        {
+          "id": "decay-at-read-2",
+          "family": "decay-at-read-scenario-2",
+          "question": "惰性衰减主要在哪个时机计算？",
+          "options": {
+            "A": "查询状态时",
+            "B": "每次数据库备份时",
+            "C": "修改用户昵称时",
+            "D": "仅在删除画像时"
+          },
+          "answer": "A",
+          "explanation": "核心是读取时按当前时间计算。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "stability-meaning",
+      "title": "辨析稳定性与当前估计",
+      "topic": "度量基础",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能解释相同当前值、不同稳定性为何会产生不同的后续保持估计。",
+      "explanation": "在初版指数模型中，稳定性决定估计随时间降低的速度，而当前有效值描述当前时刻。两者不能互相替代。若初始值与间隔相同，较大的稳定性会使指数衰减更慢。初版报告采用随正证据数量增长的启发式稳定性，这只是模型假设，需要验证，不能视为每个人都遵循的定律。",
+      "example": "甲乙当前基础值相同，甲的稳定性为较长时间、乙较短。过同样一周，模型会给甲较高的保持估计。这只是模型对未来的预测；一次独立检查仍可能发现甲不会，因此需要观测来校正。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/lazy-decay",
+          "quote": "其中 $\\Delta t$ 为时间差，$s$ 为稳定性参数。",
+          "role": "参数含义"
+        }
+      ],
+      "prerequisites": [
+        "decay-at-read"
+      ],
+      "related": [],
+      "checks": [
+        {
+          "id": "stability-meaning-1",
+          "family": "stability-meaning-scenario-1",
+          "question": "其余条件相同，指数模型中的稳定性更大意味着？",
+          "options": {
+            "A": "衰减更快",
+            "B": "完全不会忘",
+            "C": "衰减更慢",
+            "D": "已经客观验证"
+          },
+          "answer": "C",
+          "explanation": "较大的分母使相同时间差下的指数衰减较弱。"
+        },
+        {
+          "id": "stability-meaning-2",
+          "family": "stability-meaning-scenario-2",
+          "question": "正证据更多就一定忘得更慢，应如何看待？",
+          "options": {
+            "A": "这是个人能力认证",
+            "B": "这是待检验的模型假设",
+            "C": "无需观测即可确定",
+            "D": "可以用来替代所有检查"
+          },
+          "answer": "B",
+          "explanation": "模型假设应通过独立观察检验，不能直接当作心理事实。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "exploration-purpose",
+      "title": "理解探索的作用",
+      "topic": "学习顺序",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能说明为什么学习路径偶尔要探索盲区，以及探索的边界。",
+      "explanation": "初版报告用小概率探索来平衡已有推荐与潜在盲区。探索可以为系统获取新信息，但并不代表随机内容一定更有学习收益。候选仍应满足材料可用、范围合适和必要前置条件。原型数据不足时，简单、可解释的探索规则比未经验证的复杂算法更便于比较。",
+      "example": "系统总是推荐用户常问的主题，可能遗漏从未接触但相关的内容。可以留少量机会选择一个可读的盲区目标，再观察后续表现；不应因为叫“探索”就推荐来源缺失或严重超出当前基础的目标。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/epsilon-greedy-exploration",
+          "quote": "该策略以固定小概率随机选择非最优项，旨在防止信息茧房并兼顾利用与探索。",
+          "role": "探索与利用的目的"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "related-vs-prerequisite"
+      ],
+      "checks": [
+        {
+          "id": "exploration-purpose-1",
+          "family": "exploration-purpose-scenario-1",
+          "question": "学习推荐保留少量探索位的主要作用是什么？",
+          "options": {
+            "A": "保证每次随机内容最优",
+            "B": "接触潜在盲区并获得新信息",
+            "C": "取消所有先修约束",
+            "D": "让用户不停点击"
+          },
+          "answer": "B",
+          "explanation": "探索用于减少仅围绕已知兴趣推荐的局限，不能保证每次都有最高收益。"
+        },
+        {
+          "id": "exploration-purpose-2",
+          "family": "exploration-purpose-scenario-2",
+          "question": "候选材料来源已失效，还应因为探索机制而推荐它吗？",
+          "options": {
+            "A": "应当，随机优先",
+            "B": "只要标题有趣就推荐",
+            "C": "不应，先满足材料可用性",
+            "D": "给高分后再推荐"
+          },
+          "answer": "C",
+          "explanation": "探索也必须遵守材料可用性等基本边界。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "prediction-vs-learning",
+      "title": "分清预测命中与学习收益",
+      "topic": "验证方法",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能解释下一次点击预测能验证什么，以及不能证明什么。",
+      "explanation": "初版报告的 next-interaction 协议预测用户下一个触达对象，用命中率和排序指标评价行为预测。它可以检查推荐是否符合历史行为，却不能单独证明用户学得更多或记得更牢。评估学习收益还需要独立检查、耗时或延迟保持等观察。时间切分则要求预测时只使用已经发生的数据。",
+      "example": "一个系统准确推荐了用户每天重复打开的熟悉页面，点击命中率可能很高，新增学习却可能很少。因此应同时关注是否完成新的独立任务；不能把未来点击混入训练后再宣称预测有效。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/next-interaction-prediction",
+          "quote": "通过历史行为序列预测用户下一个触达的知识对象。",
+          "role": "协议的预测目标"
+        },
+        {
+          "slug": "concept/next-interaction-prediction",
+          "quote": "按时间序前 80% 数据折叠状态、后 20% 数据进行评估，防止未来信息泄漏。",
+          "role": "时间切分约束"
+        }
+      ],
+      "prerequisites": [],
+      "related": [
+        "exposure-and-check"
+      ],
+      "checks": [
+        {
+          "id": "prediction-vs-learning-1",
+          "family": "prediction-vs-learning-scenario-1",
+          "question": "下一点击命中率很高，是否已经证明学习效率提高？",
+          "options": {
+            "A": "是，两者等价",
+            "B": "否，还需独立学习表现与耗时等观察",
+            "C": "是，只要用户点得快",
+            "D": "是，不需要基线"
+          },
+          "answer": "B",
+          "explanation": "点击预测反映行为拟合，学习收益需要额外评价。"
+        },
+        {
+          "id": "prediction-vs-learning-2",
+          "family": "prediction-vs-learning-scenario-2",
+          "question": "预测第十次学习动作时，可以用第十一次动作构造用户状态吗？",
+          "options": {
+            "A": "可以，数据越多越好",
+            "B": "可以，只要模型简单",
+            "C": "不可以，这是未来信息泄漏",
+            "D": "只有热度基线可以"
+          },
+          "answer": "C",
+          "explanation": "预测时只能使用当时已经发生的信息。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    },
+    {
+      "key": "personal-data-scope",
+      "title": "区分个人记录与共享材料",
+      "topic": "个人数据",
+      "condition": "阅读课题四初版报告、判断其设计职责时；不据此推断当前代码参数。",
+      "goal": "能判断删除个人画像时哪些内容应删除、哪些内容应保留。",
+      "explanation": "初版报告要求学习画像由调用者身份确定作用域，并提供查看、导出和删除。个人学习事件、状态和作答属于个人记录；没有个人信息的题目或学习材料属于知识库共享定义。二者需要分开存储与处理，才能既兑现个人数据权利，又避免删除一个人的画像时破坏其他人的学习材料。",
+      "example": "用户甲删除自己的学习画像，应删除甲的阅读和作答记录；用户乙的记录仍然存在。两人共用的一份组件解释和题目定义可以保留，因为它们不表示任何一个人的学习经历。",
+      "minutes": 2,
+      "sources": [
+        {
+          "slug": "concept/data-sovereignty-isolation",
+          "quote": "删除范围**：覆盖本人全部学习数据，包括事件、状态、映射及测验作答记录。",
+          "role": "个人数据删除范围"
+        },
+        {
+          "slug": "concept/data-sovereignty-isolation",
+          "quote": "题库作为 KB 级共享资产不含个人数据，不在删除范围内。",
+          "role": "共享定义的边界"
+        }
+      ],
+      "prerequisites": [],
+      "related": [],
+      "checks": [
+        {
+          "id": "personal-data-scope-1",
+          "family": "personal-data-scope-scenario-1",
+          "question": "用户甲删除画像后，用户乙的作答记录应怎样处理？",
+          "options": {
+            "A": "一并删除",
+            "B": "继续保留并隔离",
+            "C": "归给用户甲",
+            "D": "改成匿名公开数据"
+          },
+          "answer": "B",
+          "explanation": "删除应作用于甲本人，不能跨越主体隔离。"
+        },
+        {
+          "id": "personal-data-scope-2",
+          "family": "personal-data-scope-scenario-2",
+          "question": "以下哪个通常属于应随个人画像删除的数据？",
+          "options": {
+            "A": "共享组件的通用解释",
+            "B": "共享题目的题干",
+            "C": "该用户的一次作答记录",
+            "D": "公开的原始文档标题"
+          },
+          "answer": "C",
+          "explanation": "作答是个人学习事实，共享的无个人信息材料有不同生命周期。"
+        }
+      ],
+      "provenance": "初版报告学习样本 · 原型作者整理并逐项核对引文；情境检查尚未经独立学习者验证。"
+    }
+  ]
+}

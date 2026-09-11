@@ -3,11 +3,11 @@
   <p v-if="loading" class="reader-hint" role="status">正在加载知识内容…</p>
   <div v-else-if="error" class="reader-error" role="alert">{{ error }} <button @click="load">重新加载</button></div>
   <template v-else-if="page">
-   <div class="reader-top"><button @click="emit('close')">← 返回学习导航</button><button @click="showLearningControls">学习状态与确认</button><span>{{ page.page_type==='entity'?'实体':'概念' }} · 约 {{ minutes }} 分钟</span><button @click="emit('full',page.slug)">在 Wiki 中查看 ↗</button></div>
+   <div class="reader-top"><button @click="emit('close')">← 返回学习导航</button><button @click="showLearningControls">学习记录与反馈</button><span>{{ page.page_type==='entity'?'实体':'概念' }} · 约 {{ minutes }} 分钟</span><button @click="emit('full',page.slug)">在 Wiki 中查看 ↗</button></div>
    <NodeLearningControls :kb-id="kbId" :slug="page.slug" />
    <p v-if="page.summary" class="reader-summary">{{ page.summary }}</p>
    <div ref="body" class="learning-reader-body" v-html="html" @click="followLink" />
-   <div class="reader-end"><span>理解后点击「我已学会」即可点亮，无需反复阅读。</span><button @click="showLearningControls">回到学习状态，确认理解</button><button v-if="nextSlug" class="next" @click="emit('next',nextSlug)">继续：{{ nextTitle || '下一知识点' }} →</button><button v-else @click="emit('close')">返回学习导航</button></div>
+   <div class="reader-end"><span>阅读进度会自动记录，可以直接继续。熟悉或困难反馈可帮助调整推荐。</span><button @click="showLearningControls">查看记录或反馈困难</button><button v-if="nextSlug" class="next" @click="emit('next',nextSlug)">继续：{{ nextTitle || '下一知识点' }} →</button><button v-else @click="emit('close')">返回学习导航</button></div>
   </template>
  </t-drawer>
 </template>
@@ -17,16 +17,16 @@ import {marked} from 'marked'
 import {getWikiPage,type WikiPage} from '@/api/wiki'
 import {recordWikiRead} from '@/api/learning'
 import {sanitizeMarkdownHTML,hydrateProtectedFileImages} from '@/utils/security'
-import {createWikiReadTracker} from '../wiki/readTracker'
+import {createWikiReadTracker,readingThresholdMs} from '../wiki/readTracker'
 import {useAssistantHostPublisher} from '../assistantHost'
 const setAssistantHost=useAssistantHostPublisher(['learning'])
-import {notifyReadStatus,notifyLearningUpdated} from './learningEvents'
+import {notifyReadStatus,notifyLearningUpdated,LEARNING_UPDATED} from './learningEvents'
 import NodeLearningControls from './NodeLearningControls.vue'
 const props=defineProps<{kbId:string;slug:string;visible:boolean;nextSlug?:string;nextTitle?:string}>()
 const emit=defineEmits<{(e:'close'):void;(e:'next',slug:string):void;(e:'full',slug:string):void}>()
 const page=ref<WikiPage|null>(null),loading=ref(false),error=ref(''),body=ref<HTMLElement|null>(null)
 let generation=0,readingKb=props.kbId
-const tracker=createWikiReadTracker((slug,tier)=>{const kb=readingKb;notifyReadStatus(kb,slug,'saving',tier);recordWikiRead(kb,slug,tier).then(result=>{if(result.data?.recorded===false){notifyReadStatus(kb,slug,'disabled',tier);return}notifyReadStatus(kb,slug,'saved',tier);notifyLearningUpdated(kb,slug)}).catch(()=>notifyReadStatus(kb,slug,'error',tier))})
+const tracker=createWikiReadTracker((slug,tier)=>{const kb=readingKb;notifyReadStatus(kb,slug,'saving',tier);recordWikiRead(kb,slug,tier).then(result=>{if(result.data?.recorded===false){notifyReadStatus(kb,slug,'disabled',tier);return}notifyReadStatus(kb,slug,'saved',tier);notifyLearningUpdated(kb,slug)}).catch(()=>notifyReadStatus(kb,slug,'error',tier))},()=>readingThresholdMs(page.value?.content||''))
 const minutes=computed(()=>Math.min(8,1+Math.floor([...(page.value?.content||'')].length/350)))
 const escape=(s:string)=>s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
 const html=computed(()=>{const content=(page.value?.content||'').replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/,'').replace(/\[\[([^\]]+)\]\]/g,(_,inner:string)=>{const [slug,...label]=inner.split('|');return `<a href="#" data-slug="${escape(slug!.trim())}">${escape(label.join('|')||slug!.split('/').pop()||slug!)}</a>`});return sanitizeMarkdownHTML(marked.parse(content,{async:false,breaks:true}) as string)})
@@ -34,9 +34,10 @@ async function load(){const gen=++generation;tracker.settle();page.value=null;er
 function publishPage(){const p=page.value;if(props.visible&&p)setAssistantHost({scene:'wiki-page',current_page_slug:p.slug,current_page_title:p.title,current_page_type:p.page_type,current_page_excerpt:p.content.slice(0,6000)})}
 function followLink(e:MouseEvent){const link=(e.target as HTMLElement).closest<HTMLAnchorElement>('a[data-slug]');if(link?.dataset.slug){e.preventDefault();emit('next',link.dataset.slug)}}
 function showLearningControls(){body.value?.closest('.t-drawer__body')?.scrollTo({top:0,behavior:'smooth'})}
+function feedbackUpdated(event:Event){const d=(event as CustomEvent).detail;if(props.visible&&d?.kbId===props.kbId&&d?.slug===props.slug&&d?.action==='review')tracker.restart()}
 watch(()=>[props.kbId,props.slug,props.visible],()=>{if(!props.visible)setAssistantHost({scene:'learning'});load()},{immediate:true})
 watch(html,async()=>{await nextTick();if(body.value){body.value.closest('.t-drawer__body')?.scrollTo({top:0});await hydrateProtectedFileImages(body.value,{mode:'knowledgeBase',kbId:props.kbId})}})
-onMounted(()=>tracker.start());onUnmounted(()=>{generation++;tracker.stop()});onActivated(()=>{tracker.start();if(props.visible&&page.value){tracker.enter(page.value.slug);publishPage()}});onDeactivated(()=>{generation++;tracker.stop()})
+onMounted(()=>{tracker.start();window.addEventListener(LEARNING_UPDATED,feedbackUpdated)});onUnmounted(()=>{generation++;tracker.stop();window.removeEventListener(LEARNING_UPDATED,feedbackUpdated)});onActivated(()=>{tracker.start();if(props.visible&&page.value){tracker.enter(page.value.slug);publishPage()}});onDeactivated(()=>{generation++;tracker.stop()})
 </script>
 <style scoped>
 .reader-top{flex-wrap:wrap;position:sticky;top:-16px;z-index:2;background:var(--td-bg-color-container);padding:8px 0;box-shadow:0 2px 8px #00000008}

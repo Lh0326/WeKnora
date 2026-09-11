@@ -1,0 +1,106 @@
+{
+  "protocol": "model-decision-protocol-v1",
+  "model": "bkt-reading-envelope-v2",
+  "path": "path-plan-v7-model",
+  "kind": "engineering_scenarios_not_learning_outcomes",
+  "outcomes": [
+    {
+      "case": "cold_start",
+      "allowed_first": [
+        "a:read",
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "a:read",
+        "user_state": "a:read"
+      },
+      "accepted": {
+        "directory": true,
+        "model": true,
+        "user_state": true
+      }
+    },
+    {
+      "case": "read_and_continue",
+      "allowed_first": [
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "b:read",
+        "user_state": "a:confirm"
+      },
+      "accepted": {
+        "directory": false,
+        "model": true,
+        "user_state": false
+      }
+    },
+    {
+      "case": "familiarity_correction",
+      "allowed_first": [
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "b:read",
+        "user_state": "b:read"
+      },
+      "accepted": {
+        "directory": false,
+        "model": true,
+        "user_state": true
+      }
+    },
+    {
+      "case": "difficulty_correction",
+      "allowed_first": [
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "b:read",
+        "user_state": "b:read"
+      },
+      "accepted": {
+        "directory": false,
+        "model": true,
+        "user_state": true
+      }
+    },
+    {
+      "case": "resume_after_difficulty",
+      "allowed_first": [
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "b:read",
+        "user_state": "a:read"
+      },
+      "accepted": {
+        "directory": false,
+        "model": true,
+        "user_state": false
+      }
+    },
+    {
+      "case": "reference_is_not_knowledge",
+      "allowed_first": [
+        "a:read",
+        "b:read"
+      ],
+      "first_action": {
+        "directory": "a:read",
+        "model": "a:read",
+        "user_state": "a:confirm"
+      },
+      "accepted": {
+        "directory": true,
+        "model": true,
+        "user_state": false
+      }
+    }
+  ]
+}

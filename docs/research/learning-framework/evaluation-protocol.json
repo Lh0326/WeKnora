@@ -1,0 +1,29 @@
+{
+  "version": "learning-framework-prediction-v1",
+  "frozen_date": "2026-09-12",
+  "purpose": "Compare compact response predictors; no WeKnora DB access or claim of causal learning gains.",
+  "data_commit": "fc592907f41dfa0e71742ed1d24f1f6df08e1ad1",
+  "datasets": {
+    "ct": {"url": "https://raw.githubusercontent.com/CAHLR/pyBKT-examples/fc592907f41dfa0e71742ed1d24f1f6df08e1ad1/data/ct.csv", "status": "exploratory; previous test results already examined"},
+    "as": {"url": "https://raw.githubusercontent.com/CAHLR/pyBKT-examples/fc592907f41dfa0e71742ed1d24f1f6df08e1ad1/data/as.csv", "status": "additional held-out evaluation; schema audit precedes fitting"}
+  },
+  "split": {"unit": "student", "salt": "learning-framework-prediction-v1", "hash": "SHA256 first 8 hexadecimal digits modulo 10", "train_buckets": [0,1,2,3,4,5], "validation_buckets": [6,7], "test_buckets": [8,9]},
+  "exclusions": ["missing student or skill", "non-binary first-attempt result", "duplicate event", "multi-skill event; never broadcast one label to multiple skills", "AS non-original or hinted first response when identifiable"],
+  "ordering": "CT timestamp then numeric row; AS order_id. AS order is an event proxy, not elapsed time.",
+  "candidates": {
+    "global_mean": {"smoothing": [1,1]},
+    "skill_mean": {"prior_weight": 10},
+    "bkt_default": {"initial": 0.2,"learn": 0.1,"guess": 0.2,"slip": 0.1},
+    "bkt_fitted": {"initial": [0.05,0.2,0.4,0.6,0.8], "learn": [0.01,0.03,0.08,0.15,0.25], "guess": [0.05,0.15,0.25,0.35], "slip": [0.05,0.1,0.2,0.3], "fit": "training log loss"},
+    "history_logistic": {"features": ["skill intercept", "log1p prior student-skill successes", "log1p prior student-skill failures", "log1p prior student successes", "log1p prior student failures"], "ridge_lambda": [0.1,1,10,100], "fit": "training; select lambda on validation log loss; no student intercept"}
+  },
+  "history": "Per-student histories reset across splits; predict before observing each current label. Within held-out students, prior observed labels are allowed for online state updates only.",
+  "selection": "Lowest validation log loss among all candidates. Test never selects hyperparameters or model.",
+  "metrics": ["micro log loss", "user macro log loss", "Brier", "ECE10 and bins", "cold start first event", "seen/unseen training skill groups"],
+  "uncertainty": {"unit": "student", "bootstrap": 1000, "seed": 20260912, "paired_difference": "selected minus skill mean user macro log loss", "interval": "percentile 2.5/97.5"},
+  "transfer": "Evaluate source-fitted shared history coefficients, global mean, and BKT on the other corpus with all target skill intercepts unknown; target outcomes only update previous-history features, never parameters. Report as stress test, not enterprise transfer evidence.",
+  "negative_control": "Shuffle training labels with seed 20260912, rebuild all label-derived history features, refit history model using selected lambda, evaluate untouched test history. Report even if performance remains strong from skill frequencies.",
+  "deployment_gate": "No public-corpus parameters deployed as local component mastery probabilities. Requires local independent outcome validation and content-quality review.",
+  "raw_data": "Stored only under .local-data; publish aggregate results and hashes, not learner records.",
+  "schema_amendment": "If dataset fields require a change, record it before computing outcome metrics; preserve this protocol and list amendments in results."
+}

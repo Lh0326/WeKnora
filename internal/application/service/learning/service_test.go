@@ -379,6 +379,27 @@ func TestRecordWikiReadDeepTier(t *testing.T) {
 	if n := len(repo.snapshotEvents()); n != 2 {
 		t.Fatalf("repeat deep appended %d events, want 0 (window cap)", n-2)
 	}
+	// A later difficulty correction permits one observed revisit. It may
+	// release the pending review, but cannot farm additional reading credit.
+	time.Sleep(time.Millisecond) // separate user actions on Windows' coarse clock
+	if err := svc.SetNodeState(ctx, testKB, "concept/rag", "review"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	view, err := svc.ObjectiveView(ctx, testKB)
+	if err != nil || len(view.Nodes) != 1 || view.Nodes[0].Estimate.Level != "developing" || view.Nodes[0].Estimate.Opportunities != 1 || view.Nodes[0].Estimate.Corrections != 1 {
+		t.Fatalf("revisit did not close difficulty without another declaration: %+v %v", view, err)
+	}
+	if err := svc.RecordWikiRead(ctx, testKB, "concept/rag", "deep"); err != nil {
+		t.Fatal(err)
+	}
+	events = repo.snapshotEvents()
+	if len(events) != 4 || events[len(events)-1].Weight != 0 {
+		t.Fatal("revisit refresh bypassed event/weight caps", events)
+	}
 }
 
 // TestRecordWikiReadDeepTierRespectsOptOut: opted-out subjects get nothing

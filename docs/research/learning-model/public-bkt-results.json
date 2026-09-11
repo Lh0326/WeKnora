@@ -1,0 +1,409 @@
+{
+  "protocol": "bkt-small-data-v1",
+  "data": {
+    "source": "https://raw.githubusercontent.com/CAHLR/pyBKT-examples/fc592907f41dfa0e71742ed1d24f1f6df08e1ad1/data/ct.csv",
+    "commit": "fc592907f41dfa0e71742ed1d24f1f6df08e1ad1",
+    "sha256": "161e598a609ecdf829938f8453c15da445ca0c65558367e95ac9f412929b9e55",
+    "bytes": 4368817,
+    "rows": 16857,
+    "exclusions": {},
+    "raw_data_redistributed": false
+  },
+  "environment": {
+    "python": "3.12.14",
+    "numpy": "2.3.5"
+  },
+  "split": {
+    "train": {
+      "rows": 10555,
+      "users": 367,
+      "skills": 12
+    },
+    "validation": {
+      "rows": 2931,
+      "users": 107,
+      "skills": 12
+    },
+    "test": {
+      "rows": 3371,
+      "users": 113,
+      "skills": 12
+    }
+  },
+  "parameters": {
+    "order": [
+      "L0",
+      "T",
+      "G",
+      "S"
+    ],
+    "heuristic": [
+      0.2,
+      0.1,
+      0.2,
+      0.1
+    ],
+    "fitted": [
+      0.4,
+      0.15,
+      0.35,
+      0.2
+    ],
+    "grid_candidates": 400,
+    "training_log_loss": 0.6282154058371574
+  },
+  "test_models": {
+    "training_global_mean": {
+      "n": 3371,
+      "users": 113,
+      "log_loss": 0.669958158335796,
+      "user_macro_log_loss": 0.6719491556855579,
+      "brier": 0.23848497656353693,
+      "ece10": 0.01552139707354061,
+      "bins": [
+        {
+          "bin": 6,
+          "n": 3371,
+          "predicted": 0.6239461968362223,
+          "observed": 0.6084247997626817
+        }
+      ]
+    },
+    "training_skill_mean": {
+      "n": 3371,
+      "users": 113,
+      "log_loss": 0.6281191038613597,
+      "user_macro_log_loss": 0.6277714830439203,
+      "brier": 0.21916086937552004,
+      "ece10": 0.017980737263960964,
+      "bins": [
+        {
+          "bin": 2,
+          "n": 210,
+          "predicted": 0.27959299825442,
+          "observed": 0.2904761904761905
+        },
+        {
+          "bin": 3,
+          "n": 127,
+          "predicted": 0.36108255275978934,
+          "observed": 0.3700787401574803
+        },
+        {
+          "bin": 4,
+          "n": 41,
+          "predicted": 0.47107355365881365,
+          "observed": 0.6585365853658537
+        },
+        {
+          "bin": 5,
+          "n": 519,
+          "predicted": 0.5129545157483859,
+          "observed": 0.4816955684007707
+        },
+        {
+          "bin": 6,
+          "n": 1181,
+          "predicted": 0.6112507390419984,
+          "observed": 0.5867908552074513
+        },
+        {
+          "bin": 7,
+          "n": 1159,
+          "predicted": 0.7352520372851722,
+          "observed": 0.7368421052631579
+        },
+        {
+          "bin": 9,
+          "n": 134,
+          "predicted": 0.9070573849421448,
+          "observed": 0.8880597014925373
+        }
+      ]
+    },
+    "heuristic_bkt": {
+      "n": 3371,
+      "users": 113,
+      "log_loss": 0.6655681786785297,
+      "user_macro_log_loss": 0.6782291513255224,
+      "brier": 0.23750350774664794,
+      "ece10": 0.11843788479768531,
+      "bins": [
+        {
+          "bin": 2,
+          "n": 736,
+          "predicted": 0.2853221247916045,
+          "observed": 0.4116847826086957
+        },
+        {
+          "bin": 3,
+          "n": 944,
+          "predicted": 0.3435072735507257,
+          "observed": 0.5847457627118644
+        },
+        {
+          "bin": 4,
+          "n": 27,
+          "predicted": 0.47276573448417264,
+          "observed": 0.48148148148148145
+        },
+        {
+          "bin": 5,
+          "n": 317,
+          "predicted": 0.530393366491294,
+          "observed": 0.6025236593059937
+        },
+        {
+          "bin": 6,
+          "n": 429,
+          "predicted": 0.6109611489973671,
+          "observed": 0.5641025641025641
+        },
+        {
+          "bin": 7,
+          "n": 151,
+          "predicted": 0.7658022175164417,
+          "observed": 0.7417218543046358
+        },
+        {
+          "bin": 8,
+          "n": 767,
+          "predicted": 0.8731199008806556,
+          "observed": 0.8318122555410691
+        }
+      ]
+    },
+    "training_fitted_bkt": {
+      "n": 3371,
+      "users": 113,
+      "log_loss": 0.6288755310113431,
+      "user_macro_log_loss": 0.635358609852648,
+      "brier": 0.2199215502587839,
+      "ece10": 0.05025244544899754,
+      "bins": [
+        {
+          "bin": 4,
+          "n": 720,
+          "predicted": 0.47115755680950555,
+          "observed": 0.4097222222222222
+        },
+        {
+          "bin": 5,
+          "n": 1057,
+          "predicted": 0.5412464019958896,
+          "observed": 0.5808893093661306
+        },
+        {
+          "bin": 6,
+          "n": 704,
+          "predicted": 0.6478372795823496,
+          "observed": 0.5909090909090909
+        },
+        {
+          "bin": 7,
+          "n": 890,
+          "predicted": 0.7672049946186429,
+          "observed": 0.8157303370786517
+        }
+      ]
+    }
+  },
+  "calibration": {
+    "selected_strength": 8.0,
+    "validation_selection": [
+      {
+        "strength": 2.0,
+        "mean_log_loss": 0.6041491936244552
+      },
+      {
+        "strength": 8.0,
+        "mean_log_loss": 0.603031156326194
+      },
+      {
+        "strength": 32.0,
+        "mean_log_loss": 0.6047856482518036
+      },
+      {
+        "strength": 128.0,
+        "mean_log_loss": 0.6055837796968672
+      }
+    ],
+    "same_test_suffix_after_first": 10,
+    "minimum_events_per_user": 20,
+    "test": {
+      "0": {
+        "n": 2172,
+        "users": 90,
+        "log_loss": 0.6028399162179089,
+        "user_macro_log_loss": 0.6010001066109881,
+        "brier": 0.2078377542353568,
+        "ece10": 0.047975992604422424,
+        "bins": [
+          {
+            "bin": 4,
+            "n": 482,
+            "predicted": 0.46910669858818604,
+            "observed": 0.4024896265560166
+          },
+          {
+            "bin": 5,
+            "n": 582,
+            "predicted": 0.5414480721488972,
+            "observed": 0.5893470790378007
+          },
+          {
+            "bin": 6,
+            "n": 425,
+            "predicted": 0.6471391216286264,
+            "observed": 0.6517647058823529
+          },
+          {
+            "bin": 7,
+            "n": 683,
+            "predicted": 0.7697637893116775,
+            "observed": 0.8316251830161054
+          }
+        ]
+      },
+      "3": {
+        "n": 2172,
+        "users": 90,
+        "log_loss": 0.6030460386451854,
+        "user_macro_log_loss": 0.6013617107461877,
+        "brier": 0.20785578471447813,
+        "ece10": 0.05255744518515111,
+        "bins": [
+          {
+            "bin": 4,
+            "n": 489,
+            "predicted": 0.4606164998713973,
+            "observed": 0.3987730061349693
+          },
+          {
+            "bin": 5,
+            "n": 597,
+            "predicted": 0.5377184769846347,
+            "observed": 0.5996649916247906
+          },
+          {
+            "bin": 6,
+            "n": 422,
+            "predicted": 0.6483226065755321,
+            "observed": 0.6469194312796208
+          },
+          {
+            "bin": 7,
+            "n": 584,
+            "predicted": 0.7622593392863429,
+            "observed": 0.833904109589041
+          },
+          {
+            "bin": 8,
+            "n": 80,
+            "predicted": 0.806268157084855,
+            "observed": 0.8625
+          }
+        ]
+      },
+      "5": {
+        "n": 2172,
+        "users": 90,
+        "log_loss": 0.6026662471408322,
+        "user_macro_log_loss": 0.6001273632609444,
+        "brier": 0.20761266045840018,
+        "ece10": 0.04285918871958865,
+        "bins": [
+          {
+            "bin": 3,
+            "n": 15,
+            "predicted": 0.38947566614483325,
+            "observed": 0.3333333333333333
+          },
+          {
+            "bin": 4,
+            "n": 527,
+            "predicted": 0.45684740366183474,
+            "observed": 0.4307400379506641
+          },
+          {
+            "bin": 5,
+            "n": 565,
+            "predicted": 0.5387128935283481,
+            "observed": 0.5787610619469027
+          },
+          {
+            "bin": 6,
+            "n": 415,
+            "predicted": 0.6467331678897682,
+            "observed": 0.672289156626506
+          },
+          {
+            "bin": 7,
+            "n": 544,
+            "predicted": 0.759527537888931,
+            "observed": 0.8400735294117647
+          },
+          {
+            "bin": 8,
+            "n": 106,
+            "predicted": 0.8071747989968299,
+            "observed": 0.8207547169811321
+          }
+        ]
+      },
+      "10": {
+        "n": 2172,
+        "users": 90,
+        "log_loss": 0.6005401654059256,
+        "user_macro_log_loss": 0.598238553177124,
+        "brier": 0.20683666689749663,
+        "ece10": 0.040684471554597125,
+        "bins": [
+          {
+            "bin": 3,
+            "n": 72,
+            "predicted": 0.37759351693615195,
+            "observed": 0.3472222222222222
+          },
+          {
+            "bin": 4,
+            "n": 467,
+            "predicted": 0.4588526151350445,
+            "observed": 0.4346895074946467
+          },
+          {
+            "bin": 5,
+            "n": 585,
+            "predicted": 0.5447735493999206,
+            "observed": 0.576068376068376
+          },
+          {
+            "bin": 6,
+            "n": 395,
+            "predicted": 0.6519441353341077,
+            "observed": 0.6810126582278481
+          },
+          {
+            "bin": 7,
+            "n": 485,
+            "predicted": 0.7553841353756905,
+            "observed": 0.822680412371134
+          },
+          {
+            "bin": 8,
+            "n": 168,
+            "predicted": 0.8126932545104031,
+            "observed": 0.8869047619047619
+          }
+        ]
+      }
+    }
+  },
+  "limitations": [
+    "Mathematics step correctness, not enterprise reading or self-report data.",
+    "Public parameter transfer is not validated by fitting on this source domain.",
+    "Calibration uses genuine previous answers, not subjective declarations.",
+    "Micro metrics overweight active users; macro log loss is also reported.",
+    "Predictive comparison is not evidence of causal learning-efficiency gains."
+  ]
+}
