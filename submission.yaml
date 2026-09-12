@@ -1,0 +1,15 @@
+version: 1
+student:
+  name: "Lh0326"
+  github_id: "Lh0326"
+topic:
+  id: "4"
+  title: "知识网络与引导式学习"
+result:
+  type: "code"
+  url: "https://github.com/Lh0326/WeKnora/tree/topic4-final"
+repository:
+  url: "https://github.com/Lh0326/WeKnora"
+  branch: "topic4-final"
+  commit: "2e66277f8e95e3cab4baafb0a5431316ab866702"
+  tag: "rhino-2026-final-4"
