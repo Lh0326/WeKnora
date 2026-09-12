@@ -310,6 +310,9 @@ func (h *Handler) setupStreamHandler(
 		ctx, sessionID, assistantMessageID, requestID, tenantID, receivedAt,
 		assistantMessage, h.streamManager, eventBus, h.artifactCollector,
 	)
+	if h.learningService != nil {
+		streamHandler.beforeComplete = h.learningService.RecordAnswerTouches
+	}
 	streamHandler.Subscribe()
 	return streamHandler
 }

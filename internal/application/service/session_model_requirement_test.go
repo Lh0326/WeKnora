@@ -147,3 +147,29 @@ func TestResolveChatModelIDUsesValidSummaryModelOverride(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "override-chat", modelID)
 }
+
+func TestResolveChatModelIDBuiltinAgentFallsBackToDefaultChain(t *testing.T) {
+	// Builtin agents ship from static YAML without a tenant-scoped model row;
+	// an empty model_id must fall through to the KB/session default chain
+	// (here: the stub default model) instead of erroring — the wiki page
+	// assistant depends on this.
+	defaultChat := &types.Model{ID: "default-chat", Type: types.ModelTypeKnowledgeQA}
+	svc := &sessionService{
+		modelService: &stubModelService{
+			modelsByID: map[string]*types.Model{"default-chat": defaultChat},
+			listModels: []*types.Model{defaultChat},
+		},
+	}
+	req := &types.QARequest{
+		Session: &types.Session{},
+		CustomAgent: &types.CustomAgent{
+			ID:        "builtin-wiki-page-assistant",
+			IsBuiltin: true,
+		},
+	}
+
+	modelID, err := svc.resolveChatModelID(context.Background(), req, nil, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, "default-chat", modelID)
+}

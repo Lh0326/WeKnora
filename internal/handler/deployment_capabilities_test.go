@@ -62,11 +62,13 @@ func readFrontendDeploymentCapabilityKeys() ([]string, error) {
 
 	var keys []string
 	for _, line := range strings.Split(string(match[1]), "\n") {
-		line = strings.TrimSpace(strings.TrimRight(line, ","))
+		// TrimSpace first: a CRLF checkout leaves \r on the line and would
+		// otherwise defeat both the comma and quote trims below.
+		line = strings.TrimSpace(line)
+		line = strings.Trim(strings.TrimRight(line, ","), "'")
 		if line == "" {
 			continue
 		}
-		line = strings.Trim(line, `'`)
 		keys = append(keys, line)
 	}
 	return keys, nil

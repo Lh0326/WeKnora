@@ -49,6 +49,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/application/service"
 	chatpipeline "github.com/Tencent/WeKnora/internal/application/service/chat_pipeline"
 	"github.com/Tencent/WeKnora/internal/application/service/file"
+	"github.com/Tencent/WeKnora/internal/application/service/learning"
 	"github.com/Tencent/WeKnora/internal/application/service/memory"
 	"github.com/Tencent/WeKnora/internal/application/service/retriever"
 	"github.com/Tencent/WeKnora/internal/common"
@@ -178,6 +179,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewSyncLogRepository))
 	must(container.Provide(repository.NewWikiPageRepository))
 	must(container.Provide(repository.NewMemoryRepository))
+	must(container.Provide(repository.NewLearningRepository))
 	must(container.Provide(repository.NewTaskPendingOpsRepository))
 	must(container.Provide(repository.NewTaskDeadLetterRepository))
 
@@ -294,6 +296,9 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	logger.Debugf(ctx, "[Container] Registering memory service...")
 	must(container.Provide(memory.NewMemoryService))
 
+	logger.Debugf(ctx, "[Container] Registering learning service...")
+	must(container.Provide(learning.NewService, dig.As(new(interfaces.LearningService))))
+
 	logger.Debugf(ctx, "[Container] Registering session service...")
 	must(container.Provide(service.NewSessionService))
 	must(container.Provide(service.NewTenantSkillService))
@@ -353,6 +358,9 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	logger.Debugf(ctx, "[Container] Data source sync framework registered")
 	must(container.Invoke(startAuditLogRetention))
 	logger.Debugf(ctx, "[Container] Audit log retention runner registered")
+	must(container.Provide(learning.NewReconcileRunner))
+	must(container.Invoke(startLearningReconcile))
+	logger.Debugf(ctx, "[Container] Learning reconcile runner registered")
 	must(container.Provide(service.NewHousekeepingService))
 	must(container.Invoke(startHousekeepingService))
 	logger.Debugf(ctx, "[Container] Knowledge housekeeping runner registered")
@@ -412,6 +420,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(handler.NewSkillHandler))
 	must(container.Provide(handler.NewOrganizationHandler))
 	must(container.Provide(handler.NewMemoryHandler))
+	must(container.Provide(handler.NewLearningHandler))
 
 	// Data source handler
 	must(container.Provide(handler.NewDataSourceHandler))
@@ -1754,6 +1763,19 @@ func startAuditLogRetention(
 ) {
 	runner.Start(context.Background())
 	cleaner.RegisterWithName("AuditLogRetentionRunner", func() error {
+		runner.Stop()
+		return nil
+	})
+}
+
+// startLearningReconcile launches the mastery slug-reconcile loop (and its
+// idempotent startup backfill). LEARNING_ENABLE gates it inside the runner,
+// so the wiring stays unconditional like every neighbour above.
+func startLearningReconcile(
+	runner *learning.ReconcileRunner, svc interfaces.LearningService, cleaner interfaces.ResourceCleaner,
+) {
+	runner.Start(context.Background(), svc)
+	cleaner.RegisterWithName("LearningReconcileRunner", func() error {
 		runner.Stop()
 		return nil
 	})

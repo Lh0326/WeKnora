@@ -18,6 +18,7 @@
 
 # 构建和依赖文件
 node_modules/
+learning-bench.exe
 /dist/
 /build/
 *.log

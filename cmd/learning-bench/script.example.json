@@ -1,0 +1,27 @@
+{
+  "steps": [
+    {"day": 0, "action": "cite", "slug": "concept/rag"},
+    {"day": 1, "action": "cite", "slug": "concept/rag"},
+    {"day": 2, "action": "cite", "slug": "concept/decay"},
+    {"day": 2, "action": "cite", "slug": "concept/decay"},
+    {"day": 2, "action": "cite", "slug": "concept/decay"},
+    {"day": 3, "action": "re_ask", "slug": "concept/rag"},
+    {"day": 5, "action": "cite", "slug": "concept/rag"},
+    {"day": 5, "action": "cite", "slug": "concept/rag"},
+    {"day": 5, "action": "cite", "slug": "concept/rag"},
+    {"day": 6, "action": "quiz_correct", "slug": "concept/rag"},
+    {"day": 7, "action": "quiz_wrong", "slug": "concept/decay"},
+    {"day": 8, "action": "cite", "slug": "concept/rag"},
+    {"day": 10, "action": "quiz_correct", "slug": "concept/rag"},
+    {"day": 10, "action": "quiz_correct", "slug": "concept/rag"},
+    {"day": 10, "action": "quiz_correct", "slug": "concept/rag"},
+    {"day": 11, "action": "cite", "slug": "concept/rag"},
+    {"day": 12, "action": "cite", "slug": "concept/rag"},
+    {"day": 13, "action": "cite", "slug": "concept/rag"},
+    {"day": 14, "action": "cite", "slug": "concept/rag"},
+    {"day": 20, "action": "cite", "slug": "concept/rag"},
+    {"day": 25, "action": "cite", "slug": "concept/rag"},
+    {"day": 30, "action": "cite", "slug": "concept/rag"},
+    {"day": 40, "action": "cite", "slug": "concept/rag"}
+  ]
+}

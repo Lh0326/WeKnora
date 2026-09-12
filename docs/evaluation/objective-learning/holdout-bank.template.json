@@ -1,0 +1,32 @@
+{
+  "frozen_rules": "REPLACE_WITH_PREREGISTERED_PROTOCOL_VERSION",
+  "items": [
+    {
+      "id": "holdout-1",
+      "objective_id": "REPLACE_WITH_ACTUAL_ID",
+      "objective_version": "REPLACE_WITH_FROZEN_VERSION",
+      "family_id": "REPLACE_WITH_INDEPENDENT_HOLDOUT_FAMILY",
+      "phase": "posttest",
+      "scenario": "内容负责人填写独立情境；不能使用已训练题目的改写",
+      "assistance_mode": "open_book",
+      "reviewer": "",
+      "status": "draft",
+      "rubric_version": "v1",
+      "source_refs": [],
+      "fields": [
+        {
+          "id": "decision",
+          "label": "依据场景作出选择",
+          "options": [
+            "选项一",
+            "选项二",
+            "选项三"
+          ]
+        }
+      ],
+      "answer_key": {
+        "decision": "选项一"
+      }
+    }
+  ]
+}

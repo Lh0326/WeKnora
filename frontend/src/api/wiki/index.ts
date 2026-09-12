@@ -80,7 +80,7 @@ export interface WikiGraphMeta {
 }
 
 export interface WikiGraphData {
-  nodes: { slug: string; title: string; page_type: string; link_count: number; familiar?: boolean }[];
+  nodes: { slug: string; title: string; page_type: string; link_count: number; familiar?: boolean; mastery_level?: string; low_confidence?: boolean }[];
   edges: { source: string; target: string }[];
   meta: WikiGraphMeta;
 }
@@ -305,6 +305,8 @@ export interface WikiGraphQueryParams {
   depth?: number;
   types?: string[];
   limit?: number;
+  /** Personal mastery overlay (stage 4): paint nodes with the caller's tier. */
+  with_mastery?: boolean;
 }
 
 // getWikiGraph fetches a slice of the wiki link graph. Without params the
@@ -319,6 +321,7 @@ export function getWikiGraph(kbId: string, params?: WikiGraphQueryParams) {
     if (params.center) query.set('center', params.center);
     if (params.depth !== undefined) query.set('depth', String(params.depth));
     if (params.limit !== undefined) query.set('limit', String(params.limit));
+    if (params.with_mastery) query.set('with_mastery', 'true');
     if (params.types && params.types.length > 0) {
       query.set('types', params.types.join(','));
     }

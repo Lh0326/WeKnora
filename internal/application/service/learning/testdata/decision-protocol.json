@@ -1,0 +1,13 @@
+{
+  "version": "model-decision-protocol-v1",
+  "kind": "engineering_scenarios_not_learning_outcomes",
+  "rationale": "Allowed next actions express user-facing requirements before running the comparison. They are not generated from model scores. Each case starts from the same two-page knowledge slice and a two-minute budget.",
+  "cases": [
+    {"id":"cold_start", "requirement":"No history: either available page is a valid starting point.", "events":[], "allowed_first":["a:read","b:read"]},
+    {"id":"read_and_continue", "requirement":"After sustained reading of A, offer new material B without asking for confirmation.", "events":["read:a"], "allowed_first":["b:read"]},
+    {"id":"familiarity_correction", "requirement":"When A is already familiar, give B priority without fabricating objective verification.", "events":["known:a"], "allowed_first":["b:read"]},
+    {"id":"difficulty_correction", "requirement":"A reported difficulty with B should surface B before unrelated A.", "events":["difficult:b"], "allowed_first":["b:read"]},
+    {"id":"resume_after_difficulty", "requirement":"After reporting difficulty with A and revisiting it, allow onward reading B without another declaration.", "events":["difficult:a","read:a"], "allowed_first":["b:read"]},
+    {"id":"reference_is_not_knowledge", "requirement":"Answer citations alone must not retire A or demand an already-known declaration.", "events":["cite:a"], "allowed_first":["a:read","b:read"]}
+  ]
+}

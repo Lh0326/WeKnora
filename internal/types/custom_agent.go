@@ -30,6 +30,11 @@ const (
 	BuiltinWikiFixerID = "builtin-wiki-fixer"
 	// BuiltinSkillInstallerID is the ID for the built-in skill installer agent
 	BuiltinSkillInstallerID = "builtin-skill-installer"
+	// BuiltinWikiPageAssistantID is the ID for the built-in wiki page
+	// learning assistant — the companion chat embedded beside the wiki
+	// reader (frontend WikiAssistantWidget). Programmatic-only, same
+	// exclusion rationale as the wiki fixer.
+	BuiltinWikiPageAssistantID = "builtin-wiki-page-assistant"
 )
 
 // AgentMode constants for agent running mode
@@ -567,11 +572,9 @@ var BuiltinAgentRegistry = map[string]func(uint64) *CustomAgent{}
 // builtinAgentIDsOrdered defines the fixed display order of built-in agents
 // that are exposed in the user-facing agent list (ListAgents).
 //
-// NOTE: BuiltinWikiFixerID and BuiltinSkillInstallerID are intentionally
-// excluded here. Both are internal agents invoked programmatically — the wiki
-// fixer from the Wiki editor, the skill installer from the sandbox-config skill
-// upload flow — and should not clutter the tenant's agent picker. They remain
-// fully usable via GetAgentByID because the YAML entries still register them in
+// NOTE: The Wiki fixer, page learning assistant, and skill installer are
+// internal agents invoked by their application flows. They stay out of the
+// tenant picker and remain accessible by ID through the YAML-populated
 // BuiltinAgentRegistry.
 var builtinAgentIDsOrdered = []string{
 	BuiltinQuickAnswerID,

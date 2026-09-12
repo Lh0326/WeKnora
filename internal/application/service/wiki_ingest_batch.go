@@ -584,6 +584,11 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 	// references from the same batch's summary pages and exclude failed
 	// pages from finalize processing.
 	failedAdditionSlugs := make(map[string]struct{})
+	// salvagePending collects slugs whose reduce write failed (LLM error) —
+	// retried once in-batch by salvageFailedReduces after a rate-window
+	// cooldown, reusing the in-memory updates instead of requeueing the
+	// document (a requeue re-runs the whole map phase).
+	var salvagePending []salvageItem
 	// unappliedSlugKIDs collects the knowledge_ids that contributed to a
 	// slug whose update never landed — either because we could NOT acquire
 	// the per-slug lock within wikiSlugLockWait, or because reduce returned
@@ -635,8 +640,35 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 				return reduceErr
 			})
 			if lockErr != nil {
-				collectUnapplied(updates)
-				// ctx cancelled (batch timeout / shutdown) — stop quietly.
+				if reduceErr != nil {
+					// withSlugLock passes fn's error through verbatim: this is
+					// an LLM/DB failure from reduceSlugUpdates (already logged
+					// there as "update/retract failed for slug"). Capture the
+					// slug for the in-batch salvage pass — a requeue would
+					// re-run the whole map phase for page updates already in
+					// memory. If salvage also fails, the slug stays in
+					// failedAdditionSlugs and surfaces in pages_dropped: a
+					// visible loss, never a silent one.
+					reduceMu.Lock()
+					salvagePending = append(salvagePending, salvageItem{slug: slug, updates: updates})
+					reduceMu.Unlock()
+					if isLikelyRateLimitError(reduceErr) {
+						reduceMu.Lock()
+						rateLimited = true
+						reduceMu.Unlock()
+					}
+					// The early return below skips the shared additionFailed
+					// handling further down — record it here so the batch
+					// still sanitizes dead [[slug]] links if salvage fails.
+					if additionFailed {
+						reduceMu.Lock()
+						failedAdditionSlugs[slug] = struct{}{}
+						reduceMu.Unlock()
+					}
+				} else {
+					collectUnapplied(updates)
+					// ctx cancelled (batch timeout / shutdown) — stop quietly.
+				}
 				return nil
 			}
 			if !acquired {
@@ -681,6 +713,29 @@ func (s *wikiIngestService) ProcessWikiIngest(ctx context.Context, t *asynq.Task
 		})
 	}
 	_ = egReduce.Wait()
+
+	// Salvage pass: retry reduce writes that failed (typically the burst
+	// tripping the provider's per-minute rate window) once, after a cooldown
+	// long enough for the window to reset, at a concurrency below the trip
+	// envelope. Zero cost when nothing failed; bounded at one round so the
+	// batch's wall time can never crawl (the v1 lesson).
+	if len(salvagePending) > 0 {
+		still := s.salvageFailedReduces(ctx, chatModel, payload.KnowledgeBaseID, payload.TenantID, batchCtx, kidToWikiSpan, salvagePending, func(slug, affectedType string) {
+			reduceMu.Lock()
+			defer reduceMu.Unlock()
+			// The retry landed: the slug is neither dropped nor dead-linked.
+			delete(failedAdditionSlugs, slug)
+			allPagesAffected = append(allPagesAffected, slug)
+			if affectedType == "ingest" {
+				ingestPagesAffected = append(ingestPagesAffected, slug)
+			} else if affectedType == "retract" {
+				retractPagesAffected = append(retractPagesAffected, slug)
+			}
+		})
+		if len(still) > 0 {
+			logger.Warnf(ctx, "wiki ingest: salvage pass left %d slugs unwritten (visible in pages_dropped): %v", len(still), still)
+		}
+	}
 
 	tailCtx, tailCancel := wikiIngestCleanupContext(ctx)
 	defer tailCancel()
@@ -1691,6 +1746,92 @@ func resolveSlugUpdateLanguage(ctx context.Context, updates []SlugUpdate) string
 //     elsewhere (e.g. in the doc's summary page) and to drop the slug from
 //     the wiki log feed so users don't see a clickable entry that 404s.
 //   - err:              transport / repo error from the persisted upsert.
+//
+// salvageItem is one failed reduce write awaiting the in-batch salvage pass.
+type salvageItem struct {
+	slug    string
+	updates []SlugUpdate
+}
+
+// salvageFailedReduces retries the given failed reduce writes once, after a
+// rate-window cooldown, at a concurrency below the trip envelope. It reuses
+// the in-memory updates (no map re-run) and calls onSuccess for every slug
+// whose retry landed. Returns the slugs still failing after the pass — the
+// caller keeps those in failedAdditionSlugs so they surface in pages_dropped:
+// a visible loss, never a silent one.
+func (s *wikiIngestService) salvageFailedReduces(
+	ctx context.Context,
+	chatModel chat.Chat,
+	kbID string,
+	tenantID uint64,
+	batchCtx *WikiBatchContext,
+	kidToWikiSpan map[string]*Span,
+	items []salvageItem,
+	onSuccess func(slug, affectedType string),
+) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	logger.Warnf(ctx, "wiki ingest: %d reduce writes failed (kb %s); salvage pass in %s at concurrency %d",
+		len(items), kbID, wikiSalvageCooldown, wikiSalvageParallel)
+
+	timer := time.NewTimer(wikiSalvageCooldown)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		still := make([]string, 0, len(items))
+		for _, it := range items {
+			still = append(still, it.slug)
+		}
+		return still
+	case <-timer.C:
+	}
+
+	var mu sync.Mutex
+	failedSet := make(map[string]bool, len(items))
+	eg, sctx := errgroup.WithContext(ctx)
+	eg.SetLimit(wikiSalvageParallel)
+	for _, item := range items {
+		item := item
+		eg.Go(func() error {
+			var (
+				changed      bool
+				affectedType string
+				err          error
+			)
+			acquired, lockErr := s.withSlugLock(sctx, kbID, item.slug, func() error {
+				changed, affectedType, _, err = s.reduceSlugUpdates(
+					sctx, chatModel, kbID, item.slug, item.updates, tenantID, batchCtx, kidToWikiSpan)
+				return err
+			})
+			if lockErr != nil || !acquired {
+				if lockErr != nil {
+					logger.Warnf(sctx, "wiki ingest: salvage retry failed for slug %s: %v (page left unwritten, reported in pages_dropped)", item.slug, lockErr)
+				} else {
+					logger.Warnf(sctx, "wiki ingest: salvage retry skipped slug %s (slug lock busy)", item.slug)
+				}
+				mu.Lock()
+				failedSet[item.slug] = true
+				mu.Unlock()
+				return nil
+			}
+			if changed && onSuccess != nil {
+				onSuccess(item.slug, affectedType)
+			}
+			return nil
+		})
+	}
+	_ = eg.Wait()
+
+	still := make([]string, 0, len(failedSet))
+	for _, it := range items {
+		if failedSet[it.slug] {
+			still = append(still, it.slug)
+		}
+	}
+	return still
+}
+
 func (s *wikiIngestService) reduceSlugUpdates(
 	ctx context.Context,
 	chatModel chat.Chat,
@@ -2079,10 +2220,15 @@ func (s *wikiIngestService) reduceSlugUpdates(
 			if len(additions) > 0 {
 				additionFailed = true
 			}
-			// Don't propagate the LLM error to the named return: it has
-			// already been logged, and the eg.Go caller would otherwise
-			// log it a second time as "reduce failed for slug".
-			err = nil
+			// Propagate the LLM error instead of resetting it to nil. The
+			// reduce caller captures the slug for the in-batch salvage pass
+			// (a requeue would re-run the whole map phase for page updates
+			// that are already in memory) and, for 429-class errors, flips
+			// the batch rateLimited flag so the follow-up scheduler backs
+			// off. The old swallow silently dropped the page, finalized the
+			// document anyway, and left a "no_change" skip in the trace.
+			// The failure falls through to the final return, which forwards
+			// the named err.
 		}
 	}
 
@@ -2111,7 +2257,7 @@ func (s *wikiIngestService) reduceSlugUpdates(
 		return true, affectedType, additionFailed, err
 	}
 
-	return false, "", additionFailed, nil
+	return false, "", additionFailed, err
 }
 
 // mergeChunkRefs unions the chunk IDs currently on the page with the ones

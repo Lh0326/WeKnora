@@ -5,6 +5,27 @@
       <div class="wiki-graph">
         <div ref="graphRef" class="wiki-graph-canvas"></div>
 
+        <!-- 悬停掌握度卡片（推演 3.2）：固定左下，鼠标移入带 mastery 环的节点时显示 -->
+        <div v-if="masteryCard.visible" class="wiki-graph-mastery-card" :class="{ 'card-shifted': graphDrawerVisible }">
+          <div class="mc-head">
+            <span class="mc-ring" :style="{ borderColor: masteryRingColor(masteryCard.level) }"></span>
+            <span class="mc-title" :title="$t('knowledgeEditor.wikiBrowser.mcOpenNode')">{{ masteryCard.title }}</span>
+            <span class="mc-tier">{{ masteryCardTierLabel(masteryCard.level) }}</span>
+          </div>
+          <div class="mc-row">
+            {{ $t('knowledgeEditor.wikiBrowser.mcSummary', { p: Math.round(masteryCard.pEff * 100), n: masteryCard.evidence }) }}
+          </div>
+          <div class="mc-row" v-if="masteryCard.lastAt">
+            {{ $t('knowledgeEditor.wikiBrowser.mcLastTouch') }} {{ masteryCardRelativeTime(masteryCard.lastAt) }}
+          </div>
+          <div class="mc-row" v-if="masteryCard.quizCount !== null && masteryCard.quizCount > 0">
+            {{ $t('knowledgeEditor.wikiBrowser.mcQuizN', { n: masteryCard.quizCount }) }}
+          </div>
+          <div class="mc-warn" v-if="masteryCard.lowConf">
+            {{ $t('knowledgeEditor.wikiBrowser.mcLowConf') }}
+          </div>
+        </div>
+
         <!-- Graph Search Overlay -->
         <div v-if="graphReady" class="wiki-graph-search-container">
           <div class="wiki-graph-search-row">
@@ -78,6 +99,34 @@
               <span class="legend-familiar-ring"></span>
               {{ $t('knowledgeEditor.wikiBrowser.legendFamiliar') }}
             </div>
+            <div v-if="graphMasteryCount > 0 || (graphData?.nodes || []).length > 0" class="legend-item">
+              <span class="legend-no-ring"></span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryNoRing') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-mastery-ring" style="--ring-color: #d0d0d0"></span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryUnseen') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-mastery-ring" style="--ring-color: #8ce0af"></span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryTouched') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-mastery-ring" style="--ring-color: #07c05f"></span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryFamiliar') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-mastery-ring" style="--ring-color: #038626"></span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryMastered') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-badge legend-badge-lowconf">?</span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryLowConfBadge') }}
+            </div>
+            <div v-if="graphMasteryCount > 0" class="legend-item">
+              <span class="legend-badge legend-badge-new">NEW</span>
+              {{ $t('knowledgeEditor.wikiBrowser.masteryLegendNew') }}
+            </div>
           </div>
           <div class="legend-divider"></div>
           <div class="legend-actions">
@@ -150,10 +199,16 @@
                 @click="loadEgoGraph(graphDrawerPage.slug)">
                 {{ $t('knowledgeEditor.wikiBrowser.expandNeighbors') }}
               </t-button>
+              <!-- 学习直连（课题四）：有掌握度数据即可去练一练，题量由学习页签拉取 -->
+              <t-button v-if="graphMasteryCount > 0" size="small" theme="success"
+                @click="practiceInLearningTab(graphDrawerPage.slug)">
+                {{ $t('knowledgeEditor.learningTab.practice') }}
+              </t-button>
             </div>
             <div v-if="graphDrawerNeighborHint" class="wiki-drawer-neighbor-hint" style="margin-bottom: 16px;">
               {{ graphDrawerNeighborHint }}
             </div>
+            <NodeLearningControls v-if="['entity','concept'].includes(graphDrawerPage.page_type)" :kb-id="knowledgeBaseId" :slug="graphDrawerPage.slug" />
             <div ref="drawerBodyRef" class="wiki-reader-body" v-html="graphDrawerContent"
               @click="handleGraphDrawerClick"></div>
           </template>
@@ -561,6 +616,7 @@
                 </div>
               </div>
 
+              <NodeLearningControls v-if="!editingPage && ['entity','concept'].includes(selectedPage.page_type)" :kb-id="knowledgeBaseId" :slug="selectedPage.slug" />
               <!-- Content -->
               <div v-if="!editingPage" ref="readerBodyRef" class="wiki-reader-body" v-html="renderedContent"
                 @click="handleContentClick">
@@ -787,15 +843,21 @@
         </div>
       </div>
     </teleport>
+    <!-- Knowledge assistant moved to the KnowledgeBase root: the ball now
+         stays bottom-right on EVERY tab (wiki / graph / learning / 文档).
+         WikiBrowser only publishes the wiki-page context (see
+         assistantHost store) for the assistant to answer from. -->
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useMenuStore } from '@/stores/menu'
 import { useSettingsStore } from '@/stores/settings'
 import { useI18n } from 'vue-i18n'
+import { useAssistantHostPublisher } from '../assistantHost'
+const setAssistantHost = useAssistantHostPublisher(['wiki', 'graph'])
 import { marked } from 'marked'
 import { MessagePlugin } from 'tdesign-vue-next'
 import { RecycleScroller } from 'vue-virtual-scroller'
@@ -836,13 +898,18 @@ import {
   type WikiIndexGroup,
   type WikiIndexEntryDTO,
 } from '@/api/wiki'
+import { recordWikiRead, getLearningMastery, getLearningQuiz } from '@/api/learning'
+import { createWikiReadTracker, readingThresholdMs } from './readTracker'
+import NodeLearningControls from '../learning/NodeLearningControls.vue'
+import { notifyLearningUpdated, notifyReadStatus, LEARNING_UPDATED } from '../learning/learningEvents'
+import { masteryRing, nodeFill, newlyLitSlugs, tierColor, type MasteryLevel } from './graphMasteryColors'
 
 const router = useRouter()
 const route = useRoute()
 const menuStore = useMenuStore()
 const settingsStore = useSettingsStore()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 const props = defineProps<{
   knowledgeBaseId: string
@@ -1138,6 +1205,46 @@ function fitGraphToView() {
 
 const graphDrawerVisible = ref(false)
 const graphDrawerPage = ref<WikiPage | null>(null)
+
+// The wiki page the user is "currently reading": the graph drawer's page
+// while it is open, otherwise the browser selection. Drives (a) the
+// assistant widget's host context and (b) the tiered read tracker below.
+const activeContextPage = computed<WikiPage | null>(() =>
+  graphDrawerVisible.value ? graphDrawerPage.value : selectedPage.value,
+)
+
+const assistantHostContext = computed<Record<string, string> | null>(() => {
+  const page = activeContextPage.value
+  if (!page?.slug) return null
+  return {
+    current_page_title: page.title || page.slug,
+    current_page_slug: page.slug,
+    current_page_type: page.page_type || '',
+    current_page_excerpt: (page.content || '').slice(0, 6000),
+  }
+})
+
+// Publish into the KB-wide assistant host store (the widget lives at the
+// KnowledgeBase root now): with a page open → wiki-page scene carrying the
+// page identity; otherwise the generic wiki/graph scene.
+watch([assistantHostContext, () => props.view], ([ctx]) => {
+  setAssistantHost(ctx ? { scene: 'wiki-page', ...ctx } : { scene: props.view === 'graph' ? 'graph' : 'wiki' })
+}, { immediate: true })
+
+// Tiered read signal: normal fires 5s after a page becomes active (quick
+// flips record nothing), deep fires while visible when dwell ≥ 60s. Replaces
+// the old fire-on-open recordWikiRead calls.
+const readTracker = createWikiReadTracker((slug, tier) => {
+  const kb=props.knowledgeBaseId
+  notifyReadStatus(kb,slug,'saving',tier)
+  recordWikiRead(kb, slug, tier).then(result=>{if(result.data?.recorded===false){notifyReadStatus(kb,slug,'disabled',tier);return}notifyReadStatus(kb,slug,'saved',tier);notifyLearningUpdated(kb,slug)}).catch(() => notifyReadStatus(kb,slug,'error',tier))
+},()=>readingThresholdMs(activeContextPage.value?.content||''))
+function restartReadingAfterFeedback(event:Event){const d=(event as CustomEvent).detail;if(d?.kbId===props.knowledgeBaseId&&d?.slug===activeContextPage.value?.slug&&d?.action==='review')readTracker.restart()}
+watch(
+  () => activeContextPage.value && ['entity','concept'].includes(activeContextPage.value.page_type) ? activeContextPage.value.slug : '',
+  (slug) => readTracker.enter(slug),
+  { immediate: true },
+)
 const navHistory = ref<WikiPage[]>([])
 // navFromSystemView remembers that the user was viewing the Index when they
 // clicked into a slug, so goBack can restore it
@@ -1433,6 +1540,114 @@ const graphFrontierCount = computed(() => {
 })
 
 const graphFamiliarCount = computed(() => graphData.value?.meta?.familiar_count || 0)
+const graphMasteryCount = computed(() =>
+  (graphData.value?.nodes || []).filter((n: any) => !!n.mastery_level).length,
+)
+
+// ---- 悬停掌握度卡片（推演 3.2）----
+// /map 全量一次拉取按 KB 缓存（sourceRefTitleCache 的防竞态先例）；
+// 可用题数对悬停 slug 惰性拉取。无 mastery 数据的节点不显示卡片。
+const masteryCard = reactive<{
+  visible: boolean; slug: string; title: string; level: string; pEff: number
+  evidence: number; lastAt: string; lowConf: boolean; quizCount: number | null
+}>({ visible: false, slug: '', title: '', level: '', pEff: 0, evidence: 0, lastAt: '', lowConf: false, quizCount: null })
+const masteryBySlug = ref<Record<string, any>>({})
+let masteryMapLoadedKB = ''
+let masteryMapRequestSeq = 0
+async function ensureMasteryMap() {
+  if (masteryMapLoadedKB === props.knowledgeBaseId) return
+  const seq = ++masteryMapRequestSeq
+  try {
+    const res = await getLearningMastery(props.knowledgeBaseId)
+    if (seq !== masteryMapRequestSeq) return // KB 已切换，丢弃过期响应
+    const list = ((res as any).data ?? res) as any[]
+    const map: Record<string, any> = {}
+    for (const m of list) map[m.slug] = m
+    masteryBySlug.value = map
+    masteryMapLoadedKB = props.knowledgeBaseId
+  } catch {
+    // 静默降级：卡片退回 graph 响应自带的 level/low_confidence
+  }
+}
+const quizCountBySlug = ref<Record<string, number>>({})
+async function ensureQuizCount(slug: string) {
+  if (quizCountBySlug.value[slug] !== undefined) return
+  try {
+    const res = await getLearningQuiz(props.knowledgeBaseId, slug)
+    const n = (((res as any).data ?? res) as any[]).length
+    quizCountBySlug.value = { ...quizCountBySlug.value, [slug]: n }
+  } catch {
+    // 题数非关键信息，失败即略
+  }
+}
+function masteryCardTierLabel(level: string): string {
+  const map: Record<string, string> = {
+    unseen: t('knowledgeEditor.learningTab.tierUnseen'),
+    touched: t('knowledgeEditor.learningTab.tierTouched'),
+    familiar: t('knowledgeEditor.learningTab.tierFamiliar'),
+    mastered: t('knowledgeEditor.learningTab.tierMastered'),
+  }
+  return map[level] || level
+}
+function masteryRingColor(level: string): string {
+  return tierColor(level as MasteryLevel) || '#d0d0d0'
+}
+function masteryCardRelativeTime(iso: string): string {
+  try {
+    const rtf = new Intl.RelativeTimeFormat(locale.value, { numeric: 'auto' })
+    const minutes = Math.round((new Date(iso).getTime() - Date.now()) / 60000)
+    if (Math.abs(minutes) < 60) return rtf.format(minutes, 'minute')
+    const hours = Math.round(minutes / 60)
+    if (Math.abs(hours) < 24) return rtf.format(hours, 'hour')
+    return rtf.format(Math.round(hours / 24), 'day')
+  } catch {
+    return iso
+  }
+}
+function showMasteryCard(n: GNode) {
+  if (!n.masteryLevel) {
+    masteryCard.visible = false
+    return
+  }
+  const render = () => {
+    if (graphHighlightSlug.value !== n.slug && graphSelectedSlug.value !== n.slug) return
+    const m = masteryBySlug.value[n.slug]
+    masteryCard.visible = true
+    masteryCard.slug = n.slug
+    masteryCard.title = m?.title || n.title
+    masteryCard.level = n.masteryLevel as string
+    masteryCard.pEff = m?.p_eff ?? 0
+    masteryCard.evidence = m?.evidence_count ?? 0
+    masteryCard.lastAt = m?.last_evidence_at || ''
+    masteryCard.lowConf = !!n.lowConfidence
+    masteryCard.quizCount = quizCountBySlug.value[n.slug] ?? null
+    if (masteryCard.quizCount === null) {
+      ensureQuizCount(n.slug).then(() => {
+        if (masteryCard.slug === n.slug) {
+          masteryCard.quizCount = quizCountBySlug.value[n.slug] ?? null
+        }
+      })
+    }
+  }
+  if (masteryMapLoadedKB === props.knowledgeBaseId) {
+    render()
+  } else {
+    ensureMasteryMap().then(render)
+  }
+}
+function hideMasteryCard() {
+  masteryCard.visible = false
+}
+
+// 图谱→学习页签直连：带 practice 参数跳转，KnowledgeBase 的 URL→tab 反向
+// watch 切页签，LearningTab 监听参数后自动打开该节点的答题卡。
+function practiceInLearningTab(slug: string) {
+  graphDrawerVisible.value = false
+  router.push({
+    path: `/platform/knowledge-bases/${props.knowledgeBaseId}`,
+    query: { ...route.query, tab: 'learning', practice: slug },
+  })
+}
 
 // graphStatusCard drives the little summary panel below the legend.
 //
@@ -1540,6 +1755,8 @@ async function openGraphDrawer(slug: string) {
     const res = await getWikiPage(props.knowledgeBaseId, slug)
     graphDrawerPage.value = (res as any).data || res as any
     graphDrawerVisible.value = true
+    // 图谱抽屉里的阅读与浏览器视图同权：同样是刻意打开一个知识节点
+    // 阅读，必须走同一条读信号（后端按 slug×48h 去重防刷新刷分）。
   } catch (e) {
     console.error(`Failed to load page ${slug}:`, e)
   }
@@ -3170,8 +3387,10 @@ async function loadGraph() {
       mode: 'overview',
       limit: GRAPH_OVERVIEW_LIMIT,
       types: graphFilterTypesToArray(),
+      with_mastery: true,
     })
     graphData.value = (res as any).data || res as any
+    refreshNewlyLit(graphData.value?.nodes || [])
     // Seed the search dropdown's empty-state with this overview snapshot
     // so opening the select without typing shows the top-500 by link_count
     // — matching what the old client-filter dropdown used to surface.
@@ -3223,8 +3442,10 @@ async function loadEgoGraph(slug: string, depth = GRAPH_EGO_DEFAULT_DEPTH) {
       depth,
       limit: GRAPH_EGO_LIMIT,
       types: graphFilterTypesToArray(),
+      with_mastery: true,
     })
     graphData.value = (res as any).data || res as any
+    refreshNewlyLit(graphData.value?.nodes || [])
     graphMode.value = 'ego'
     graphCenter.value = slug
     // Entering (or re-entering) a fresh ego view resets the bloom
@@ -3292,12 +3513,14 @@ async function loadBloomNeighbors(anchorSlug: string, depth = GRAPH_EGO_DEFAULT_
       depth,
       limit: GRAPH_EGO_LIMIT,
       types: graphFilterTypesToArray(),
+      with_mastery: true,
     })
     const incoming = (res as any).data || res as any
     if (!incoming || !Array.isArray(incoming.nodes)) return
 
     bloomCurrentGeneration += 1
     const merged = mergeGraphData(graphData.value, incoming, bloomCurrentGeneration)
+    refreshNewlyLit(merged.nodes || [])
     // Evict the oldest bloom generations if we've blown through the cap.
     // We never evict the ego center (the original anchor of the session),
     // the most recent bloom anchor, or the currently selected node — the
@@ -3335,6 +3558,9 @@ function mergeGraphData(
     if (!existing) {
       nodeBySlug.set(n.slug, n)
       bloomGenerations.set(n.slug, gen)
+    } else if (n.mastery_level) {
+      existing.mastery_level = n.mastery_level
+      existing.low_confidence = !!n.low_confidence
     } else if (n.familiar) {
       existing.familiar = true
     }
@@ -3483,6 +3709,7 @@ async function growFrontier() {
             depth: GRAPH_EGO_DEFAULT_DEPTH,
             limit: GRAPH_EGO_LIMIT,
             types: graphFilterTypesToArray(),
+            with_mastery: true,
           })
           const data = (res as any).data || res as any
           if (data?.nodes) responses.push(data)
@@ -3550,6 +3777,8 @@ async function selectPage(page: WikiPage) {
     const res = await getWikiPage(props.knowledgeBaseId, page.slug)
     selectedPage.value = (res as any).data || res as any
     await loadPageIssues(page.slug)
+    // 侧边栏点击与图谱抽屉/双链跳转同权记读——三条打开路径的信号采集必须
+    // 一致，否则"哪种点法算学习"变成隐藏规则（60 秒护盾与 48h 计分窗在后端）。
   } catch (e) {
     console.error('Failed to load wiki page:', e)
   }
@@ -3569,6 +3798,8 @@ async function navigateToSlug(slug: string) {
     const res = await getWikiPage(props.knowledgeBaseId, slug)
     selectedPage.value = (res as any).data || res as any
     await loadPageIssues(slug)
+    // Learning touch (topic 4 §3.3.6) now flows through the tiered read
+    // tracker watching activeContextPage — see readTracker above.
   } catch (e) {
     console.error(`Failed to navigate to ${slug}:`, e)
   }
@@ -3712,6 +3943,8 @@ interface GNode {
   slug: string; title: string; type: string
   linkCount: number; pinned: boolean
   familiar: boolean
+  masteryLevel?: string
+  lowConfidence?: boolean
 }
 
 // Persistent graph state so it survives re-renders
@@ -3735,6 +3968,23 @@ const graphHighlightSlug = ref<string | null>(null)
 const graphSelectedSlug = ref<string | null>(null)
 
 // Color map for node types
+// Mastery overlay coloring + the newly-lit pulse set (stage 4). The
+// snapshot diff is component state so a re-render within the same session
+// can pulse only what lit since the last render. The FIRST load only seeds
+// the baseline — everything already lit at page open is history, not a
+// "newly lit this session" event, so it must never pulse or wear a NEW
+// badge.
+let previousMasterySnapshot: Record<string, MasteryLevel> | null = null
+let newlyLitSet: Set<string> = new Set()
+function refreshNewlyLit(nodes: { slug: string; mastery_level?: string }[]) {
+  const current: Record<string, MasteryLevel> = {}
+  for (const n of nodes) if (n.mastery_level) current[n.slug] = n.mastery_level as MasteryLevel
+  newlyLitSet = previousMasterySnapshot === null
+    ? new Set()
+    : new Set(newlyLitSlugs(previousMasterySnapshot, current))
+  previousMasterySnapshot = current
+}
+
 const nodeColorMap: Record<string, string> = {
   summary: '#0052d9', entity: '#2ba471', concept: '#e37318',
   synthesis: '#0594fa', comparison: '#d54941', index: '#8c8c8c',
@@ -3864,6 +4114,8 @@ function renderGraph(opts: RenderGraphOpts = {}) {
       slug: n.slug, title: n.title, type: n.page_type,
       linkCount: n.link_count || 0, pinned,
       familiar: !!n.familiar,
+      masteryLevel: n.mastery_level,
+      lowConfidence: !!n.low_confidence,
     }
     nodeMap.set(n.slug, node)
     return node
@@ -4006,6 +4258,61 @@ function renderGraph(opts: RenderGraphOpts = {}) {
     expansionRing.classList.add('node-expansion-ring')
     g.appendChild(expansionRing)
 
+    // Mastery ring: the personal four-tier overlay (stage 4). The ring is
+    // the ONLY mastery channel — the node fill stays the page-type color
+    // (two orthogonal semantics, no color cannibalisation). Mastered gets
+    // the widest ring plus a soft glow; low-confidence rings are dashed.
+    const ringPaint = masteryRing(n.masteryLevel as any, n.lowConfidence)
+    if (ringPaint.visible) {
+      const ringEl = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+      ringEl.setAttribute('r', String(r + 4))
+      ringEl.setAttribute('fill', 'none')
+      ringEl.setAttribute('stroke', ringPaint.stroke)
+      ringEl.setAttribute('stroke-width', String(ringPaint.width))
+      ringEl.setAttribute('pointer-events', 'none')
+      if (ringPaint.dashed) {
+        ringEl.setAttribute('stroke-dasharray', '2 4')
+        ringEl.setAttribute('opacity', '0.7')
+      }
+      ringEl.classList.add('node-mastery-ring')
+      if (ringPaint.glow) {
+        ringEl.classList.add('node-mastery-glow')
+      }
+      const isNewlyLit = newlyLitSet.has(n.slug)
+      if (isNewlyLit) {
+        ringEl.classList.add('node-newly-lit')
+      }
+      g.appendChild(ringEl)
+
+      // Badges ride the ring channel: "?" marks a low-confidence tier
+      // (persists as long as the state does); "NEW" marks a tier that lit
+      // this session and fades out together with the pulse.
+      if (n.lowConfidence || isNewlyLit) {
+        const badge = document.createElementNS('http://www.w3.org/2000/svg', 'g')
+        badge.setAttribute('transform', `translate(${r + 3}, ${-r - 3})`)
+        badge.setAttribute('pointer-events', 'none')
+        if (n.lowConfidence) {
+          badge.classList.add('node-badge-lowconf')
+        }
+        if (isNewlyLit) {
+          badge.classList.add('node-badge-newly-lit')
+        }
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
+        bg.setAttribute('r', '6.5')
+        bg.setAttribute('fill', n.lowConfidence ? '#ed7b2f' : ringPaint.stroke)
+        badge.appendChild(bg)
+        const label = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+        label.textContent = n.lowConfidence ? '?' : 'NEW'
+        label.setAttribute('text-anchor', 'middle')
+        label.setAttribute('dy', isNewlyLit && !n.lowConfidence ? '3' : '3.2')
+        label.setAttribute('font-size', isNewlyLit && !n.lowConfidence ? '7' : '9')
+        label.setAttribute('font-weight', '700')
+        label.setAttribute('fill', '#fff')
+        badge.appendChild(label)
+        g.appendChild(badge)
+      }
+    }
+
     // Solid outer ring: this page was built from a document the current
     // person keeps citing. Distinct from the dashed expansion ring so
     // "I use this" and "there are more neighbors" do not look the same.
@@ -4034,7 +4341,7 @@ function renderGraph(opts: RenderGraphOpts = {}) {
 
     const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle')
     circle.setAttribute('r', String(r))
-    circle.setAttribute('fill', nodeColorMap[n.type] || '#8c8c8c')
+    circle.setAttribute('fill', nodeFill(n.type, nodeColorMap[n.type] || '#8c8c8c', n.masteryLevel as any))
     circle.setAttribute('stroke', '#fff')
     circle.setAttribute('stroke-width', '2')
     // circle.setAttribute('filter', 'url(#node-shadow)')
@@ -4130,6 +4437,7 @@ function renderGraph(opts: RenderGraphOpts = {}) {
         bloomBtn.style.opacity = '1'
         bloomBtn.style.pointerEvents = 'auto'
       }
+      showMasteryCard(n)
       if (!graphSelectedSlug.value) {
         if (graphHighlightSlug.value === n.slug) return
         graphHighlightSlug.value = n.slug
@@ -4148,6 +4456,7 @@ function renderGraph(opts: RenderGraphOpts = {}) {
       }
       graphHoverLeaveTimer = setTimeout(() => {
         graphHoverLeaveTimer = null
+        hideMasteryCard()
         if (!graphSelectedSlug.value) {
           graphHighlightSlug.value = null
           clearHighlight(nodeEls, edgeEls)
@@ -4851,9 +5160,15 @@ onMounted(() => {
   loadPages()
   loadStats()
   if (props.view === 'graph') loadGraph()
+  readTracker.start()
+  window.addEventListener(LEARNING_UPDATED,restartReadingAfterFeedback)
 })
 
+onActivated(()=>{readTracker.start();const p=activeContextPage.value;readTracker.enter(p&&['entity','concept'].includes(p.page_type)?p.slug:'')})
+onDeactivated(()=>readTracker.stop())
 onUnmounted(() => {
+  readTracker.stop()
+  window.removeEventListener(LEARNING_UPDATED,restartReadingAfterFeedback)
   if (statsTimer) {
     clearInterval(statsTimer)
   }
@@ -4881,6 +5196,7 @@ onUnmounted(() => {
   display: flex;
   height: 100%;
   min-height: 0;
+  position: relative;
   background: var(--td-bg-color-container);
   // Align list rows with the session sidebar grid (menu.vue).
   --wiki-list-inset-x: 10px;
@@ -6268,6 +6584,114 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.node-newly-lit {
+  animation: newly-lit-pulse 1.6s ease-out 3;
+}
+@keyframes newly-lit-pulse {
+  0% { stroke-opacity: 1; stroke-width: 2; }
+  50% { stroke-opacity: 0.25; stroke-width: 6; }
+  100% { stroke-opacity: 1; stroke-width: 2; }
+}
+/* Mastered 环的克制微发光：强化最高档，不与脉冲抢戏 */
+.node-mastery-glow {
+  filter: drop-shadow(0 0 3px rgba(3, 134, 38, 0.55));
+}
+/* "NEW" 角标 = 本次会话新点亮的会话级标记：脉冲动画结束后保持常显
+   （与图例"本次会话新点亮"语义一致），随下一次图谱数据加载重建集合 */
+.node-badge-newly-lit {
+  animation: badge-newly-lit 1.6s ease-out 3 forwards;
+}
+@keyframes badge-newly-lit {
+  0% { opacity: 1; }
+  50% { opacity: 0.35; }
+  100% { opacity: 1; }
+}
+/* 低置信 "?" 角标常显（状态存续即存在），静态不闪 */
+.node-badge-lowconf {
+  opacity: 0.95;
+}
+.legend-mastery-ring {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--ring-color, #8ce0af);
+  background: transparent;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+/* 无环 = 从未接触：实心中性点（节点无任何学习数据时不画环） */
+.legend-no-ring {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #9aa5b1;
+  flex-shrink: 0;
+}
+/* 节点角标的图例复刻：橙圆白"?"（低置信）与绿药丸 NEW（新点亮） */
+.legend-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.legend-badge-lowconf {
+  width: 14px;
+  height: 14px;
+  background: #ed7b2f;
+  color: #fff;
+  font-size: 10px;
+}
+.legend-badge-new {
+  width: 26px;
+  height: 13px;
+  background: #07c05f;
+  color: #fff;
+  font-size: 8px;
+  letter-spacing: 0.3px;
+}
+.legend-mastery-note {
+  font-size: 11px;
+  color: var(--td-text-color-placeholder, #999);
+  line-height: 1.5;
+}
+/* 悬停掌握度卡片：图谱容器左下固定浮层（推演 3.2），白底绿环的克制样式 */
+.wiki-graph-mastery-card {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  z-index: 5;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 10px 14px;
+  background: var(--td-bg-color-container, #fff);
+  border: 1px solid var(--td-component-stroke, #e7e7e7);
+  border-radius: 8px;
+  box-shadow: var(--td-shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+.wiki-graph-mastery-card.card-shifted {
+  left: 16px;
+}
+.mc-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mc-ring {
+  width: 11px; height: 11px; border-radius: 50%;
+  border: 2.5px solid #8ce0af; background: transparent; flex-shrink: 0;
+}
+.mc-title {
+  font-weight: 600; font-size: 13px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mc-tier { font-size: 11px; color: #049b38; flex-shrink: 0; }
+.mc-row { font-size: 12px; color: var(--td-text-color-secondary, #666); }
+.mc-warn { font-size: 11px; color: #ed7b2f; }
 .legend-familiar-ring {
   width: 10px;
   height: 10px;

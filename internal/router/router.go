@@ -86,6 +86,7 @@ type RouterParams struct {
 	WeKnoraCloudHandler          *handler.WeKnoraCloudHandler
 	WikiPageHandler              *handler.WikiPageHandler
 	MemoryHandler                *handler.MemoryHandler
+	LearningHandler              *handler.LearningHandler
 }
 
 // NewRouter 创建新的路由
@@ -150,8 +151,9 @@ func NewRouter(params RouterParams) *gin.Engine {
 		r.Use(embedFrameAncestorsMiddleware(params.EmbedChannelService))
 	}
 
-	// 前端静态文件（仅 Lite 版本内嵌前端）
-	if handler.Edition == "lite" {
+	// 前端静态文件（Lite 版本内嵌前端）。标准版可经 WEKNORA_SERVE_STATIC=1
+	// 显式开启同一逻辑，用于单进程本地部署（API 与 SPA 同端口），不改能力集。
+	if handler.Edition == "lite" || os.Getenv("WEKNORA_SERVE_STATIC") == "1" {
 		serveFrontendStatic(r)
 	}
 
@@ -285,6 +287,7 @@ func NewRouter(params RouterParams) *gin.Engine {
 		RegisterWeKnoraCloudRoutes(v1, params.WeKnoraCloudHandler, rbacGuards)
 		RegisterWikiPageRoutes(v1, params.WikiPageHandler, rbacGuards)
 		RegisterMemoryRoutes(v1, params.MemoryHandler, rbacGuards)
+		RegisterLearningRoutes(v1, params.LearningHandler, rbacGuards)
 		RegisterChunkerDebugRoutes(v1, rbacGuards)
 
 		// Fail fast if any declared API-key policy points at a route

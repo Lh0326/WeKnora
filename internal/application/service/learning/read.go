@@ -1,0 +1,1208 @@
+package learning
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"math/rand"
+	"sort"
+	"time"
+
+	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/types"
+	"github.com/Tencent/WeKnora/internal/types/interfaces"
+)
+
+// ErrNoLearningScope mirrors the memory subsystem's scope error: the
+// handler maps it to 401, because a missing principal is never the
+// client's payload's fault but always the client's identity's.
+var ErrNoLearningScope = errors.New("learning: no subject scope in context")
+
+// ErrQuizNotFound marks a quiz item id that does not resolve in the KB.
+var ErrQuizNotFound = errors.New("learning: quiz item not found")
+
+// ErrWikiReadTarget marks a wiki-read signal aimed at a slug that is not a
+// knowledge node (entity/concept page) of the KB.
+var ErrWikiReadTarget = errors.New("learning: wiki read target is not a knowledge node")
+
+// resolveReadScope derives the read scope from the request context alone
+// (Principal.StorageID()), exactly like every write path. No handler
+// parameter can select another person's data.
+func resolveReadScope(ctx context.Context, kbID string) (interfaces.LearningScope, error) {
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		return interfaces.LearningScope{}, ErrNoLearningScope
+	}
+	principal, ok := types.PrincipalFromContext(ctx)
+	if !ok {
+		return interfaces.LearningScope{}, ErrNoLearningScope
+	}
+	subjectID := principal.StorageID()
+	if subjectID == "" {
+		return interfaces.LearningScope{}, ErrNoLearningScope
+	}
+	return interfaces.LearningScope{TenantID: tenantID, SubjectID: subjectID, KnowledgeBaseID: kbID}, nil
+}
+
+// Read-path DTOs live on the interfaces package so handlers depend on
+// interfaces only, the same contract shape as the memory subsystem.
+type (
+	LearningProgress     = interfaces.LearningProgress
+	LearningUnitProgress = interfaces.LearningUnitProgress
+	TodaySummary         = interfaces.TodaySummary
+	MasteryView          = interfaces.MasteryView
+	QuizQuestion         = interfaces.QuizQuestion
+	QuizSourceDoc        = interfaces.QuizSourceDoc
+	AnswerResult         = interfaces.AnswerResult
+	TimelineItem         = interfaces.TimelineItem
+	ExportPayload        = interfaces.ExportPayload
+	ExportKBSummary      = interfaces.ExportKBSummary
+	LearningSettings     = interfaces.LearningSettings
+	MasteryOverlayEntry  = interfaces.MasteryOverlayEntry
+)
+
+// GetProgress assembles the tab header from the KB's node pages and the
+// caller's folds.
+func (s *Service) GetProgress(ctx context.Context, kbID string) (*LearningProgress, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := s.nodePages(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]FoldState{}
+	if rows, err := s.repo.ListMastery(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: progress mastery read failed (kb %s): %v", kbID, err)
+	} else {
+		for i := range rows {
+			states[rows[i].Slug] = StateFromModel(&rows[i])
+		}
+	}
+
+	now := time.Now()
+	direct := s.directFacts(ctx, scope)
+	// Coverage accepts the user's own declaration: a node retired via
+	// "已掌握，移除推荐" counts as covered (点亮), exactly like the zone
+	// map's counter — the two surfaces must move together or the user
+	// reads the mismatch as "stats did not sync". A read failure is
+	// conservative: the skip contribution is omitted, never invented.
+	skips := map[string]bool{}
+	if m, err := s.repo.ListSkips(ctx, scope); err == nil {
+		for slug := range m {
+			skips[slug] = true
+		}
+	} else {
+		logger.Warnf(ctx, "learning: progress skips read failed (kb %s): %v", kbID, err)
+	}
+	progress := &LearningProgress{Levels: map[string]int{}}
+	// Folder names are the human-readable labels of the rolled-up units;
+	// a missing folder (deleted between reads) degrades to the root label.
+	folderNames := map[string]string{}
+	if folders, err := s.wikiRepo.ListAllFolders(ctx, kbID); err == nil {
+		for _, f := range folders {
+			if f != nil && f.ID != "" {
+				folderNames[f.ID] = f.Name
+			}
+		}
+	} else {
+		logger.Warnf(ctx, "learning: progress folder read failed (kb %s): %v", kbID, err)
+	}
+	unitIndex := map[string]*LearningUnitProgress{}
+	for _, p := range pages {
+		progress.TotalNodes++
+		lv := gatedAnchoredLevel(states[p.Slug], direct[p.Slug], now)
+		progress.Levels[string(lv.Level)]++
+		if lv.Level != LevelUnseen || skips[p.Slug] {
+			progress.LitNodes++
+		}
+		unit := unitIndex[p.FolderID]
+		if unit == nil {
+			unit = &LearningUnitProgress{FolderID: p.FolderID, FolderName: folderNames[p.FolderID]}
+			unitIndex[p.FolderID] = unit
+		}
+		unit.Total++
+		if lv.Level != LevelUnseen || skips[p.Slug] {
+			unit.Lit++
+		}
+	}
+	ids := make([]string, 0, len(unitIndex))
+	for id := range unitIndex {
+		ids = append(ids, id)
+	}
+	ids = sortedStrings(ids)
+	for _, id := range ids {
+		progress.Units = append(progress.Units, *unitIndex[id])
+	}
+	progress.Today = s.todaySummary(ctx, scope, states, now)
+	return progress, nil
+}
+
+// todaySummary derives the daily digest from the same rows the tab already
+// reads: today's events (answers and their outcomes), nodes whose first
+// evidence landed today, and the consecutive-day streak. Collection-free by
+// construction — it summarises events that were already stored.
+func (s *Service) todaySummary(
+	ctx context.Context, scope interfaces.LearningScope, states map[string]FoldState, now time.Time,
+) *TodaySummary {
+	today := &TodaySummary{}
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	// Today's counts come from today's rows alone (bounded by one day of
+	// activity); the streak comes from the distinct-day query so a heavy
+	// history cannot truncate it through the paged event read — the bug the
+	// old "pull a year of events" version carried for >500-event users.
+	streakLookback := 365 * 24 * time.Hour
+	dayKeys, err := s.repo.ListActiveDays(ctx, scope, now.Add(-streakLookback))
+	if err != nil {
+		logger.Warnf(ctx, "learning: active-days read failed (kb %s): %v", scope.KnowledgeBaseID, err)
+		dayKeys = nil
+	}
+	events, err := s.repo.ListEvents(ctx, scope, start, 0)
+	if err != nil {
+		logger.Warnf(ctx, "learning: today summary read failed (kb %s): %v", scope.KnowledgeBaseID, err)
+		return today
+	}
+	daySeen := make(map[string]bool, len(dayKeys))
+	for _, d := range dayKeys {
+		daySeen[d] = true
+	}
+	for _, ev := range events {
+		if !ev.OccurredAt.Before(start) {
+			switch ev.Type {
+			case types.LearningEventQuizCorrect, types.LearningEventQuizWrong, types.LearningEventQuizUnsure:
+				today.Answers++
+				if ev.Type == types.LearningEventQuizCorrect {
+					today.CorrectCount++
+				}
+			}
+		}
+	}
+	for _, st := range states {
+		if !st.FirstSeenAt.IsZero() && !st.FirstSeenAt.Before(start) && st.EvidenceCount > 0 {
+			today.LitToday++
+		}
+	}
+	// Streak: consecutive days ending today (or yesterday, so this morning
+	// does not read as a broken streak before the first action).
+	// Bug fix: daySeen must contain ONLY days with actual events — seeding
+	// today unconditionally manufactured streak=1 for never-active users.
+	day := start
+	if !daySeen[day.Format("2006-01-02")] {
+		day = day.AddDate(0, 0, -1)
+	}
+	for daySeen[day.Format("2006-01-02")] {
+		today.StreakDays++
+		day = day.AddDate(0, 0, -1)
+	}
+	return today
+}
+
+// ListMasteryView derives every node's current level and decayed
+// probability at read time. The view covers the whole node universe —
+// including never-touched pages as unseen entries — so a consumer (tier
+// list, graph hover card) never meets a node the map cannot describe;
+// progress counts and map rows can no longer disagree.
+func (s *Service) ListMasteryView(ctx context.Context, kbID string) ([]MasteryView, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := s.nodePages(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]FoldState{}
+	if rows, err := s.repo.ListMastery(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: mastery read failed (kb %s): %v", kbID, err)
+	} else {
+		for i := range rows {
+			states[rows[i].Slug] = StateFromModel(&rows[i])
+		}
+	}
+	now := time.Now()
+	direct := s.directFacts(ctx, scope)
+	// Raw last activity per slug (zero-weight touches included) — the
+	// constellation's "studied within 48h" marker must see deduped re-reads
+	// and unsure answers, which never enter the fold. Failure is soft: the
+	// view falls back to the folded last_evidence_at, exactly the old
+	// behavior.
+	activity := map[string]time.Time{}
+	if m, err := s.repo.ListLastActivity(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: last-activity read failed (kb %s): %v", kbID, err)
+	} else {
+		activity = m
+	}
+	selfAssess := map[string]interfaces.SelfAssessMark{}
+	if m, err := s.repo.ListSelfAssess(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: self-assess read failed (kb %s): %v", kbID, err)
+	} else {
+		selfAssess = m
+	}
+	skips := map[string]time.Time{}
+	if m, err := s.repo.ListSkips(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: skip read failed (kb %s): %v", kbID, err)
+	} else {
+		skips = m
+	}
+	out := make([]MasteryView, 0, len(pages))
+	for _, p := range pages {
+		if p == nil || p.Slug == "" {
+			continue
+		}
+		state := states[p.Slug]
+		lv := gatedAnchoredLevel(state, direct[p.Slug], now)
+		lastActivity := activity[p.Slug]
+		if lastActivity.IsZero() || lastActivity.Before(state.LastEvidenceAt) {
+			lastActivity = state.LastEvidenceAt
+		}
+		var mark *interfaces.SelfAssessMark
+		if m, ok := selfAssess[p.Slug]; ok {
+			mark = &m
+		}
+		pEff := EffectiveP(state, now)
+		// Bug fix: a node with zero evidence and zero timestamps has a raw
+		// sigmoid(0)=0.5 — "a statement nobody earned" (anchoredLevel's own
+		// words). The mastery map must report p_eff=0 and tier_progress=0
+		// for never-touched nodes, not a half-full progress bar.
+		if state.EvidenceCount == 0 && state.LastEvidenceAt.IsZero() {
+			pEff = 0
+		}
+		var skippedAt *time.Time
+		if at, ok := skips[p.Slug]; ok {
+			skippedAt = &at
+		}
+		out = append(out, MasteryView{
+			Slug: p.Slug, Level: string(lv.Level), Title: p.Title,
+			PEff: pEff, EvidenceCount: state.EvidenceCount,
+			LowConfidence: lv.LowConfidence, LastEvidenceAt: state.LastEvidenceAt,
+			LastActivityAt: lastActivity, SelfAssess: mark,
+			Skipped: skippedAt != nil, SkippedAt: skippedAt,
+			TierProgress: TierProgress(lv.Level, pEff),
+			NextTierHint: NextTierHint(lv.Level, direct[p.Slug], now),
+		})
+	}
+	// Deterministic order: lit tiers first (mastered → touched), unseen
+	// last, titles within a tier — the same reading order as the header's
+	// tier cards.
+	sort.Slice(out, func(i, j int) bool {
+		ri, rj := tierSortRank(out[i].Level), tierSortRank(out[j].Level)
+		if ri != rj {
+			return ri > rj
+		}
+		if out[i].Title != out[j].Title {
+			return out[i].Title < out[j].Title
+		}
+		return out[i].Slug < out[j].Slug
+	})
+	return out, nil
+}
+
+// tierSortRank orders the display tiers for the mastery map: mastered
+// first, unseen last.
+func tierSortRank(level string) int {
+	switch level {
+	case string(LevelMastered):
+		return 3
+	case string(LevelFamiliar):
+		return 2
+	case string(LevelTouched):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// recommendAssembly is everything the read paths need to run the pure
+// recommender: the assembled input plus the display-side extras. Recommend
+// and ZoneMap share it so the linear and the module-partitioned views rank
+// from exactly the same evidence.
+type recommendAssembly struct {
+	scope      interfaces.LearningScope
+	pages      []*types.WikiPage
+	edges      []types.LearningEdge
+	in         recommendInput
+	materials  map[string]NodeMaterial
+	quizCount  map[string]int
+	folderName map[string]string // folderID → name
+	now        time.Time
+}
+
+// assembleRecommend loads one KB's full evidence set and derives the pure
+// recommender input. Soft reads degrade exactly like Recommend always has
+// (logged, empty fallback); hard scope/page errors abort.
+func (s *Service) assembleRecommend(ctx context.Context, kbID string) (*recommendAssembly, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	pages, err := s.nodePages(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	edges, err := s.repo.ListEdges(ctx, scope.TenantID, kbID)
+	if err != nil {
+		return nil, err
+	}
+	states := map[string]FoldState{}
+	if rows, err := s.repo.ListMastery(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: recommend mastery read failed (kb %s): %v", kbID, err)
+	} else {
+		for i := range rows {
+			states[rows[i].Slug] = StateFromModel(&rows[i])
+		}
+	}
+
+	// Affinity: pages whose SourceRefs cite the docs this person keeps
+	// working from get the relevance nudge.
+	affinity := map[string]bool{}
+	if affinities, err := s.repo.ListDocAffinityByScope(ctx, scope.TenantID, scope.SubjectID); err != nil {
+		logger.Warnf(ctx, "learning: recommend affinity read failed: %v", err)
+	} else {
+		docs := map[string]bool{}
+		for _, row := range affinities {
+			if row.Hits >= types.MemoryDocAffinityMinHits {
+				docs[row.KnowledgeID] = true
+			}
+		}
+		for _, p := range pages {
+			for _, ref := range p.SourceRefs {
+				if docID := sourceRefDocID(ref); docID != "" && docs[docID] {
+					affinity[p.Slug] = true
+					break
+				}
+			}
+		}
+	}
+
+	quizCount := map[string]int{}
+	allItems, itemsErr := s.repo.ListQuizItemsByKB(ctx, scope.TenantID, kbID)
+	if itemsErr != nil {
+		logger.Warnf(ctx, "learning: recommend quiz read failed (kb %s): %v", kbID, itemsErr)
+		allItems = nil
+	}
+	for _, it := range allItems {
+		if it.Status == types.LearningQuizStatusActive {
+			quizCount[it.Slug]++
+		}
+	}
+	hasQuiz := make(map[string]bool, len(quizCount))
+	for slug, n := range quizCount {
+		hasQuiz[slug] = n > 0
+	}
+
+	// Direct-evidence struggle: slugs this subject answered wrong at least
+	// once within the production lookback. Read the complete window through
+	// keyset pages; a timeline limit must not hide older wrong answers.
+	quizStruggled := map[string]bool{}
+	var history []types.LearningEvent
+	if rows, err := listEventWindow(ctx, s.repo, scope, time.Now().Add(-touchLookback)); err != nil {
+		logger.Warnf(ctx, "learning: recommend history read failed (kb %s): %v", kbID, err)
+	} else {
+		history = rows
+		for _, ev := range history {
+			if ev.Type == types.LearningEventQuizWrong {
+				quizStruggled[ev.Slug] = true
+			}
+		}
+	}
+
+	// The 承上启下 anchors: recent STRONG-behaviour nodes only — quiz
+	// answers, deliberate page reads, answer citations. Passive mappings
+	// (topic signals, backfilled affinity) and re-ask churn are excluded:
+	// a mis-click or a background projection must not steer the mainline.
+	// Newest first, deduped per slug, bounded to the continuity window and
+	// three anchors.
+	now := time.Now()
+	recent := recentAnchors(history, now)
+
+	// Self-assessment marks (latest per slug, visible-window bounded by the
+	// repo): the freshest explicit user claim must shape reason attribution —
+	// without it a "题目太简单" demotion keeps the stale 错题重练 label built
+	// from old wrong answers the user just re-contextualised.
+	selfAssess := map[string]interfaces.SelfAssessMark{}
+	if marks, err := s.repo.ListSelfAssess(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: recommend self-assess read failed (kb %s): %v", kbID, err)
+	} else {
+		selfAssess = marks
+	}
+
+	direct := s.directFacts(ctx, scope)
+	// Document order (从浅入深): the material map degrades to empty on any
+	// read failure inside, falling back to the title ordering; the rank-only
+	// view feeds the pure recommender, the full material feeds the narrative.
+	materials := s.nodeMaterials(ctx, scope.TenantID, kbID, pages)
+	// Standing user declarations ("已掌握，不再推荐"): soft read, an empty
+	// set on failure — the queue then simply shows everything again.
+	skips := map[string]bool{}
+	if rows, err := s.repo.ListSkips(ctx, scope); err != nil {
+		logger.Warnf(ctx, "learning: recommend skip read failed (kb %s): %v", kbID, err)
+	} else {
+		for slug := range rows {
+			skips[slug] = true
+		}
+	}
+	folderNames := map[string]string{}
+	if folders, err := s.wikiRepo.ListAllFolders(ctx, kbID); err == nil {
+		for _, f := range folders {
+			if f != nil && f.ID != "" {
+				folderNames[f.ID] = f.Name
+			}
+		}
+	} else {
+		logger.Warnf(ctx, "learning: folder read failed (kb %s): %v", kbID, err)
+	}
+	// 首访让位 signal: per slug the newest real USER visit (deliberate
+	// ≥5s read, deep read, Q&A touch, re-ask) from the same lookback scan
+	// the struggle signal uses. Passive projections (topic signals,
+	// backfills) are excluded — only behaviour that required the user to
+	// face the node releases a pressure pin; quick flips record nothing.
+	lastVisit := learningLastVisits(history, now)
+	asm := &recommendAssembly{
+		scope: scope, pages: pages, edges: edges,
+		materials: materials, quizCount: quizCount, folderName: folderNames, now: now,
+		in: recommendInput{
+			Pages: pages, Edges: edges, States: states, Affinity: affinity, HasQuiz: hasQuiz,
+			QuizStruggled: quizStruggled, DirectFacts: direct, SelfAssess: selfAssess,
+			DocOrder: docRankMap(materials), Skips: skips,
+			Recent: recent, Material: materials, LastVisit: lastVisit,
+		},
+	}
+	return asm, nil
+}
+
+// Recommend produces the "look" cards for the caller.
+func (s *Service) Recommend(ctx context.Context, kbID string, limit int) ([]Recommendation, error) {
+	asm, err := s.assembleRecommend(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	recs := recommendNodes(asm.in, asm.now, rand.New(rand.NewSource(asm.now.UnixNano())), limit)
+	decorateRecommendations(asm, recs)
+	return recs, nil
+}
+
+// decorateRecommendations fills the display extras in place — folder,
+// quiz count, current tier, material context and the translated narrative —
+// so the pure recommender stays a pure policy and every read path (linear
+// list, zone cards) shows identical fields per card.
+func decorateRecommendations(asm *recommendAssembly, recs []Recommendation) {
+	now := asm.now
+	titleBySlug := map[string]string{}
+	folderBySlug := map[string]string{}
+	for _, p := range asm.pages {
+		if p != nil {
+			titleBySlug[p.Slug] = p.Title
+			folderBySlug[p.Slug] = p.FolderID
+		}
+	}
+	for i := range recs {
+		slug := recs[i].Slug
+		if r, ok := asm.in.DocOrder[slug]; ok {
+			recs[i].DocRank = r + 1 // 1-based material position; 0 stays hidden
+		}
+		if m, ok := asm.materials[slug]; ok {
+			recs[i].Section = m.Section
+			recs[i].DocTitle = m.DocTitle
+		}
+		buildWhy(&recs[i], asm.materials[slug])
+		if recs[i].WhyRef != "" {
+			// Slug-referencing narratives must never ship the raw slug
+			// (deleted page, empty title): drop the line instead. Label
+			// references (chapter_of / in_doc) pass through untouched.
+			switch recs[i].Why {
+			case "continues_prereq", "same_section", "continues_prev":
+				if t := titleBySlug[recs[i].WhyRef]; t != "" {
+					recs[i].WhyRef = t
+				} else {
+					recs[i].Why, recs[i].WhyRef = "", ""
+				}
+			}
+		}
+		recs[i].FolderName = asm.folderName[folderBySlug[slug]]
+		recs[i].QuizCount = asm.quizCount[slug]
+		if state, ok := asm.in.States[slug]; ok {
+			lv := gatedAnchoredLevel(state, asm.in.DirectFacts[slug], now)
+			recs[i].Level = string(lv.Level)
+			// Explainability: the numbers behind the tier, plus the faded
+			// distinction (unseen tier WITH history) so the client can say
+			// 已淡化 instead of the misleading 未接触.
+			recs[i].PEff = EffectiveP(state, now)
+			recs[i].EvidenceCount = state.EvidenceCount
+			recs[i].PositiveCount = state.PositiveCount
+			recs[i].NegativeCount = state.NegativeCount
+			recs[i].Faded = lv.Level == LevelUnseen && state.EvidenceCount > 0
+			recs[i].TierProgress = TierProgress(lv.Level, recs[i].PEff)
+			recs[i].NextTierHint = NextTierHint(lv.Level, asm.in.DirectFacts[slug], now)
+		} else {
+			// Bug fix: explore/bypass/blind-spot picks are state-less by
+			// definition — the level must be the explicit "unseen" enum,
+			// not empty (client tier maps and fade logic expect the same
+			// enumeration the /map endpoint returns).
+			recs[i].Level = string(LevelUnseen)
+			recs[i].NextTierHint = HintFirstTouch
+		}
+	}
+}
+
+// TakeQuiz serves the active questions of one node, preferring ones the
+// caller has not answered yet, and strips the answer material. Source
+// documents are resolved for every served item so the client can trace a
+// question back to the document its evidence chunks live in.
+func (s *Service) TakeQuiz(ctx context.Context, kbID, slug string) ([]QuizQuestion, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	items, err := s.repo.ListQuizItems(ctx, scope.TenantID, kbID, slug)
+	if err != nil {
+		return nil, err
+	}
+	attempts, err := s.repo.ListAttempts(ctx, scope, slug)
+	if err != nil {
+		logger.Warnf(ctx, "learning: quiz attempts read failed (slug %s): %v", slug, err)
+		attempts = nil // preference, not correctness
+	}
+	seen := map[string]bool{}
+	for _, a := range attempts {
+		seen[a.QuizItemID] = true
+	}
+
+	_, _, evidenceHash, err := s.currentQuizEvidence(ctx, scope.TenantID, kbID, slug)
+	if err != nil {
+		return nil, err
+	}
+	if evidenceHash == "" {
+		return []QuizQuestion{}, nil
+	}
+	var fresh, used []QuizQuestion
+	for _, it := range items {
+		// Serving split: published items are verification material;
+		// legacy 'active' and LLM drafts serve as clearly-labelled
+		// practice (their attempts record practice_* reasons and never
+		// promote the strict profile).
+		if it.Status != types.LearningQuizStatusActive &&
+			it.Status != types.LearningQuizStatusPublished &&
+			it.Status != types.LearningQuizStatusDraft {
+			continue
+		}
+		if it.EvidenceHash == "" || it.EvidenceHash != evidenceHash {
+			continue
+		}
+		mode := "practice"
+		if it.Status == types.LearningQuizStatusPublished {
+			o, e := s.verificationObjective(ctx, scope.TenantID, kbID, it.ObjectiveID, it.Slug, types.ObjectiveContractConceptTwoFamily)
+			if e != nil || o.ContentVersion != it.ObjectiveVersion {
+				continue
+			}
+			priorFamily := 0
+			for _, a := range attempts {
+				if a.QuizItemID == it.ID || (a.FamilyID == it.FamilyID && a.ObjectiveID == it.ObjectiveID) {
+					priorFamily++
+				}
+			}
+			if ok, _ := strictQuizEligibility(&it, it.AssistanceMode, priorFamily); ok {
+				mode = "verification"
+			}
+		}
+		q := QuizQuestion{ObjectiveID: it.ObjectiveID, FamilyID: it.FamilyID, AssistanceMode: it.AssistanceMode, ID: it.ID, Question: it.Question, Options: map[string]string{}, ChunkRefs: []string(it.ChunkRefs), Mode: mode}
+		for k, v := range it.Options {
+			q.Options[k] = v
+		}
+		q.SourceDocs = s.resolveSourceDocs(ctx, scope, kbID, slug, &it)
+		if seen[it.ID] {
+			used = append(used, q)
+		} else {
+			fresh = append(fresh, q)
+		}
+	}
+	return append(fresh, used...), nil
+}
+
+// resolveSourceDocs maps one item's evidence chunks back to their source
+// documents: chunk → knowledge_id via the chunk repository (one indexed
+// batch read), title via the page's own SourceRefs ("<id>|<title>") with
+// the knowledge repository as the bare-id fallback. Deterministic,
+// read-only; unresolved chunks are skipped rather than guessed.
+func (s *Service) resolveSourceDocs(
+	ctx context.Context, scope interfaces.LearningScope, kbID, slug string, item *types.LearningQuizItem,
+) []QuizSourceDoc {
+	if len(item.ChunkRefs) == 0 || s.chunkRepo == nil {
+		return nil
+	}
+	chunks, err := s.chunkRepo.ListChunksByID(ctx, scope.TenantID, []string(item.ChunkRefs))
+	if err != nil {
+		logger.Warnf(ctx, "learning: quiz source chunk read failed (slug %s): %v", slug, err)
+		return nil
+	}
+	titles := map[string]string{}
+	if p, err := s.wikiRepo.GetBySlug(ctx, kbID, slug); err == nil && p != nil {
+		for _, ref := range p.SourceRefs {
+			if id, title := sourceRefParts(ref); id != "" {
+				titles[id] = title
+			}
+		}
+	}
+	type docAcc struct {
+		doc   QuizSourceDoc
+		order int
+	}
+	acc := map[string]*docAcc{}
+	for _, c := range chunks {
+		if c == nil || c.KnowledgeID == "" {
+			continue
+		}
+		a := acc[c.KnowledgeID]
+		if a == nil {
+			a = &docAcc{doc: QuizSourceDoc{KnowledgeID: c.KnowledgeID, Title: titles[c.KnowledgeID]}, order: len(acc)}
+			acc[c.KnowledgeID] = a
+		}
+		a.doc.ChunkCount++
+	}
+	out := make([]QuizSourceDoc, 0, len(acc))
+	for _, a := range acc {
+		out = append(out, a.doc)
+	}
+	// Titles the page's SourceRefs could not supply (bare-id refs) fall
+	// back to the knowledge repository, so a user never meets a raw UUID.
+	for i := range out {
+		if out[i].Title != "" || s.knowledgeRepo == nil {
+			continue
+		}
+		if k, err := s.knowledgeRepo.GetKnowledgeByID(ctx, scope.TenantID, out[i].KnowledgeID); err == nil && k != nil && k.Title != "" {
+			out[i].Title = k.Title
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ChunkCount != out[j].ChunkCount {
+			return out[i].ChunkCount > out[j].ChunkCount
+		}
+		return out[i].KnowledgeID < out[j].KnowledgeID
+	})
+	return out
+}
+
+// SubmitAnswer grades deterministically, records the attempt and folds the
+// event — unless the subject opted out of collection, in which case the
+// verdict and explanation are still served but nothing is stored.
+//
+// The whole answer cycle runs under the per-node fold mutex: the
+// prior-attempt count, the "before" read, the attempt/event writes and the
+// fold are one read-modify-write, and a concurrent double-submit of the same
+// item would otherwise both read prior=0 and both earn the full weight —
+// exactly the anti-farm decay exists to prevent.
+func (s *Service) submitAnswer(ctx context.Context, kbID, itemID, chosenKey, declaredAssistance string) (*AnswerResult, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	// Locate the item (and its slug) without trusting the client for it.
+	item := s.findQuizItem(ctx, scope, itemID)
+	if item == nil {
+		return nil, ErrQuizNotFound
+	}
+	mu := s.lockNode(scope, item.Slug)
+	defer mu.Unlock()
+	result, err := s.submitAnswerNode(ctx, scope, item, chosenKey, declaredAssistance)
+	if err == nil && !s.quizEvidenceMatches(ctx, item) {
+		return nil, ErrQuizNotFound
+	}
+	return result, err
+}
+
+func (s *Service) submitAnswerNode(
+	ctx context.Context, scope interfaces.LearningScope, item *types.LearningQuizItem, chosenKey, declaredAssistance string,
+) (*AnswerResult, error) {
+	itemID := item.ID
+
+	// Any attempt reveals feedback, so the same item's retries inside the
+	// 48-hour window earn no independent evidence. Spaced practice remains
+	// eligible. Use one timestamp for eligibility, event and answer.
+	now := time.Now()
+	var priorAttempts []types.LearningQuizAttempt
+	prior := 0
+	if attempts, err := s.repo.ListAttempts(ctx, scope, item.Slug); err == nil {
+		priorAttempts = attempts
+		windowStart := now.Add(-ReAskWindowHours * time.Hour)
+		for _, a := range attempts {
+			if a.QuizItemID == itemID && a.AnsweredAt.After(windowStart) {
+				prior++
+			}
+		}
+	} else {
+		return nil, err // never award fresh evidence when repeat history is unavailable
+	}
+	grade, err := GradeQuiz(item.CorrectKey, chosenKey, prior)
+	if err != nil {
+		return nil, err
+	}
+	// Stage-2 trial-condition policy: practice kinds never fold weight —
+	// LLM drafts, assistance-mode mismatches and assistant-helped trials
+	// give feedback only. Legacy 'active' serving keeps its compatibility
+	// fold; strictness is carried by the frozen Eligible verdict below.
+	strictPrior := 0
+	for _, a := range priorAttempts {
+		if a.QuizItemID == itemID || (a.FamilyID != "" && a.ObjectiveID == item.ObjectiveID && a.FamilyID == item.FamilyID) {
+			strictPrior++
+		}
+	}
+	eligible, gradeReason := strictQuizEligibility(item, declaredAssistance, strictPrior)
+	if grade.EventType == types.LearningEventQuizUnsure {
+		eligible = false
+		gradeReason = "unsure"
+	}
+	var objective *types.LearningObjective
+	if eligible {
+		objective, err = s.verificationObjective(ctx, scope.TenantID, scope.KnowledgeBaseID, item.ObjectiveID, item.Slug, types.ObjectiveContractConceptTwoFamily)
+		if err != nil || objective.ContentVersion != item.ObjectiveVersion {
+			return nil, ErrQuizNotFound
+		}
+	}
+	if grade.Weight != 0 && !eligible && gradeReason != "practice_legacy" {
+		grade.Weight = 0
+	}
+	result := &AnswerResult{
+		Eligible: eligible, GradeReason: gradeReason, Correct: grade.Correct, CorrectKey: item.CorrectKey,
+		Explanation: item.Explanation, ChunkRefs: []string(item.ChunkRefs),
+		Unsure: grade.EventType == types.LearningEventQuizUnsure,
+	}
+
+	// The fast-feedback bracket: p_eff immediately before this answer.
+	facts := CollectDirectFacts(priorAttempts)[item.Slug]
+	var before *float64
+	if row, err := s.repo.GetMastery(ctx, scope, item.Slug); err == nil && row != nil {
+		if p := EffectiveP(StateFromModel(row), now); p > 0 {
+			before = &p
+		}
+	}
+	attempt := types.LearningQuizAttempt{
+		TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
+		QuizItemID: itemID, Slug: item.Slug,
+		ChosenKey: chosenKey, IsCorrect: grade.Correct, AnsweredAt: now,
+	}
+	// Freeze the strict-evidence linkage AT ANSWER TIME, server-side:
+	// the item's objective and family, and the objective's current
+	// content version. Later item edits or objective re-versioning never
+	// rewrite what this attempt verified (stage-1 evidence separation).
+	attempt.ObjectiveID = item.ObjectiveID
+	attempt.FamilyID = item.FamilyID
+	attempt.ContentVersion = item.ObjectiveVersion
+	if objective != nil {
+		attempt.ContractVersion = objective.ContractVersion
+	}
+	attempt.ItemContentVersion = item.ContentVersion
+	attempt.RubricVersion = item.RubricVersion
+	attempt.ScorerVersion = item.ScorerVersion
+	attempt.AssistanceMode = defaultIfEmpty(declaredAssistance, defaultIfEmpty(item.AssistanceMode, types.AssistanceClosedBook))
+	attempt.ItemStatus = item.Status
+	attempt.Eligible = eligible
+	attempt.GradeReason = gradeReason
+	if err := s.repo.InsertAttempt(ctx, &attempt); err != nil {
+		return nil, err
+	}
+	if err := s.repo.AppendEvent(ctx, &types.LearningEvent{
+		TenantID: scope.TenantID, SubjectID: scope.SubjectID, KnowledgeBaseID: scope.KnowledgeBaseID,
+		Slug: item.Slug, Type: grade.EventType, Weight: grade.Weight, OccurredAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	if grade.Weight != 0 {
+		// Use the same reduction as a fresh profile read, including the last
+		// correct timestamp of repeated items used for delayed verification.
+		facts = CollectDirectFacts(append(priorAttempts, attempt))[item.Slug]
+		if err := s.foldOneLocked(ctx, scope, item.Slug, Event{Type: grade.EventType, Weight: grade.Weight, OccurredAt: now}); err != nil {
+			return nil, err
+		}
+	}
+	// The deterministic review schedule: how many days the folded state
+	// keeps its tier before decay pulls it below the demotion gate, plus
+	// the fast-feedback bracket around the fold.
+	if row, err := s.repo.GetMastery(ctx, scope, item.Slug); err == nil && row != nil {
+		state := StateFromModel(row)
+		if grade.Weight != 0 {
+			if p := EffectiveP(state, now); p > 0 {
+				after := p
+				result.PEffAfter = &after
+				result.PEffBefore = before // nil on the node's first evidence
+			}
+		}
+		if threshold := tierDownThreshold(gatedAnchoredLevel(state, facts, now).Level); threshold > 0 {
+			result.NextReviewDays = NextReviewDays(state, now, threshold)
+		}
+	}
+	return result, nil
+}
+
+// objectiveContentVersion resolves the objective's content version for
+// attempt freezing; empty when the item carries no objective (the attempt
+// is legacy by construction) or the lookup fails conservatively.
+func (s *Service) objectiveContentVersion(ctx context.Context, tenantID uint64, kbID, objectiveID string) string {
+	if objectiveID == "" {
+		return ""
+	}
+	objectives, err := s.repo.ListObjectives(ctx, tenantID, kbID)
+	if err != nil {
+		logger.Warnf(ctx, "learning: objective version lookup failed (kb %s): %v", kbID, err)
+		return ""
+	}
+	for _, o := range objectives {
+		if o.ID == objectiveID {
+			return o.ContentVersion
+		}
+	}
+	return ""
+}
+
+// tierDownThreshold maps a display tier to its demotion gate — the p_eff
+// it must stay above to hold the tier. Unseen returns 0 (nothing to hold).
+func tierDownThreshold(level Level) float64 {
+	switch level {
+	case LevelMastered:
+		return LevelMasteredDown
+	case LevelFamiliar:
+		return LevelFamiliarDown
+	case LevelTouched:
+		return LevelTouchedDown
+	default:
+		return 0
+	}
+}
+
+// findQuizItem resolves an item id inside the caller's KB.
+func (s *Service) findQuizItem(ctx context.Context, scope interfaces.LearningScope, itemID string) *types.LearningQuizItem {
+	item, err := s.repo.GetQuizItemByID(ctx, scope.TenantID, itemID)
+	if err != nil || item == nil {
+		return nil
+	}
+	if item.KnowledgeBaseID != scope.KnowledgeBaseID || !s.quizEvidenceMatches(ctx, item) {
+		return nil
+	}
+	return item
+}
+
+// Timeline returns one newest-first page of the caller's lighting events.
+func (s *Service) Timeline(ctx context.Context, kbID string, page, pageSize int) ([]TimelineItem, int64, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, 0, err
+	}
+	events, total, err := s.repo.ListRecentEvents(ctx, scope, pageSize, (page-1)*pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	// Resolve every touched slug's page title in one batch so the timeline
+	// reads in Chinese titles, not slugs; an unresolvable slug (deleted
+	// page) keeps its raw slug as the fallback.
+	slugSet := map[string]bool{}
+	for _, e := range events {
+		slugSet[e.Slug] = true
+	}
+	slugs := make([]string, 0, len(slugSet))
+	for slug := range slugSet {
+		slugs = append(slugs, slug)
+	}
+	pagesBySlug := map[string]*types.WikiPageLite{}
+	if len(slugs) > 0 {
+		if m, err := s.wikiRepo.ListBySlugs(ctx, kbID, slugs); err == nil {
+			pagesBySlug = m
+		} else {
+			logger.Warnf(ctx, "learning: timeline title read failed (kb %s): %v", kbID, err)
+		}
+	}
+	out := make([]TimelineItem, 0, len(events))
+	for _, e := range events {
+		item := TimelineItem{
+			EventType: e.Type, Slug: e.Slug, Weight: e.Weight, OccurredAt: e.OccurredAt,
+			SessionID: e.SessionID, MessageID: e.MessageID,
+		}
+		if p := pagesBySlug[e.Slug]; p != nil {
+			item.Title = p.Title
+			item.PageType = p.PageType
+		}
+		if e.Type == types.LearningEventComponent {
+			var record componentFact
+			if json.Unmarshal(e.ReviewData, &record) == nil {
+				item.Title = record.Title
+				labels := map[string]string{"open": "打开目标", "read": "阅读推进", "check": "情境检查", "known": "自认熟悉", "difficult": "反馈困难", "recall": "回忆复习"}
+				item.Title += " · " + labels[record.Action]
+			}
+		}
+		if e.Type == types.LearningEventSourceRead {
+			var record struct {
+				DocumentTitle string   `json:"document_title"`
+				Heading       []string `json:"heading"`
+			}
+			if json.Unmarshal(e.ReviewData, &record) == nil {
+				item.Title = record.DocumentTitle
+				if len(record.Heading) > 0 {
+					item.Title += " · " + record.Heading[len(record.Heading)-1]
+				}
+			}
+		}
+		out = append(out, item)
+	}
+	return out, total, nil
+}
+
+// ExportProfile assembles the caller's full personal learning data.
+// ExportProfile assembles the caller's full personal learning data. Every
+// read is subject-scoped, not tenant-scoped: learning rows collected
+// through a shared KB land under the KB owner's effective tenant, and the
+// data-sovereignty export must cover them — "everything you did, wherever
+// it was filed".
+func (s *Service) ExportProfile(ctx context.Context) (*ExportPayload, error) {
+	principal, ok := types.PrincipalFromContext(ctx)
+	if !ok {
+		return nil, ErrNoLearningScope
+	}
+	subject := principal.StorageID()
+	if subject == "" {
+		return nil, ErrNoLearningScope
+	}
+
+	payload := &ExportPayload{ExportedAt: time.Now()}
+	var err error
+	if payload.PlanPreferences, err = s.repo.ListPlanPreferencesBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.Events, err = s.repo.ListEventsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.Mastery, err = s.repo.ListMasteryBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.TopicMaps, err = s.repo.ListAllMapsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.Attempts, err = s.repo.ListAttemptsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.TaskAttempts, err = s.repo.ListTaskAttemptsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	if payload.Skips, err = s.repo.ListSkipsBySubject(ctx, subject); err != nil {
+		return nil, err
+	}
+	// Stage-1 separated evidence profile: objective definitions plus the
+	// derived states for this subject's attempt facts, per (tenant, KB) of
+	// the attempts. Legacy metadata never fabricates strict states — the
+	// derivation itself guarantees it.
+	seenScopes := map[[2]string]bool{}
+	scopeAttempts := append([]types.LearningQuizAttempt(nil), payload.Attempts...)
+	for _, task := range payload.TaskAttempts {
+		scopeAttempts = append(scopeAttempts, types.LearningQuizAttempt{TenantID: task.TenantID, KnowledgeBaseID: task.KnowledgeBaseID})
+	}
+	for _, a := range scopeAttempts {
+		key := [2]string{formatUintKey(a.TenantID), a.KnowledgeBaseID}
+		if seenScopes[key] {
+			continue
+		}
+		seenScopes[key] = true
+		objectives, err := s.currentObjectiveDefinitions(ctx, a.TenantID, a.KnowledgeBaseID)
+		if err != nil {
+			logger.Warnf(ctx, "learning: export objectives read failed (kb %s): %v", a.KnowledgeBaseID, err)
+			continue // raw attempts remain exported; the derived section degrades
+		}
+		var scoped []types.LearningQuizAttempt
+		for _, x := range payload.Attempts {
+			if x.TenantID == a.TenantID && x.KnowledgeBaseID == a.KnowledgeBaseID {
+				scoped = append(scoped, x)
+			}
+		}
+		var scopedTasks []types.LearningTaskAttempt
+		for _, x := range payload.TaskAttempts {
+			if x.TenantID == a.TenantID && x.KnowledgeBaseID == a.KnowledgeBaseID {
+				scopedTasks = append(scopedTasks, x)
+			}
+		}
+		legacyByItem := map[string]string{}
+		if items, err := s.repo.ListQuizItemsByKB(ctx, a.TenantID, a.KnowledgeBaseID); err == nil {
+			for _, it := range items {
+				if it.ObjectiveID != "" {
+					legacyByItem[it.ID] = it.ObjectiveID
+				}
+			}
+		}
+		payload.Objectives = append(payload.Objectives, objectiveExportRows(objectives, scoped, legacyByItem, scopedTasks)...)
+	}
+	payload.KBSummary = s.exportKBSummary(ctx, payload)
+	return payload, nil
+}
+
+// exportKBSummary rolls the payload up by knowledge base at the top of the
+// export: per-KB event/node/attempt counts, the KB's name when it still
+// resolves, and Exists=false for KBs deleted after the data was collected
+// (their soft-deleted rows hide from GetKnowledgeBaseByID) so the group
+// labels itself instead of surfacing as mystery data.
+func (s *Service) exportKBSummary(ctx context.Context, payload *ExportPayload) []ExportKBSummary {
+	byKB := map[string]*ExportKBSummary{}
+	get := func(kbID string) *ExportKBSummary {
+		if kbID == "" {
+			kbID = "-"
+		}
+		if u, ok := byKB[kbID]; ok {
+			return u
+		}
+		u := &ExportKBSummary{KbID: kbID}
+		// kbRepo is nil only in narrow test fixtures; treat such KBs as
+		// existing rather than labelling everything deleted.
+		u.Exists = s.kbRepo == nil
+		if s.kbRepo != nil {
+			if kb, err := s.kbRepo.GetKnowledgeBaseByID(ctx, kbID); err == nil && kb != nil {
+				u.KbName = kb.Name
+				u.Exists = true
+			}
+		}
+		byKB[kbID] = u
+		return u
+	}
+	for _, e := range payload.Events {
+		get(e.KnowledgeBaseID).Events++
+	}
+	for _, m := range payload.Mastery {
+		get(m.KnowledgeBaseID).MasteryNodes++
+	}
+	for _, a := range payload.Attempts {
+		get(a.KnowledgeBaseID).Attempts++
+	}
+	for _, s := range payload.Skips {
+		get(s.KnowledgeBaseID).Skips++
+	}
+	for _, p := range payload.PlanPreferences {
+		get(p.KnowledgeBaseID)
+	}
+	out := make([]ExportKBSummary, 0, len(byKB))
+	for _, u := range byKB {
+		out = append(out, *u)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Events != out[j].Events {
+			return out[i].Events > out[j].Events
+		}
+		return out[i].KbID < out[j].KbID
+	})
+	return out
+}
+
+// DeleteProfile removes the caller's personal learning data (the KB-shared
+// quiz bank is not personal and stays), optionally recording the opt-out
+// so a deleted profile cannot resurrect on the next question. The sweep,
+// the opt-out and the deletion-epoch bump commit as ONE transaction: a
+// crash between them can neither leave the opt-out unrecorded nor let a
+// background writer that captured the pre-delete epoch land its in-flight
+// result after the delete.
+func (s *Service) DeleteProfile(ctx context.Context, optOut bool) error {
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		return ErrNoLearningScope
+	}
+	principal, ok := types.PrincipalFromContext(ctx)
+	if !ok {
+		return ErrNoLearningScope
+	}
+	subject := principal.StorageID()
+	if subject == "" {
+		return ErrNoLearningScope
+	}
+	// Subject-scoped: shared-KB rows filed under the KB owner's tenant go
+	// with everything else — a tenant predicate would leave them behind.
+	if err := s.repo.DeleteProfileData(ctx, tenantID, subject, optOut); err != nil {
+		return err
+	}
+	s.evictFoldMu(subject)
+	// The opt-out must hold on the very next request — never wait out the
+	// prefs cache TTL after telling the user their data is gone. Dropping
+	// the entry unconditionally is correct even when optOut is false: the
+	// next read simply re-caches the fresh row.
+	s.prefs.invalidate(subject)
+	return nil
+}
+
+// GetSettings reads the collection opt-out.
+func (s *Service) GetSettings(ctx context.Context) (*LearningSettings, error) {
+	principal, ok := types.PrincipalFromContext(ctx)
+	if !ok {
+		return nil, ErrNoLearningScope
+	}
+	prefs, err := s.repo.GetSubjectPrefs(ctx, principal.StorageID())
+	if err != nil {
+		return nil, err
+	}
+	disabled := prefs != nil && prefs.CollectDisabled
+	return &LearningSettings{CollectDisabled: disabled}, nil
+}
+
+// UpdateSettings writes the collection opt-out. The prefs cache is
+// invalidated on write so a toggle takes effect immediately.
+func (s *Service) UpdateSettings(ctx context.Context, disabled bool) error {
+	tenantID, ok := types.TenantIDFromContext(ctx)
+	if !ok || tenantID == 0 {
+		return ErrNoLearningScope
+	}
+	principal, ok := types.PrincipalFromContext(ctx)
+	if !ok {
+		return ErrNoLearningScope
+	}
+	if err := s.repo.UpsertSubjectPrefs(ctx, &types.LearningSubjectPrefs{
+		TenantID: tenantID, SubjectID: principal.StorageID(), CollectDisabled: disabled,
+	}); err != nil {
+		return err
+	}
+	s.prefs.invalidate(principal.StorageID())
+	return nil
+}
+
+// MasteryOverlay derives the graph paint fields for the given slugs.
+func (s *Service) MasteryOverlay(ctx context.Context, kbID string, slugs []string) (map[string]MasteryOverlayEntry, error) {
+	scope, err := resolveReadScope(ctx, kbID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.repo.ListMastery(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	direct := s.directFacts(ctx, scope)
+	out := map[string]MasteryOverlayEntry{}
+	for i := range rows {
+		out[rows[i].Slug] = MasteryOverlayEntry{}
+	}
+	for i := range rows {
+		lv := gatedAnchoredLevel(StateFromModel(&rows[i]), direct[rows[i].Slug], now)
+		out[rows[i].Slug] = MasteryOverlayEntry{Level: string(lv.Level), LowConfidence: lv.LowConfidence}
+	}
+	_ = slugs // overlay carries all the caller's nodes; the graph handler filters
+	return out, nil
+}
+
+// nodePages lists the KB's entity/concept pages, shared by every read path
+// that needs the node universe. Served from the 5-minute page cache the
+// evidence index already uses — previously every read request re-read the
+// full page table while the write path enjoyed the cache. Slug-sorted;
+// callers treat the pages as read-only (shared pointers).
+func (s *Service) nodePages(ctx context.Context, kbID string) ([]*types.WikiPage, error) {
+	return s.pages.nodes(ctx, s.wikiRepo, kbID)
+}
+
+func learningLastVisits(history []types.LearningEvent, now time.Time) map[string]time.Time {
+	lastVisit := map[string]time.Time{}
+	for _, ev := range history {
+		switch ev.Type {
+		case types.LearningEventWikiToolRead, types.LearningEventWikiDeepRead,
+			types.LearningEventAnswerCite, types.LearningEventCrossRef,
+			types.LearningEventReAsk,
+			types.LearningEventQuizCorrect, types.LearningEventQuizWrong,
+			types.LearningEventQuizUnsure:
+		default:
+			continue
+		}
+		if ev.OccurredAt.After(now) {
+			continue
+		}
+		if cur, ok := lastVisit[ev.Slug]; !ok || ev.OccurredAt.After(cur) {
+			lastVisit[ev.Slug] = ev.OccurredAt
+		}
+	}
+	return lastVisit
+}

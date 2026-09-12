@@ -117,6 +117,12 @@ export function groupPostprocessGraphSpans(
 /**
  * Counts leaf postprocess spans so the UI can distinguish the five main
  * pipeline stages from asynchronous enrichment work.
+ *
+ * A failed leaf whose SAME-NAMED sibling later completed (the in-batch
+ * salvage pass retries failed wiki page writes under the same span name)
+ * counts as completed, not failed: the work eventually landed, and the
+ * counter should reflect the final outcome while the trace tree below
+ * still keeps the honest first-attempt failure record.
  */
 export function summarizePostprocessTasks(
   trace?: KnowledgeTraceNode,
@@ -135,14 +141,28 @@ export function summarizePostprocessTasks(
     : (trace.children || []).find(child => child.name === 'postprocess')
   if (!postprocess) return summary
 
-  const countLeaves = (node: KnowledgeTraceNode) => {
+  const leaves: KnowledgeTraceNode[] = []
+  const collectLeaves = (node: KnowledgeTraceNode) => {
     const children = node.children || []
     if (children.length > 0) {
-      children.forEach(countLeaves)
+      children.forEach(collectLeaves)
       return
     }
+    leaves.push(node)
+  }
+  ;(postprocess.children || []).forEach(collectLeaves)
 
+  const completedByName = new Set<string>()
+  for (const leaf of leaves) {
+    if (leaf.status === 'done' || leaf.status === 'completed') {
+      completedByName.add(leaf.name)
+    }
+  }
+
+  for (const node of leaves) {
     summary.total++
+    const recoveredBySibling =
+      node.status === 'failed' && completedByName.has(node.name)
     switch (node.status) {
       case 'running':
       case 'pending':
@@ -151,7 +171,11 @@ export function summarizePostprocessTasks(
         summary.running++
         break
       case 'failed':
-        summary.failed++
+        if (recoveredBySibling) {
+          summary.completed++
+        } else {
+          summary.failed++
+        }
         break
       case 'done':
       case 'completed':
@@ -162,6 +186,5 @@ export function summarizePostprocessTasks(
     }
   }
 
-  ;(postprocess.children || []).forEach(countLeaves)
   return summary
 }

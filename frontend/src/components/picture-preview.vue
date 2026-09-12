@@ -8,7 +8,7 @@ const close = () => {
 }
 </script>
 <template>
-    <t-image-viewer :visible="reviewImg" closeOnOverlay closeOnEscKeydown @close="close"
+    <t-image-viewer v-if="reviewImg && reviewUrl" :visible="reviewImg" closeOnOverlay closeOnEscKeydown @close="close"
         :images="reviewUrl ? [reviewUrl] : []">
     </t-image-viewer>
 </template>

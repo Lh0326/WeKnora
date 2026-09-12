@@ -269,3 +269,42 @@ builtin_agents:
       multi_turn_enabled: true
       history_turns: 10
 
+  - id: "builtin-wiki-page-assistant"
+    avatar: "📗"
+    is_builtin: true
+    i18n:
+      default:
+        name: "Page Learning Assistant"
+        description: "Companion assistant embedded in the Wiki reader for questions about the current page"
+      zh-CN:
+        name: "页面学习助手"
+        description: "内嵌在 Wiki 阅读页的随行助手，围绕当前浏览页面解答疑问"
+      zh-TW:
+        name: "頁面學習助手"
+        description: "內嵌在 Wiki 閱讀頁的隨行助手，圍繞當前瀏覽頁面解答疑問"
+      ja-JP:
+        name: "ページ学習アシスタント"
+        description: "Wiki閲覧ページに内蔵され、現在のページについての質問に答えるアシスタント"
+      ko-KR:
+        name: "페이지 학습 도우미"
+        description: "Wiki 열람 페이지에 내장되어 현재 페이지에 대한 질문에 답하는 도우미"
+    config:
+      agent_mode: "quick-answer"
+      system_prompt_id: "wiki_page_assistant"
+      temperature: 0.5
+      max_completion_tokens: 2048
+      web_search_enabled: false
+      web_search_max_results: 0
+      multi_turn_enabled: true
+      history_turns: 8
+      kb_selection_mode: "all"
+      retrieve_kb_only_when_mentioned: false
+      faq_priority_enabled: false
+      embedding_top_k: 10
+      keyword_threshold: 0.3
+      vector_threshold: 0.5
+      rerank_top_k: 10
+      rerank_threshold: 0.3
+      enable_query_expansion: true
+      enable_rewrite: true
+      fallback_strategy: "model"

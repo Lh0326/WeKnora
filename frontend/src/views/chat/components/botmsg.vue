@@ -1,5 +1,8 @@
 <template>
     <div class="bot_msg" :class="{ 'is-embedded': embeddedMode }">
+        <ChatErrorNotice v-if="chatFailure" :failure="chatFailure" :can-retry="allowRetry"
+            @retry="emit('retry')" />
+        <template v-else>
         <div style="display: flex;flex-direction: column; gap:8px">
             <!-- 显示@的知识库和文件（非 Agent 模式下显示） -->
             <div v-if="!session.isAgentMode && mentionedItems && mentionedItems.length > 0" class="mentioned_items">
@@ -87,6 +90,7 @@
             <div v-if="isImgLoading" class="img_loading"><t-loading size="small"></t-loading><span>{{
                 $t('common.loading') }}</span></div>
         </div>
+        </template>
         <picturePreview :reviewImg="reviewImg" :reviewUrl="reviewUrl" @closePreImg="closePreImg"></picturePreview>
         <Teleport to="body">
             <ChatCitationFloat :float="citationFloat" :on-enter="cancelCitationClose"
@@ -108,6 +112,8 @@ import docInfo from './docInfo.vue';
 import deepThink from './deepThink.vue';
 import AgentStreamDisplay from './AgentStreamDisplay.vue';
 import RagPipelineProgress from './RagPipelineProgress.vue';
+import ChatErrorNotice from '@/components/chat/ChatErrorNotice.vue';
+import { getMessageChatFailure } from '@/utils/chatErrorPresentation';
 import ChatRequestInfoButton from '@/components/ChatRequestInfoButton.vue';
 import ChatCitationFloat from '@/components/ChatCitationFloat.vue';
 import picturePreview from '@/components/picture-preview.vue';
@@ -150,7 +156,7 @@ const mentionTagIcon = (item) => {
     return 'file';
 };
 
-const emit = defineEmits(['scroll-bottom', 'render-complete-change'])
+const emit = defineEmits(['scroll-bottom', 'render-complete-change', 'retry'])
 const { t } = useI18n()
 const uiStore = useUIStore();
 let parentMd = ref()
@@ -191,10 +197,26 @@ const props = defineProps({
     followUpLoading: {
         type: Boolean,
         default: false
+    },
+    allowRetry: {
+        type: Boolean,
+        default: false
     }
 });
 
+const chatFailure = computed(() => getMessageChatFailure(props.session));
 const showRequestInfo = computed(() => !!(props.session?.request_id || props.session?.id));
+
+// 受保护图片（含知识库检索出的 resource:// 图）经消息面代理取回——租户面
+// /files 对跨库/共享存储的资源会 404（对齐 AgentStreamDisplay 的锚定方式）。
+const protectedFileAccess = computed(() => {
+    const messageId = String(props.session?.assistant_message_id || props.session?.id || '').trim();
+    if (props.sessionId && messageId) {
+        return { mode: 'message', sessionId: props.sessionId, messageId };
+    }
+    return undefined;
+});
+
 
 // -----------------------------------------------------------------------------
 // Skill artifact download (drawer)
@@ -359,7 +381,7 @@ watch(renderedHTML, () => {
 // 渲染 Mermaid 图表的函数
 onUpdated(() => {
     nextTick(async () => {
-        await hydrateProtectedFileImages(parentMd.value);
+        await hydrateProtectedFileImages(parentMd.value, protectedFileAccess.value);
         refreshMarkdownEnhancements(parentMd.value);
         if (props.session?.is_completed) {
             await renderMermaidInContainer(parentMd.value);
@@ -374,7 +396,7 @@ onMounted(async () => {
             parentMd.value.addEventListener('click', handleMarkdownImageClick, true);
         }
         rebindCitations();
-        await hydrateProtectedFileImages(parentMd.value);
+        await hydrateProtectedFileImages(parentMd.value, protectedFileAccess.value);
         await enhanceMarkdownContainer(parentMd.value);
     });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, reactive, computed, nextTick } from "vue";
+import { ref, onMounted, onUnmounted, watch, reactive, computed, nextTick, provide } from "vue";
 import { MessagePlugin } from "tdesign-vue-next";
 import DocContent from "@/components/doc-content.vue";
 import useKnowledgeBase from '@/hooks/useKnowledgeBase';
@@ -54,6 +54,10 @@ import KbTagManageDrawer from './components/KbTagManageDrawer.vue';
 import type { KnowledgeProcessOverrides } from '@/types/knowledgeProcess';
 import { useUploadConfirmStore, type UploadConfirmResult } from '@/stores/uploadConfirm';
 import WikiBrowser from './wiki/WikiBrowser.vue';
+import LearningTab from './learning/LearningTab.vue';
+import { createLearningSession, learningSessionKey } from './learning/learningSession';
+import WikiAssistantWidget from './wiki/WikiAssistantWidget.vue';
+import { createAssistantHost, assistantHostKey } from './assistantHost';
 import { getWikiStats } from '@/api/wiki';
 import {
   isKnowledgeParseInFlight,
@@ -77,7 +81,25 @@ import { useMarqueeSelect } from '@/hooks/useMarqueeSelect';
 import type { ParserEngineInfo } from '@/api/system';
 const route = useRoute();
 const { t } = useI18n();
+// 站内返回按钮：应用内跳转（学习页签→Wiki 页抽屉→源文档等）都会在 Vue
+// Router 历史里留下回退目标；有目标时在面包屑行首显示返回按钮，用户不
+// 必伸手去够浏览器的后退。直接打开（无站内来路）时不渲染。
+const canGoBackInApp = ref(false);
+watch(() => route.fullPath, () => {
+  canGoBackInApp.value = typeof window.history.state?.back === 'string' && window.history.state.back !== '';
+}, { immediate: true });
 const kbId = computed(() => (route.params as any).kbId as string || '');
+const learningAccount = computed(() => JSON.stringify([authStore.user?.id || '', authStore.effectiveTenantId || '']));
+const learningIdentity = computed(() => JSON.stringify([authStore.user?.id || '', authStore.effectiveTenantId || '', kbId.value]));
+const learningSession = createLearningSession();
+const assistantHost = createAssistantHost();
+const assistantHostContext = assistantHost.context;
+provide(assistantHostKey, assistantHost);
+watch(learningIdentity, identity => assistantHost.setScope(identity), { immediate: true, flush: 'sync' });
+onUnmounted(() => assistantHost.clear());
+provide(learningSessionKey, learningSession);
+watch(learningIdentity, identity => learningSession.setScope(identity, kbId.value), { immediate: true, flush: 'sync' });
+onUnmounted(() => learningSession.clear());
 const kbInfo = ref<any>(null);
 const uploadSourceRef = ref<InstanceType<typeof KbUploadSourceDropdown> | null>(null);
 const uploading = ref(false);
@@ -85,7 +107,7 @@ const kbLoading = ref(false);
 const docListLoading = ref(true);
 const isFAQ = computed(() => (kbInfo.value?.type || '') === 'faq');
 const isWiki = computed(() => !!kbInfo.value?.indexing_strategy?.wiki_enabled);
-const validTabs = ['documents', 'wiki', 'graph'] as const
+const validTabs = ['documents', 'wiki', 'graph', 'learning'] as const
 type KbTab = typeof validTabs[number]
 const initTab = validTabs.includes(route.query.tab as any) ? (route.query.tab as KbTab) : 'documents'
 const activeKbTab = ref<KbTab>(initTab);
@@ -1083,6 +1105,10 @@ const loadKnowledgeList = async () => {
 
 // 监听路由参数变化，重新获取知识库内容
 // Sync activeKbTab to URL query so it survives page refresh
+// KB-wide assistant host context: non-wiki tabs publish their scene here;
+// the wiki/graph tabs are owned by WikiBrowser's richer page-level publish.
+watch(activeKbTab, tab => assistantHost.setScene(tab), { immediate: true, flush: 'sync' })
+
 watch(activeKbTab, (tab) => {
   const query = { ...route.query }
   if (tab === 'documents') {
@@ -1091,6 +1117,14 @@ watch(activeKbTab, (tab) => {
     query.tab = tab
   }
   router.replace({ query })
+})
+
+// URL → tab 反向同步：深链只改 query（如学习页签的「查看」卡片带 ?tab=wiki&slug=…），
+// 本地页签状态必须跟着切换，否则视图纹丝不动。与上面的 tab → query watch 幂等共存。
+watch(() => route.query.tab, (v) => {
+  if (typeof v === 'string' && (validTabs as readonly string[]).includes(v)) {
+    activeKbTab.value = v as KbTab
+  }
 })
 
 watch(() => kbId.value, (newKbId, oldKbId) => {
@@ -2296,6 +2330,12 @@ async function createNewSession(value: string): Promise<void> {
         <div class="document-header-title">
           <div class="document-title-row">
             <h2 class="document-breadcrumb">
+              <t-tooltip v-if="canGoBackInApp" :content="t('common.back')" placement="top">
+                <button type="button" class="kb-settings-button kb-back-button"
+                  :title="t('common.back')" @click="router.back()">
+                  <t-icon name="chevron-left" size="16px" />
+                </button>
+              </t-tooltip>
               <button type="button" class="breadcrumb-link" @click="handleNavigateToKbList">
                 {{ $t('menu.knowledgeBase') }}
               </button>
@@ -2342,6 +2382,9 @@ async function createNewSession(value: string): Promise<void> {
                     </t-tooltip>
                   </span>
                 </t-tooltip>
+                <span class="breadcrumb-tab-sep">/</span>
+                <span :class="['breadcrumb-tab', { active: activeKbTab === 'learning' }]"
+                  @click="activeKbTab = 'learning'">{{ $t('knowledgeEditor.learningTab.tabLearning') }}</span>
               </template>
               <span v-else class="breadcrumb-current">{{ $t('knowledgeEditor.document.title') }}</span>
             </h2>
@@ -2356,8 +2399,8 @@ async function createNewSession(value: string): Promise<void> {
               </t-tooltip>
             </div>
           </div>
-          <p class="document-subtitle">{{ $t('knowledgeEditor.document.subtitle') }}</p>
-          <p v-if="unsupportedFileTypes.length" class="parser-hint" @click="goToParserSettings">
+          <p v-if="!isWiki || activeKbTab==='documents'" class="document-subtitle">{{ $t('knowledgeEditor.document.subtitle') }}</p>
+          <p v-if="unsupportedFileTypes.length && (!isWiki || activeKbTab==='documents')" class="parser-hint" @click="goToParserSettings">
             <t-icon name="info-circle" class="parser-hint-icon" />
             <span>{{$t('knowledgeBase.unsupportedTypesHint', {
               types: unsupportedFileTypes.map(t => '.' + t).join('、')
@@ -2365,7 +2408,7 @@ async function createNewSession(value: string): Promise<void> {
               }}</span>
             <span class="parser-hint-link">{{ $t('knowledgeBase.goToParserSettings') }} →</span>
           </p>
-          <p v-if="missingStorageEngine" class="storage-engine-warning" @click="handleOpenKBSettings">
+          <p v-if="missingStorageEngine && (!isWiki || activeKbTab==='documents')" class="storage-engine-warning" @click="handleOpenKBSettings">
             <t-icon name="info-circle" class="warning-icon" />
             <span>{{ $t('knowledgeBase.missingStorageEngine') }}</span>
             <span class="warning-link">{{ $t('knowledgeBase.goToStorageSettings') }} →</span>
@@ -2373,9 +2416,17 @@ async function createNewSession(value: string): Promise<void> {
         </div>
       </div>
 
-      <!-- Wiki Browser / Graph (shown when wiki or graph tab is active) -->
+      <!-- 学习页签：KeepAlive 缓存实例 + v-show 容器——切到 Wiki/图谱（如点
+           推荐"查看"）再回来时，答题进度与滚动位置不丢、无整屏白闪重载；
+           失活实例的 DOM 被摘除，星图常驻动画（呼吸/闪烁）不占渲染预算 -->
+      <div v-if="isWiki" v-show="activeKbTab === 'learning'" class="learning-main-area">
+        <KeepAlive :key="learningAccount" :max="2">
+          <LearningTab v-if="kbId && activeKbTab === 'learning'" :key="learningIdentity" :knowledge-base-id="kbId"
+            @open-source-doc="openSourceDoc" />
+        </KeepAlive>
+      </div>
       <div v-if="isWiki && (activeKbTab === 'wiki' || activeKbTab === 'graph')" class="wiki-main-area">
-        <WikiBrowser v-if="kbId" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
+        <WikiBrowser v-if="kbId" :key="learningIdentity" :knowledge-base-id="kbId" :view="activeKbTab === 'graph' ? 'graph' : 'browser'"
           :can-edit="canEdit" @open-source-doc="openSourceDoc" @status-change="onWikiStatusChange"
           @view-graph="onViewWikiInGraph" />
       </div>
@@ -2727,6 +2778,9 @@ async function createNewSession(value: string): Promise<void> {
     :is-faq="isFAQ"
     @changed="onTagManageChanged"
   />
+
+  <!-- 知识助手：全页签常驻右下角（fixed 定位），宿主上下文由当前页签发布 -->
+  <WikiAssistantWidget v-if="kbId && !isFAQ" :kb-id="kbId" :host-context="assistantHostContext" />
 </template>
 <style>
 /* 下拉菜单容器样式已统一至 @/assets/dropdown-menu.less */
@@ -2828,6 +2882,15 @@ async function createNewSession(value: string): Promise<void> {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+// 学习页签是一列长卡片（进度/推荐/答题/时间线/画像），与 WikiBrowser
+// 自管内部滚动不同，这里由容器自身整体滚动；外层 platform-route-outlet
+// 是固定高度的 overflow:hidden flex 列，缺了这段内容会溢出不可见。
+.learning-main-area {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 // 与列表页一致：浅灰底圆角区，左侧筛选为白底卡片
@@ -3633,6 +3696,8 @@ async function createNewSession(value: string): Promise<void> {
   display: none;
 }
 
+// 站内返回按钮：与设置按钮同一圆形语言，锚在面包屑行首。
+.kb-back-button { flex-shrink: 0; margin-right: 4px; width: 26px; height: 26px; }
 .kb-settings-button {
   width: 30px;
   height: 30px;

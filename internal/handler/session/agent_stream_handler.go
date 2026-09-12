@@ -37,6 +37,8 @@ type AgentStreamHandler struct {
 	// sandbox after the agent completes. Nil when the sandbox backend
 	// doesn't support artifact collection or WeKnora was built without it.
 	artifactCollector *service.ArtifactCollector
+	beforeComplete    func(context.Context, *types.Message)
+	completionOnce    sync.Once
 
 	// State tracking
 	knowledgeRefs   []*types.SearchResult
@@ -722,9 +724,28 @@ func (h *AgentStreamHandler) handleComplete(ctx context.Context, evt event.Event
 	}
 
 	// Send completion event to stream manager so SSE can detect completion
+	// Learning writes must settle before clients invalidate their projections.
+	h.completionOnce.Do(func() {
+		if h.beforeComplete != nil {
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(h.ctx), 5*time.Second)
+			defer cancel()
+			h.beforeComplete(ctx, h.assistantMessage)
+		}
+	})
 	completeData := map[string]interface{}{
 		"total_steps":       data.TotalSteps,
 		"total_duration_ms": data.TotalDurationMs,
+	}
+	if h.beforeComplete != nil {
+		ids := make([]string, 0)
+		seen := map[string]bool{}
+		for _, ref := range h.assistantMessage.KnowledgeReferences {
+			if ref != nil && ref.KnowledgeBaseID != "" && !seen[ref.KnowledgeBaseID] {
+				seen[ref.KnowledgeBaseID] = true
+				ids = append(ids, ref.KnowledgeBaseID)
+			}
+		}
+		completeData["learning_kb_ids"] = ids
 	}
 	// Attach the freshly-collected artifacts so the frontend can render the
 	// download button without waiting for a page refresh. We strip the

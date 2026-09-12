@@ -9,6 +9,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/agent/approval"
 	"github.com/Tencent/WeKnora/internal/agent/skills"
 	"github.com/Tencent/WeKnora/internal/agent/tools"
+	learningsvc "github.com/Tencent/WeKnora/internal/application/service/learning"
 	"github.com/Tencent/WeKnora/internal/config"
 	"github.com/Tencent/WeKnora/internal/event"
 	"github.com/Tencent/WeKnora/internal/logger"
@@ -105,6 +106,7 @@ type agentService struct {
 	tenantService         interfaces.TenantService
 	messageService        interfaces.MessageService
 	memoryService         interfaces.MemoryService
+	learningService       interfaces.LearningService
 	storageResolver       interfaces.StorageBackendResolver
 	toolApprovalGate      approval.MCPApproval
 	sandboxMgr            sandbox.Manager
@@ -132,6 +134,7 @@ func NewAgentService(
 	tenantService interfaces.TenantService,
 	messageService interfaces.MessageService,
 	memoryService interfaces.MemoryService,
+	learningService interfaces.LearningService,
 	storageResolver interfaces.StorageBackendResolver,
 	toolApprovalGate approval.MCPApproval,
 	sandboxMgr sandbox.Manager,
@@ -157,6 +160,7 @@ func NewAgentService(
 		tenantService:         tenantService,
 		messageService:        messageService,
 		memoryService:         memoryService,
+		learningService:       learningService,
 		storageResolver:       storageResolver,
 		toolApprovalGate:      toolApprovalGate,
 		sandboxMgr:            sandboxMgr,
@@ -747,6 +751,13 @@ func (s *agentService) registerTools(
 		// Wiki tools — only registered when wiki KBs are detected
 		case tools.ToolWikiReadPage:
 			toolToRegister = tools.NewWikiReadPageTool(s.wikiPageService, s.knowledgeService, wikiScopes, wikiRoutes)
+			// Topic-4 evidence capture: every page the agent reads on the
+			// user's behalf lands as an opportunistic wiki_tool_read touch
+			// (agent answers built from wiki reads carry no chunk citations,
+			// so the answer_cite channel alone would miss them).
+			if s.learningService != nil {
+				toolToRegister = learningsvc.WrapWikiReadTool(toolToRegister, s.learningService)
+			}
 		case tools.ToolWikiSearch:
 			toolToRegister = tools.NewWikiSearchTool(s.wikiPageService, s.knowledgeService, wikiScopes, wikiRoutes)
 		case tools.ToolWikiReadSourceDoc:

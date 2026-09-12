@@ -4,6 +4,8 @@ package types
 type ContextKey string
 
 const (
+	// LearningEpochContextKey fences detached learning writes to their initiating operation.
+	LearningEpochContextKey ContextKey = "LearningEpoch"
 	// TenantIDContextKey is the context key for tenant ID
 	TenantIDContextKey ContextKey = "TenantID"
 	// TenantInfoContextKey is the context key for tenant information

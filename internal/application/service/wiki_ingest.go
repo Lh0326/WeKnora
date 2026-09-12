@@ -35,6 +35,18 @@ import (
 // lock (Phase 3) and never returns this.
 var ErrWikiIngestConcurrent = errors.New("concurrent wiki task active")
 
+// wikiSalvageCooldown is the wait before the in-batch salvage pass retries
+// reduce writes that failed on the provider's per-minute rate window:
+// retrying sooner lands in the same tripped window. A var (not a const) so
+// tests can shrink it to milliseconds.
+var wikiSalvageCooldown = 60 * time.Second
+
+// wikiSalvageParallel caps the salvage pass concurrency below the observed
+// trip envelope: 10-way reduce bursts trip the per-minute token limit
+// deterministically, while ~4 concurrent large calls ride the proven-safe
+// line (sequential calls of the same total size never trip).
+const wikiSalvageParallel = 4
+
 const (
 	// maxContentForWiki limits the document content sent to LLM for wiki generation
 	maxContentForWiki = 32768

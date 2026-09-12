@@ -51,6 +51,17 @@ func TestBuildFallbackMessages_PrefersRewriteQuery(t *testing.T) {
 	assert.Equal(t, "混元大模型性能怎么样", last.Content)
 }
 
+func TestBuildFallbackMessages_PreservesLearningContextInUserTurn(t *testing.T) {
+	cm := &types.ChatManage{}
+	cm.Query = "[Host context]\nlearning_scope: 度量机制；预算 5 分钟\n[/Host context]\n\n我的下一步是什么？"
+	cm.RewriteQuery = "用户的下一步学习计划是什么"
+	msgs := buildFallbackMessages(cm, "fallback instruction")
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "user", msgs[1].Role)
+	assert.Equal(t, cm.Query, msgs[1].Content)
+	assert.Equal(t, "fallback instruction", msgs[0].Content)
+}
+
 // TestBuildFallbackMessages_EmptyPromptSkipsSystem ensures we don't inject an
 // empty system message when there is no fallback instruction to carry.
 func TestBuildFallbackMessages_EmptyPromptSkipsSystem(t *testing.T) {

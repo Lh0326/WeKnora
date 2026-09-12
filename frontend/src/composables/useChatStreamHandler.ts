@@ -1,7 +1,9 @@
-import { markRaw, nextTick, type Ref } from 'vue'
+import { isReactive, markRaw, nextTick, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ensureRagPipelineHistoryStream } from '@/utils/rag-pipeline-history'
-import { applyMessageCreatedAt, bindServerTurnTimestamps, ensureMessageCreatedAt } from '@/utils/messageTimestamp'
+import { ensureRagPipelineHistoryStream } from '../utils/rag-pipeline-history'
+import { applyMessageCreatedAt, bindServerTurnTimestamps, ensureMessageCreatedAt } from '../utils/messageTimestamp'
+import { visibleUserQuery } from '../utils/embedContext'
+import { createChatFailure, getMessageChatFailure, presentChatError } from '../utils/chatErrorPresentation'
 
 export type ChatMessage = Record<string, unknown>
 
@@ -15,6 +17,7 @@ export interface UseChatStreamHandlerOptions {
   scrollToBottom: (force?: boolean) => void
   onReplyComplete?: (content: string) => void
   onTurnComplete?: (message: ChatMessage) => void
+  onLearningUpdated?: (kbIds: string[]) => void
   onError?: (message: string) => void
   /** Main chat: keep the last incomplete message reactive for continue-stream. */
   preserveIncompleteStreamReactive?: boolean
@@ -34,7 +37,7 @@ export interface UseChatStreamHandlerOptions {
 }
 
 export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
   const {
     messagesList,
     loading,
@@ -45,6 +48,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     scrollToBottom,
     onReplyComplete,
     onTurnComplete,
+    onLearningUpdated,
     onError,
     preserveIncompleteStreamReactive = false,
     isFirstEnter,
@@ -225,6 +229,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
   }
 
   const shouldRenderAssistantMessage = (session: ChatMessage) => {
+    if (getMessageChatFailure(session)) return true
     if (!session?.isAgentMode) return true
     if (!session.is_completed) return true
     const stream = session.agentEventStream
@@ -261,7 +266,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       item.hideContent = true
     }
     ensureRagPipelineHistoryStream(item as Parameters<typeof ensureRagPipelineHistoryStream>[0])
-    if (item.isRagMode && item.agentEventStream) {
+    if (item.is_completed && item.isRagMode && item.agentEventStream) {
       item.agentEventStream = markRaw(item.agentEventStream as object)
     }
   }
@@ -388,10 +393,18 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
     for (const raw of chatlist) {
       const item = preserveIncompleteStreamReactive ? raw : { ...raw }
       if (item.id && existingIds.has(item.id)) continue
+      // A delayed initial history response may already contain the message
+      // sent after mount. Bind its server identity to the optimistic bubble
+      // instead of inserting a second copy (host context differs on the wire).
+      if (item.id && item.role === 'user') {
+        const optimistic = findLastMessage(m => m.role === 'user' && !m.id && visibleUserQuery(m.content) === visibleUserQuery(item.content))
+        if (optimistic) { Object.assign(optimistic, item); existingIds.add(item.id); continue }
+      }
       if (item.id) existingIds.add(item.id)
 
       item.isAgentMode = false
       const willContinueStream = preserveIncompleteStreamReactive && !item.is_completed
+      item._awaitingReplay = willContinueStream
       if (willContinueStream) {
         item.agentEventStream = item.agentEventStream || []
         item._eventMap = new Map()
@@ -405,15 +418,14 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
 
       if (item.agent_steps && Array.isArray(item.agent_steps) && item.agent_steps.length > 0) {
         item.isAgentMode = true
-        item.agentEventStream = markRaw(
-          reconstructEventStreamFromSteps(
+        const restoredStream = reconstructEventStreamFromSteps(
             item.agent_steps as unknown[],
             String(item.content || ''),
             Boolean(item.is_completed),
             Boolean(item.is_fallback),
             Number(item.agent_duration_ms) || 0,
-          ),
-        )
+          )
+        item.agentEventStream = willContinueStream ? restoredStream : markRaw(restoredStream)
         item.hideContent = true
       }
 
@@ -667,7 +679,9 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       }
       case 'tool_call': {
         if (dataPayload?.tool_name === 'final_answer') break
-        if (message.agentEventStream) {
+        // RAG progress describes a fixed retrieval pipeline, not another model
+        // tool round. Delayed progress must never retract its final answer.
+        if (!message.isRagMode && message.agentEventStream) {
           let retracted = false
           for (const ev of message.agentEventStream as ChatMessage[]) {
             if (ev.type === 'answer' && !ev.superseded && ev.content && String(ev.content).trim()) {
@@ -775,26 +789,30 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
             console.warn('[Tool Result] No pending tool call found for', toolCallId || toolName)
           }
           if (responseType === 'error' && !toolName) {
-            const errorMsg = String(data.content || t('chat.processError'))
+            const failure = createChatFailure(data.content || dataPayload.error || t('chat.processError'), dataPayload)
+            const errorMsg = failure.raw
+            message.chatError = failure
             message.content = errorMsg
             message.is_completed = true
             isReplying.value = false
             loading.value = false
             fullContent.value = ''
             currentAssistantMessageId.value = ''
-            reportError(errorMsg)
-            console.error('[Chat Error]', errorMsg)
+            reportError(presentChatError(failure, locale.value).summary)
+            console.error('[Chat Error]', presentChatError(failure, locale.value).kind)
           }
         } else if (responseType === 'error') {
-          const errorMsg = String(data.content || t('chat.processError'))
+          const failure = createChatFailure(data.content || t('chat.processError'))
+          const errorMsg = failure.raw
+          message.chatError = failure
           message.content = errorMsg
           message.is_completed = true
           isReplying.value = false
           loading.value = false
           fullContent.value = ''
           currentAssistantMessageId.value = ''
-          reportError(errorMsg)
-          console.error('[Chat Error]', errorMsg)
+          reportError(presentChatError(failure, locale.value).summary)
+          console.error('[Chat Error]', presentChatError(failure, locale.value).kind)
         }
         break
       }
@@ -838,6 +856,7 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       }
       case 'complete': {
         log('[Agent] Complete event received')
+        log('[Stream completion]', JSON.stringify({contentLength:String(message.content||'').length, reactive:isReactive(message.agentEventStream), events:(message.agentEventStream as ChatMessage[]||[]).map(e=>({type:e.type,length:String(e.content||'').length,superseded:e.superseded}))}))
         loading.value = false
         isReplying.value = false
         message.is_completed = true
@@ -885,6 +904,19 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
   }
 
   const processStreamChunk = (data: ChatMessage) => {
+    // continue-stream replays from offset zero. Keep the saved partial answer
+    // visible until replay actually arrives, then rebuild instead of appending
+    // the same prefix to the history snapshot again.
+    const replayTarget = resolveActiveAssistantMessage(data)
+    if (replayTarget?._awaitingReplay && !replayTarget.is_completed) {
+      replayTarget._awaitingReplay = false
+      replayTarget.content = ''
+      replayTarget.agentEventStream = []
+      replayTarget._eventMap = new Map()
+      replayTarget._pendingToolCalls = new Map()
+      replayTarget.thinkContent = ''
+      fullContent.value = ''
+    }
     log('[Agent Event Received]', {
       response_type: data.response_type,
       id: data.id,
@@ -985,6 +1017,10 @@ export function useChatStreamHandler(options: UseChatStreamHandlerOptions) {
       return
     }
 
+    if (data.response_type === 'complete') {
+      const ids = (data.data as ChatMessage | undefined)?.learning_kb_ids
+      if (Array.isArray(ids)) onLearningUpdated?.([...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))])
+    }
     if (data.response_type === 'memory_recalled') {
       applyUsedMemories(data)
       return

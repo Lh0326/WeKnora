@@ -1,3 +1,5 @@
+> **课题四：知识网络与引导式学习** — [运行与测试](README_LEARNING.md) · [设计说明](docs/learning-design.md)
+
 <p align="center">
   <picture>
     <img src="./docs/images/logo.png" alt="WeKnora Logo" height="120"/>
