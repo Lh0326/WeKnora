@@ -56,6 +56,7 @@ cp .env.example .env
 - 将 `WEKNORA_VERSION` 设为 `v0.7.2`，与上游基线一致。下方构建步骤会在本地生成带有本分支代码的同名镜像。
 - 替换示例中的数据库、Redis 密码和 `JWT_SECRET`；将 `SYSTEM_AES_KEY` 设置为私有的 32 字节值并妥善保留。
 - 首次体验可保留 PostgreSQL 检索和本地文件存储；登录后在界面中配置模型。
+- 不使用 Langfuse 时设置 `LANGFUSE_ENABLED=false`，避免模板中的追踪凭据占位符触发无效上报。
 
 首次运行建议使用**全新数据库**。学习迁移编号为 PostgreSQL 000087–000101、SQLite 000013–000027。早期课题实验分支的数据库需要单独制定迁移方案，详见[迁移说明](README_LEARNING.md)。
 

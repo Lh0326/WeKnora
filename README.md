@@ -56,6 +56,7 @@ Edit `.env` before starting:
 - Set `WEKNORA_VERSION=v0.7.2` to match the upstream baseline. The build below produces local images containing this fork under that tag.
 - Replace the example database/Redis passwords and `JWT_SECRET`; set `SYSTEM_AES_KEY` to a private 32-byte value and keep it stable.
 - Keep the default PostgreSQL retrieval and local storage for the initial setup. Configure model access in the UI after login.
+- Set `LANGFUSE_ENABLED=false` unless you are configuring Langfuse; the template contains placeholder tracing credentials.
 
 Use a **fresh database** for the first run. Learning migrations are PostgreSQL 000087–000101 and SQLite 000013–000027. Databases from earlier experimental topic branches require a separate migration plan; see [migration details](README_LEARNING.md).
 
